@@ -1,7 +1,7 @@
 //! Asset-free, deterministic low-poly geometry for the streamed world.
 //! World positions are retained here; the renderer performs the camera-relative transform.
 use crate::ecology;
-use crate::world::{hash, rand01, Biome, World};
+use crate::world::{hash, rand01, Biome, RoadKind, World};
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::{PI, TAU};
 
@@ -90,7 +90,9 @@ fn ground_vertex(world: &World, x: f32, z: f32) -> GroundVertex {
     let s = world.sample(x, z);
     let color = ecology::ground_color(world.seed, x, z, &s);
     let wet = mix(color, [0.34, 0.34, 0.25], (s.river * 0.7).clamp(0.0, 0.7));
-    let color = mix(wet, [0.55, 0.43, 0.28], (s.road * 0.93).clamp(0.0, 0.93));
+    // Explicit draped ribbons carry road color. Tinting coarse terrain vertices
+    // inflated narrow paths into large triangular patches.
+    let color = wet;
     GroundVertex {
         position: [x, s.height, z],
         color,
@@ -319,6 +321,30 @@ fn grid_height(
         a + (d - a) * u + (c - d) * v
     }
 }
+// Shared mitered cross-sections close the wedges between curved route segments.
+fn road_cross_section(points: &[[f32; 2]], index: usize) -> [f32; 2] {
+    let normal = |a: [f32; 2], b: [f32; 2]| {
+        let dx = b[0] - a[0];
+        let dz = b[1] - a[1];
+        let len = dx.hypot(dz).max(0.001);
+        [dz / len, -dx / len]
+    };
+    if index == 0 {
+        return normal(points[0], points[1]);
+    }
+    if index + 1 == points.len() {
+        return normal(points[index - 1], points[index]);
+    }
+    let a = normal(points[index - 1], points[index]);
+    let b = normal(points[index], points[index + 1]);
+    let divisor = (1.0 + a[0] * b[0] + a[1] * b[1]).max(0.625);
+    [(a[0] + b[0]) / divisor, (a[1] + b[1]) / divisor]
+}
+
+fn bridge_half_width(kind: RoadKind) -> f32 {
+    kind.half_width() + 0.2
+}
+
 fn road_ribbons(
     world: &World,
     mesh: &mut MeshData,
@@ -328,8 +354,13 @@ fn road_ribbons(
     grid: &[GroundVertex],
 ) {
     let step = CHUNK_SIZE / divisions as f32;
-    for road in world.roads_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE) {
-        for segment in road.windows(2) {
+    for road in world.road_routes_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE) {
+        let width = road.kind.half_width();
+        let verge = width + road.kind.shoulder_width();
+        let margin = verge * 2.0 + 3.0;
+        for (segment_index, segment) in road.points.windows(2).enumerate() {
+            let section_a = road_cross_section(&road.points, segment_index);
+            let section_b = road_cross_section(&road.points, segment_index + 1);
             let a = segment[0];
             let b = segment[1];
             let dx = b[0] - a[0];
@@ -346,10 +377,10 @@ fn road_ribbons(
                 let mz = a[1] + dz * (t0 + t1) / 2.0;
                 // Include strips whose center is outside but whose shoulders
                 // reach this chunk. Actual ownership comes from triangle clipping.
-                if mx < ox - 7.0
-                    || mx > ox + CHUNK_SIZE + 7.0
-                    || mz < oz - 7.0
-                    || mz > oz + CHUNK_SIZE + 7.0
+                if mx < ox - margin
+                    || mx > ox + CHUNK_SIZE + margin
+                    || mz < oz - margin
+                    || mz > oz + CHUNK_SIZE + margin
                 {
                     continue;
                 }
@@ -357,22 +388,38 @@ fn road_ribbons(
                 if sample.water_height > sample.height {
                     continue;
                 }
+                let ground = ecology::ground_color(world.seed, mx, mz, &sample);
+                let base_color = match road.kind {
+                    RoadKind::Main => [0.56, 0.44, 0.28],
+                    RoadKind::Lane => [0.47, 0.39, 0.25],
+                    RoadKind::Trail => mix(ground, [0.44, 0.36, 0.23], 0.76),
+                };
                 let path_color = mul(
-                    [0.53, 0.42, 0.27],
+                    base_color,
                     0.96 + rand01(hash(world.seed ^ 0x524f4144, mx as i32, mz as i32)) * 0.08,
                 );
                 let start = [a[0] + dx * t0, a[1] + dz * t0];
                 let end = [a[0] + dx * t1, a[1] + dz * t1];
                 for (left, right, color) in [
-                    (-4.0, -2.6, mix([0.40, 0.40, 0.24], path_color, 0.6)),
-                    (-2.6, 2.6, path_color),
-                    (2.6, 4.0, mix([0.40, 0.40, 0.24], path_color, 0.6)),
+                    (-verge, -width, mix(ground, path_color, 0.35)),
+                    (-width, width, path_color),
+                    (width, verge, mix(ground, path_color, 0.35)),
                 ] {
                     // Work in chunk-local XZ so clipping stays accurate far
                     // from the origin. A road quad may cross multiple planes.
-                    let footprint = [(start, left), (end, left), (end, right), (start, right)].map(
-                        |(p, side)| [p[0] + dz / len * side - ox, p[1] - dx / len * side - oz],
-                    );
+                    let footprint = [
+                        (start, t0, left),
+                        (end, t1, left),
+                        (end, t1, right),
+                        (start, t0, right),
+                    ]
+                    .map(|(p, t, side)| {
+                        let section = [
+                            section_a[0] + (section_b[0] - section_a[0]) * t,
+                            section_a[1] + (section_b[1] - section_a[1]) * t,
+                        ];
+                        [p[0] + section[0] * side - ox, p[1] + section[1] * side - oz]
+                    });
                     let min_x = footprint.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
                     let max_x = footprint
                         .iter()
@@ -542,15 +589,11 @@ pub fn terrain_surface_height_lod(world: &World, x: f32, z: f32, lod: u32) -> f3
 }
 
 /// Ground/deck surface used for walking. This uses the same five-meter bridge spans
-/// as the visible mesh, including bank approaches and the seven-meter deck width.
+/// as the visible mesh, including bank approaches and each road class's deck width.
 pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
-    let sample = world.sample(x, z);
     let mut height = terrain_surface_height(world, x, z);
-    if sample.road < 0.8 {
-        return height;
-    }
-    for road in world.roads_near(x, z, 6.0) {
-        for segment in road.windows(2) {
+    for road in world.road_routes_near(x, z, 6.0) {
+        for segment in road.points.windows(2) {
             let a = segment[0];
             let b = segment[1];
             let dx = b[0] - a[0];
@@ -561,7 +604,7 @@ pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
             }
             let along = ((x - a[0]) * dx + (z - a[1]) * dz) / len;
             let across = ((x - a[0]) * dz - (z - a[1]) * dx) / len;
-            if across.abs() > 3.5 || along < -0.05 || along > len + 0.05 {
+            if across.abs() > bridge_half_width(road.kind) || along < -0.05 || along > len + 0.05 {
                 continue;
             }
             let pieces = (len / 5.0).ceil() as i32;
@@ -2667,9 +2710,11 @@ fn sloped_box(
     }
 }
 fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
-    let roads = world.roads_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE);
+    let roads = world.road_routes_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE);
     for road in roads {
-        for segment in road.windows(2) {
+        let deck_width = bridge_half_width(road.kind) * 2.0;
+        let rail_offset = deck_width * 0.5 - 0.15;
+        for segment in road.points.windows(2) {
             let a = segment[0];
             let b = segment[1];
             let dx = b[0] - a[0];
@@ -2701,7 +2746,7 @@ fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
                 };
                 let y = (y0 + y1) / 2.0;
                 let wood = [0.46, 0.34, 0.21];
-                sloped_box(mesh, start, end, y0, y1, 7.0, 0.36, wood, 3.0);
+                sloped_box(mesh, start, end, y0, y1, deck_width, 0.36, wood, 3.0);
                 // Individual dark plank seams and posts make crossings recognizable on approach.
                 for j in 0..4 {
                     let f = j as f32 / 4.0;
@@ -2713,15 +2758,15 @@ fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
                             y0 + (y1 - y0) * f + 0.014,
                             z + dz / len * along,
                         ],
-                        [7.02, 0.025, 0.055],
+                        [deck_width + 0.02, 0.025, 0.055],
                         yaw,
                         [0.31, 0.25, 0.17],
                         3.0,
                     );
                 }
                 for side in [-1.0, 1.0] {
-                    let px = x + dz / len * 3.35 * side;
-                    let pz = z - dx / len * 3.35 * side;
+                    let px = x + dz / len * rail_offset * side;
+                    let pz = z - dx / len * rail_offset * side;
                     box_mesh(
                         mesh,
                         [px, y - 0.15, pz],
@@ -2742,7 +2787,10 @@ fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
                             3.0,
                         );
                     }
-                    let offset = [dz / len * 3.35 * side, -dx / len * 3.35 * side];
+                    let offset = [
+                        dz / len * rail_offset * side,
+                        -dx / len * rail_offset * side,
+                    ];
                     sloped_box(
                         mesh,
                         [start[0] + offset[0], start[1] + offset[1]],
@@ -2766,13 +2814,54 @@ mod tests {
 
     #[test]
     fn crossing_keeps_its_upstream_deck_edge_above_water() {
-        // Regression: center-only water samples submerged this edge of a
-        // seven-meter crossing, even though its center appeared to be clear.
         let world = World::new(1337);
+        // Retain the original upstream-edge water regression even when network
+        // topology no longer selects a road through this particular river.
         let (x, z) = (-7614.833, 2457.720);
         let sample = world.sample(x, z);
-        assert!(sample.road > 0.8 && sample.water_height > sample.height);
-        assert!(walk_height(&world, x, z) > sample.water_height + 1.3);
+        assert!(sample.water_height > sample.height);
+        let (a, b) = bridge_heights(&world, [x, z - 2.5], [x, z + 2.5]).unwrap();
+        assert!(a.min(b) > sample.water_height + 1.3);
+        let mut checked = 0;
+        'routes: for road in world.road_routes_near(0.0, 0.0, 12000.0) {
+            let half_width = bridge_half_width(road.kind);
+            for segment in road.points.windows(2) {
+                let dx = segment[1][0] - segment[0][0];
+                let dz = segment[1][1] - segment[0][1];
+                let length = dx.hypot(dz);
+                if length < 0.01 {
+                    continue;
+                }
+                let count = (length / 5.0).ceil() as usize;
+                for i in 0..count {
+                    let point = |t: f32| [segment[0][0] + dx * t, segment[0][1] + dz * t];
+                    let start = point(i as f32 / count as f32);
+                    let end = point((i + 1) as f32 / count as f32);
+                    let middle = point((i as f32 + 0.5) / count as f32);
+                    let sample = world.sample(middle[0], middle[1]);
+                    if sample.water_height <= sample.height {
+                        continue;
+                    }
+                    let (y0, y1) =
+                        bridge_heights(&world, start, end).expect("wet road needs a deck");
+                    for side in [-0.98, 0.0, 0.98] {
+                        let x = middle[0] + dz / length * half_width * side;
+                        let z = middle[1] - dx / length * half_width * side;
+                        let water = world.sample(x, z).water_height;
+                        assert!((y0 + y1) * 0.5 > water + 1.3, "deck edge submerged");
+                        assert!(
+                            walk_height(&world, x, z) >= (y0 + y1) * 0.5 - 0.01,
+                            "deck edge missing from walking surface"
+                        );
+                    }
+                    checked += 1;
+                    if checked >= 24 {
+                        break 'routes;
+                    }
+                }
+            }
+        }
+        assert!(checked >= 4, "fixture needs several actual wet road spans");
     }
     fn assert_mesh(mesh: &MeshData) {
         assert_eq!(mesh.indices.len() % 3, 0);
@@ -3465,8 +3554,42 @@ mod road_grounding_tests {
     fn road_ribbons_follow_sloping_terrain_at_every_lod() {
         let world = World::new(1337);
         let mut checked_triangles = 0;
-        // Mistfield and its downhill neighbor reproduce the original floating road.
-        for (cx, cz) in [(-87, -65), (-87, -64)] {
+        // Select real sloping routes rather than assuming the former grid still
+        // crosses specific chunks. Exercise all three road classes.
+        let routes = world.road_routes_near(-16546.0, -12304.0, 16000.0);
+        let mut chunks = Vec::new();
+        for kind in [RoadKind::Main, RoadKind::Lane, RoadKind::Trail] {
+            let mut chosen = None;
+            'class: for road in routes.iter().filter(|r| r.kind == kind) {
+                for pair in road.points.windows(2) {
+                    let x = (pair[0][0] + pair[1][0]) * 0.5;
+                    let z = (pair[0][1] + pair[1][1]) * 0.5;
+                    let sample = world.sample(x, z);
+                    if sample.water_height > sample.height {
+                        continue;
+                    }
+                    let cx = (x / CHUNK_SIZE).floor() as i32;
+                    let cz = (z / CHUNK_SIZE).floor() as i32;
+                    let heights = [
+                        (0.0, 0.0),
+                        (CHUNK_SIZE, 0.0),
+                        (0.0, CHUNK_SIZE),
+                        (CHUNK_SIZE, CHUNK_SIZE),
+                    ]
+                    .map(|(dx, dz)| {
+                        world.height(cx as f32 * CHUNK_SIZE + dx, cz as f32 * CHUNK_SIZE + dz)
+                    });
+                    let range = heights.into_iter().fold(f32::NEG_INFINITY, f32::max)
+                        - heights.into_iter().fold(f32::INFINITY, f32::min);
+                    if range > 10.0 {
+                        chosen = Some((cx, cz));
+                        break 'class;
+                    }
+                }
+            }
+            chunks.push(chosen.expect("each road class needs a real sloping fixture"));
+        }
+        for (cx, cz) in chunks {
             for lod in 0..=4 {
                 let divisions = (32_usize >> lod).max(2);
                 let step = CHUNK_SIZE / divisions as f32;

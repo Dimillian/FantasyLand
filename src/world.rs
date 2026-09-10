@@ -5,7 +5,7 @@
 //! this is hydrologic conditioning, not a dynamic erosion simulation.
 
 use serde::Serialize;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 pub const WORLD_SIZE: f32 = 256_000.0;
 pub const SITE_SPACING: f32 = 2_400.0;
@@ -14,6 +14,9 @@ const HALF_WORLD: f32 = WORLD_SIZE * 0.5;
 mod hydrology;
 pub use hydrology::Stats as HydrologyStats;
 const LANDMARK_SPACING: f32 = 640.0;
+#[path = "roads.rs"]
+mod roads;
+pub use roads::{Road, RoadKind, Stats as RoadStats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Biome {
@@ -57,6 +60,7 @@ pub struct Sample {
     pub height: f32,
     pub biome: Biome,
     pub road: f32,
+    pub road_kind: Option<RoadKind>,
     pub river: f32,
     pub water_height: f32,
     pub temperature: f32,
@@ -85,7 +89,7 @@ pub struct Landmark {
 pub struct World {
     pub seed: u32,
     hydrology: Rc<hydrology::Hydrology>,
-    road_cache: RefCell<HashMap<(i32, i32, bool), Rc<Vec<[f32; 2]>>>>,
+    roads: Rc<roads::Network>,
     spawn_cache: RefCell<Option<([f32; 2], f32)>>,
 }
 
@@ -93,6 +97,7 @@ pub struct World {
 struct RoadHit {
     distance: f32,
     point: [f32; 2],
+    kind: Option<RoadKind>,
 }
 
 /// Spatial hashing uses wrapping integer arithmetic, including negative cells.
@@ -158,6 +163,7 @@ fn segment_hit(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> RoadHit {
     RoadHit {
         distance: distance2(p, point).sqrt(),
         point,
+        kind: None,
     }
 }
 
@@ -186,12 +192,14 @@ fn raw_height(seed: u32, x: f32, z: f32) -> f32 {
 
 impl World {
     pub fn new(seed: u32) -> Self {
-        Self {
+        let mut world = Self {
             seed,
             hydrology: Rc::new(hydrology::Hydrology::new(seed)),
-            road_cache: RefCell::new(HashMap::new()),
+            roads: Rc::new(roads::Network::empty()),
             spawn_cache: RefCell::new(None),
-        }
+        };
+        world.roads = Rc::new(roads::Network::new(&world));
+        world
     }
 
     fn river(&self, x: f32, z: f32) -> hydrology::Hit {
@@ -219,8 +227,8 @@ impl World {
 
     fn node(&self, i: i32, j: i32) -> [f32; 2] {
         let original = [
-            i as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2401, i, j)) - 0.5) * 700.0,
-            j as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2402, i, j)) - 0.5) * 700.0,
+            i as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2401, i, j)) - 0.5) * 1600.0,
+            j as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2402, i, j)) - 0.5) * 1600.0,
         ];
         let mut p = original;
         for _ in 0..4 {
@@ -245,209 +253,47 @@ impl World {
         p
     }
 
-    fn edge_exists(&self, i: i32, j: i32, vertical: bool) -> bool {
-        // Every east-west chain is continuous. North-south links are intentionally
-        // incomplete, with a guaranteed link in each three-column block.
-        !vertical || i.rem_euclid(3) == 0 || hash(self.seed ^ 0x2501, i, j) % 3 != 0
-    }
-
-    fn road_points(&self, i: i32, j: i32, vertical: bool) -> Rc<Vec<[f32; 2]>> {
-        let key = (i, j, vertical);
-        if let Some(points) = self.road_cache.borrow().get(&key) {
-            return points.clone();
-        }
-        let a = self.node(i, j);
-        let b = self.node(i + i32::from(!vertical), j + i32::from(vertical));
-        let points = Rc::new(self.plan_road(i, j, vertical, a, b));
-        self.road_cache.borrow_mut().insert(key, points.clone());
-        points
-    }
-
-    fn plan_road(&self, i: i32, j: i32, vertical: bool, a: [f32; 2], b: [f32; 2]) -> Vec<[f32; 2]> {
-        let dx = b[0] - a[0];
-        let dz = b[1] - a[1];
-        let length = (dx * dx + dz * dz).sqrt();
-        let side = [-dz / length, dx / length];
-        let bend = (rand01(hash(
-            self.seed ^ if vertical { 0x2601 } else { 0x2602 },
-            i,
-            j,
-        )) - 0.5)
-            * 440.0;
-        let mut base = vec![a];
-        let mut previous_height = self.ground(a[0], a[1]);
-        let mut previous_offset = 0.0;
-        for n in 1..8 {
-            let t = n as f32 / 8.0;
-            let arc = 4.0 * t * (1.0 - t);
-            let p = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-            let mut chosen = p;
-            let mut best = f32::INFINITY;
-            let mut chosen_h = previous_height;
-            let mut chosen_offset = 0.0;
-            for offset in [-150.0, 0.0, 150.0] {
-                let lateral = (bend + offset) * arc;
-                let q = [p[0] + side[0] * lateral, p[1] + side[1] * lateral];
-                let h = self.ground(q[0], q[1]);
-                let grade = (h - previous_height).abs() / (length / 8.0);
-                let score = (h - previous_height).abs() * 0.75
-                    + offset.abs() * 0.12
-                    + (lateral - previous_offset).abs() * 0.20
-                    + (grade - 0.30).max(0.0).powi(2) * 1000.0;
-                if score < best {
-                    best = score;
-                    chosen = q;
-                    chosen_h = h;
-                    chosen_offset = lateral;
-                }
-            }
-            base.push(chosen);
-            previous_height = chosen_h;
-            previous_offset = chosen_offset;
-        }
-        base.push(b);
-        let mut route = vec![a];
-        for pair in base.windows(2) {
-            let crossings = self.hydrology.crossings(pair[0], pair[1]);
-            for crossing in crossings {
-                let river = crossing.hit;
-                let mut normal = [river.tangent[1], -river.tangent[0]];
-                if (pair[1][0] - pair[0][0]) * normal[0] + (pair[1][1] - pair[0][1]) * normal[1]
-                    < 0.0
-                {
-                    normal = [-normal[0], -normal[1]];
-                }
-                let span = river.width * 2.15 + 12.0;
-                let before = [
-                    river.point[0] - normal[0] * span,
-                    river.point[1] - normal[1] * span,
-                ];
-                let after = [
-                    river.point[0] + normal[0] * span,
-                    river.point[1] + normal[1] * span,
-                ];
-                let previous = *route.last().unwrap();
-                self.dry_approach(&mut route, previous, before, hash(self.seed, i, j));
-                route.push(after);
-            }
-            let previous = *route.last().unwrap();
-            if self.river(previous[0], previous[1]).distance < 180.0 {
-                self.dry_approach(
-                    &mut route,
-                    previous,
-                    pair[1],
-                    hash(self.seed ^ 0x3371, i, j),
-                );
-            } else {
-                route.push(pair[1]);
-            }
-        }
-        route.dedup_by(|a, b| distance2(*a, *b) < 0.01);
-        route
-    }
-
-    fn dry_approach(&self, out: &mut Vec<[f32; 2]>, a: [f32; 2], b: [f32; 2], seed: u32) {
-        let dx = b[0] - a[0];
-        let dz = b[1] - a[1];
-        let length = (dx * dx + dz * dz).sqrt();
-        if length < 10.0 {
-            out.push(b);
-            return;
-        }
-        let side = [-dz / length, dx / length];
-        let bend = (rand01(seed) - 0.5) * length.min(300.0) * 0.5;
-        for n in 1..=4 {
-            let t = n as f32 / 4.0;
-            let shape = (std::f32::consts::TAU * t).sin() * (std::f32::consts::PI * t).sin();
-            let mut p = [
-                lerp(a[0], b[0], t) + side[0] * bend * shape,
-                lerp(a[1], b[1], t) + side[1] * bend * shape,
-            ];
-            if n < 4 {
-                let r = self.river(p[0], p[1]);
-                if r.distance < r.width * 2.05 + 10.0 {
-                    let normal = [r.tangent[1], -r.tangent[0]];
-                    let sign = if (a[0] - r.point[0]) * normal[0] + (a[1] - r.point[1]) * normal[1]
-                        >= 0.0
-                    {
-                        1.0
-                    } else {
-                        -1.0
-                    };
-                    let d = r.width * 2.05 + 12.0;
-                    p = [
-                        r.point[0] + normal[0] * d * sign,
-                        r.point[1] + normal[1] * d * sign,
-                    ];
-                }
-            }
-            out.push(p);
-        }
-    }
-
     fn nearest_road(&self, x: f32, z: f32) -> RoadHit {
-        let ix = (x / SITE_SPACING).floor() as i32;
-        let iz = (z / SITE_SPACING).floor() as i32;
-        let p = [x, z];
-        let mut best = RoadHit {
-            distance: f32::MAX,
-            point: p,
-        };
-        // River-following approaches can leave their nominal site cell. A
-        // conservative spatial envelope keeps querying/map/meshes in agreement.
-        for i in ix - 2..=ix + 2 {
-            for j in iz - 1..=iz + 1 {
-                for vertical in [false, true] {
-                    let ax = i as f32 * SITE_SPACING;
-                    let az = j as f32 * SITE_SPACING;
-                    let (bx, bz, padx, padz) = if vertical {
-                        (ax, az + SITE_SPACING, 3_200.0, 950.0)
-                    } else {
-                        (ax + SITE_SPACING, az, 950.0, 1_050.0)
-                    };
-                    if x < ax.min(bx) - padx
-                        || x > ax.max(bx) + padx
-                        || z < az.min(bz) - padz
-                        || z > az.max(bz) + padz
-                    {
-                        continue;
-                    }
-                    if !self.edge_exists(i, j, vertical) {
-                        continue;
-                    }
-                    let points = self.road_points(i, j, vertical);
-                    for pair in points.windows(2) {
-                        if x < pair[0][0].min(pair[1][0]) - 8.0
-                            || x > pair[0][0].max(pair[1][0]) + 8.0
-                            || z < pair[0][1].min(pair[1][1]) - 8.0
-                            || z > pair[0][1].max(pair[1][1]) + 8.0
-                        {
-                            continue;
-                        }
-                        let hit = segment_hit(p, pair[0], pair[1]);
-                        if hit.distance < best.distance {
-                            best = hit;
-                        }
-                    }
-                }
-            }
-        }
-        best
+        self.roads.nearest(self, x, z)
     }
-
+    pub fn road_stats(&self) -> RoadStats {
+        self.roads.stats.clone()
+    }
+    pub fn road_routes_near(&self, cx: f32, cz: f32, radius: f32) -> Vec<Road> {
+        self.roads.near(self, cx, cz, radius)
+    }
+    pub fn road_map_routes(&self, cx: f32, cz: f32, span: f32) -> Vec<Road> {
+        self.roads.map_routes(self, cx, cz, span)
+    }
+    pub fn natural_sample(&self, x: f32, z: f32) -> Sample {
+        self.sample_impl(x, z, false)
+    }
     pub fn sample(&self, x: f32, z: f32) -> Sample {
+        self.sample_impl(x, z, true)
+    }
+    fn sample_impl(&self, x: f32, z: f32, include_roads: bool) -> Sample {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
         let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
         let river = water.nearest;
         let mut height = water.height;
-        let road_hit = self.nearest_road(x, z);
-        let road = 1.0 - smooth(3.1, 6.4, road_hit.distance);
+        let road_hit = if include_roads {
+            self.nearest_road(x, z)
+        } else {
+            RoadHit {
+                distance: f32::MAX,
+                point: [x, z],
+                kind: None,
+            }
+        };
+        let road = road_hit
+            .kind
+            .map_or(0., |kind| kind.strength(road_hit.distance));
         if road > 0.0 && water.water < height {
             height = lerp(
                 height,
                 self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
-                road * 0.92,
+                road * road_hit.kind.map_or(0., RoadKind::grading),
             );
         }
         let continental_heat = noise(self.seed ^ 0x3101, x / 47000.0, z / 47000.0);
@@ -479,6 +325,7 @@ impl World {
             height,
             biome,
             road,
+            road_kind: road_hit.kind.filter(|_| road > 0.),
             river: water.river,
             water_height: water.water,
             temperature,
@@ -490,12 +337,14 @@ impl World {
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
         let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
         let road_hit = self.nearest_road(x, z);
-        let road = 1.0 - smooth(3.1, 6.4, road_hit.distance);
+        let road = road_hit
+            .kind
+            .map_or(0., |kind| kind.strength(road_hit.distance));
         if road > 0.0 && water.water < water.height {
             lerp(
                 water.height,
                 self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
-                road * 0.92,
+                road * road_hit.kind.map_or(0., RoadKind::grading),
             )
         } else {
             water.height
@@ -523,14 +372,7 @@ impl World {
             ),
             x: p[0],
             z: p[1],
-            kind: if (i + 2 * j).rem_euclid(5) == 0 {
-                "town"
-            } else if id % 3 == 0 {
-                "hamlet"
-            } else {
-                "village"
-            }
-            .to_owned(),
+            kind: roads::site_kind(id).to_owned(),
         }
     }
 
@@ -686,7 +528,7 @@ impl World {
                     continue;
                 }
                 let bridge_len = distance2(pair[0], pair[1]).sqrt();
-                if bridge_len > 320.0 {
+                if bridge_len > 450.0 || bridge_len < water.width * 2.0 {
                     continue;
                 }
                 for approach in self.roads_near(crossing[0], crossing[1], 900.0) {
@@ -757,7 +599,9 @@ impl World {
             }
         }
         let view = best.map(|(p, yaw, _)| (p, yaw)).unwrap_or_else(|| {
-            let road = self.road_points(0, 0, false);
+            let road = roads
+                .first()
+                .expect("connected road network near world center");
             let a = road[0];
             let b = road[1];
             let p = [lerp(a[0], b[0], 0.35), lerp(a[1], b[1], 0.35)];
@@ -768,43 +612,20 @@ impl World {
     }
 
     pub fn roads_near(&self, cx: f32, cz: f32, radius: f32) -> Vec<Vec<[f32; 2]>> {
-        if !radius.is_finite() || radius < 0.0 {
-            return Vec::new();
-        }
-        let radius = radius.min(WORLD_SIZE * 1.5);
-        let min_i = (((cx - radius) / SITE_SPACING).floor() as i32 - 2).max(-54);
-        let max_i = (((cx + radius) / SITE_SPACING).ceil() as i32 + 2).min(54);
-        let min_j = (((cz - radius) / SITE_SPACING).floor() as i32 - 1).max(-54);
-        let max_j = (((cz + radius) / SITE_SPACING).ceil() as i32 + 1).min(54);
-        let mut roads = Vec::new();
-        for i in min_i..=max_i {
-            for j in min_j..=max_j {
-                for vertical in [false, true] {
-                    if !self.edge_exists(i, j, vertical) {
-                        continue;
-                    }
-                    let points = self.road_points(i, j, vertical);
-                    if points[0][0].abs() > HALF_WORLD
-                        || points[0][1].abs() > HALF_WORLD
-                        || points[points.len() - 1][0].abs() > HALF_WORLD
-                        || points[points.len() - 1][1].abs() > HALF_WORLD
-                    {
-                        continue;
-                    }
-                    if points
-                        .windows(2)
-                        .any(|p| segment_hit([cx, cz], p[0], p[1]).distance <= radius + 8.0)
-                    {
-                        roads.push(points.as_ref().clone());
-                    }
-                }
-            }
-        }
-        roads
+        self.road_routes_near(cx, cz, radius)
+            .into_iter()
+            .map(|r| r.points)
+            .collect()
     }
 
     /// Top-down RGBA map: east is right; increasing world Z is down (south).
     pub fn map_rgba(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
+        self.map_rgba_impl(cx, cz, span, res, true)
+    }
+    pub fn map_background_rgba(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
+        self.map_rgba_impl(cx, cz, span, res, false)
+    }
+    fn map_rgba_impl(&self, cx: f32, cz: f32, span: f32, res: u32, draw_roads: bool) -> Vec<u8> {
         if res == 0 || !span.is_finite() || span <= 0.0 {
             return Vec::new();
         }
@@ -822,16 +643,13 @@ impl World {
                     pixels[out..out + 4].copy_from_slice(&[20, 28, 29, 255]);
                     continue;
                 }
-                let s = self.sample(x, z);
+                let s = self.natural_sample(x, z);
                 heights[idx] = s.height;
                 let mut c = crate::ecology::ground_color(self.seed, x, z, &s);
                 // Ensure rivers remain legible when narrower than a map pixel.
                 let water = s.water_height > s.height;
                 if water {
                     c = [0.24, 0.40, 0.47];
-                }
-                if span < 20_000.0 && s.road > 0.1 && !water {
-                    c = [0.67, 0.54, 0.33];
                 }
                 let highland = smooth(420.0, 1000.0, s.height);
                 for channel in 0..3 {
@@ -853,47 +671,23 @@ impl World {
                 }
             }
         }
-        // At continental zoom only selected trunk routes are drawn, avoiding a
-        // dense lattice of minor trails obscuring climate and mountain regions.
-        let radius = span * 0.72;
-        let min_i = (((cx - radius) / SITE_SPACING).floor() as i32 - 2).max(-54);
-        let max_i = (((cx + radius) / SITE_SPACING).ceil() as i32 + 2).min(54);
-        let min_j = (((cz - radius) / SITE_SPACING).floor() as i32 - 1).max(-54);
-        let max_j = (((cz + radius) / SITE_SPACING).ceil() as i32 + 1).min(54);
-        for i in min_i..=max_i {
-            for j in min_j..=max_j {
-                for vertical in [false, true] {
-                    if !self.edge_exists(i, j, vertical) {
-                        continue;
-                    }
-                    if span > 40_000.0
-                        && if vertical {
-                            i.rem_euclid(6) != 0
-                        } else {
-                            j.rem_euclid(6) != 0
-                        }
-                    {
-                        continue;
-                    }
-                    let points = self.road_points(i, j, vertical);
-                    for pair in points.windows(2) {
-                        let a = [
-                            (pair[0][0] - cx) / mpp + res as f32 * 0.5,
-                            (pair[0][1] - cz) / mpp + res as f32 * 0.5,
-                        ];
-                        let b = [
-                            (pair[1][0] - cx) / mpp + res as f32 * 0.5,
-                            (pair[1][1] - cz) / mpp + res as f32 * 0.5,
-                        ];
-                        draw_line(
-                            &mut pixels,
-                            res,
-                            a,
-                            b,
-                            [185, 151, 95],
-                            if span > 40_000.0 { 0.35 } else { 0.73 },
-                        );
-                    }
+        if draw_roads {
+            for road in self.road_map_routes(cx, cz, span) {
+                let (color, alpha) = match road.kind {
+                    RoadKind::Main => ([185, 151, 95], 0.78),
+                    RoadKind::Lane => ([166, 145, 105], 0.65),
+                    RoadKind::Trail => ([148, 135, 101], 0.55),
+                };
+                for pair in road.points.windows(2) {
+                    let a = [
+                        (pair[0][0] - cx) / mpp + res as f32 * 0.5,
+                        (pair[0][1] - cz) / mpp + res as f32 * 0.5,
+                    ];
+                    let b = [
+                        (pair[1][0] - cx) / mpp + res as f32 * 0.5,
+                        (pair[1][1] - cz) / mpp + res as f32 * 0.5,
+                    ];
+                    draw_line(&mut pixels, res, a, b, color, alpha);
                 }
             }
         }

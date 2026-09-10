@@ -21,13 +21,15 @@ Internal resolution is separately selectable from 120p to 1080p, preserving the 
 
 The world is 256 × 256 km (65,536 km²), with signed coordinates centered on zero. Terrain streams in 192 m chunks with several levels of detail. Coarse terrain patches extend the real horizon to roughly 20 km at the default setting; distant mountains remain part of the same walkable world. The default seed is 1337.
 
-Rolling foothills, larger mountain ridges, continuous river corridors and a climate model produce grassland, temperate forest, pine forest, moor, alpine, dryland and wetland biomes. Shared road curves connect approximately 2.4 km settlement cells. Smaller points of interest occupy eligible 640 m cells with jitter, exclusions and occasional empty areas. Future settlement sites currently contain survey structures, banners and camps, not populated towns.
+Rolling foothills, larger mountain ridges, continuous river corridors and a climate model produce grassland, temperate forest, pine forest, moor, alpine, dryland and wetland biomes. Settlement sites have irregular positions around approximately 2.4 km spacing. A sparse network links major towns, branches toward selected villages, and leaves many rural sites isolated. Smaller points of interest occupy eligible 640 m cells with jitter, exclusions and occasional empty areas. Future settlement sites currently contain survey structures, banners and camps, not populated towns.
 
 Walking is 5.5 m/s; sprinting reaches 9 m/s and consumes stamina. Settlement spacing targets roughly 5–10 minutes between neighboring sites on foot, excluding stops; mountain detours can take longer. Map estimates show straight-line walking time; terrain and routes can make the actual journey longer.
 
 A shared ecological cover field creates open wildland, sparse woodland, and dense overlapping forest stands within the climate regions. Warped regional fields blend 1.1 km woodland areas, 380 m stands, and 190 m clearings. The same cover drives tree occupancy, terrain and atlas colors, grass height, ferns, and flower patches. Six procedural tree silhouettes mix with reeds, stones, stumps and fallen logs. Short wooden crossings meet river banks with ramps. Clouds, sunlight, night stars and flowing water are shader-generated, with no imported models or texture assets.
 
-Structures sample their own footprints on the rendered terrain: tents and hearths have level retaining foundations, while tower legs, signs and bridge piers extend into the ground. Vegetation anchors use the matching terrain detail level, distant trees retain trunks, and grass/reed roots stay fixed in the wind. Road surfaces are clipped to terrain triangles to follow slopes and dips without suspended strips.
+Structures sample their own footprints on the rendered terrain: tents and hearths have level retaining foundations, while tower legs, signs and bridge piers extend into the ground. Vegetation anchors use the matching terrain detail level, distant trees retain trunks, and grass/reed roots stay fixed in the wind. Road surfaces are clipped to terrain triangles to follow slopes and dips without suspended strips. Main roads have a 6.6 m traveled surface, country lanes 4.2 m, and wilderness trails 1.7 m, with softer verges and matching bridge widths. The atlas draws the same routes as thin vector strokes: solid main roads and lanes, dashed trails visible at closer zoom.
+
+Road topology uses a terrain-weighted town spanning tree with a few useful loops, selected village branches, and occasional hamlet trails. Terrain-cost routing favors gentler grades and dry ground, smooths the chosen corridors, and aligns river crossings across the channel. There are no guaranteed horizontal or vertical road chains. Detailed routes are generated on demand; the continent view uses coarse main-route summaries.
 
 Rivers come from catchments: Priority-Flood conditions a coarse elevation grid, downhill receivers route rainfall, and accumulated runoff determines channel formation and width. Tributaries share junctions with their downstream river. Smoothed channel paths carve the detailed terrain, and their directions drive the animated water. The atlas uses the same drainage network. This adapts the drainage-conditioning approach described by [Barnes, Lehman and Mulla](https://rbarnes.org/sci/2014_depressions.pdf); it is a terrain generator, not a fluid simulation.
 
@@ -50,6 +52,7 @@ cargo run --release --bin verify
 cargo run --release --bin verify output/filters 1337 filters
 cargo run --release --bin verify output/ascii-verification 1337 ascii
 cargo run --release --bin verify output/grounding 1337 grounding
+cargo run --release --bin verify output/roads 1337 roads
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```
@@ -61,11 +64,11 @@ The native verifier runs the same wgpu shaders on a real GPU, checks the rendere
 - This is an exploration prototype: no combat, quests, living NPCs, town interiors or economy yet. Health and mana are visible resources reserved for those systems; stamina is active. Bag and skills panels state which systems are still unavailable.
 - All map destinations are available for fast travel while testing.
 - Hydrology uses a 500 m drainage grid with refined channel curves and carved valleys. It does not yet simulate long-term erosion, seasonal floods, or persistent lakes.
-- Roads connect sites and follow/level local terrain; distant mountain roads can be too steep and still need pass/switchback routing.
+- Road corridors penalize steep slopes but do not guarantee a maximum grade or solve full mountain switchbacks. Some settlements intentionally have no road; fast travel and cross-country walking remain available.
 - Trunks and boulders block movement. Landmark structures are currently primarily visual, with limited structural collision.
 - Terrain and props generate incrementally on the browser's main thread. Worker scheduling and instancing are future optimizations.
 - ASCII currently converts the rasterized 3D view into character cells; it is not a separate terminal application or a text representation of world geometry.
 
 ## Code
 
-`world.rs` defines world identity, climate, terrain, routes, features and maps. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.
+`world.rs` defines world identity, climate, terrain, features and maps. `roads.rs` builds the sparse transport graph and terrain-aware routes. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.

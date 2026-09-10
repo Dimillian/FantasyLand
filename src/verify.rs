@@ -22,6 +22,7 @@ fn main() {
     let filters_only = check.as_deref() == Some("filters");
     let ascii_only = check.as_deref() == Some("ascii");
     let grounding_only = check.as_deref() == Some("grounding");
+    let roads_only = check.as_deref() == Some("roads");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -37,7 +38,7 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only && !ascii_only && !grounding_only {
+    if !filters_only && !ascii_only && !grounding_only && !roads_only {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
         save_png(&format!("{dir}/world-map.png"), 512, 512, &map);
@@ -47,6 +48,10 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if roads_only {
+        verify_roads(&world, &mut renderer, &dir);
+        return;
+    }
     if grounding_only {
         verify_grounding(&world, &mut renderer, &dir);
         return;
@@ -126,15 +131,267 @@ fn main() {
         serde_json::to_string_pretty(&metadata).unwrap(),
     )
     .unwrap();
+    fn verification_region_site(world: &World) -> fantasy_land::world::Site {
+        const OLD_MISTFIELD: [f32; 2] = [-16545.926, -12303.939];
+        const MISTFIELD_ID: u32 = 1845583983;
+        let mut sites = world.sites_near(OLD_MISTFIELD[0], OLD_MISTFIELD[1], 3000.0);
+        sites.sort_by(|a, b| {
+            let priority = |site: &fantasy_land::world::Site| {
+                let distance = (site.x - OLD_MISTFIELD[0]).hypot(site.z - OLD_MISTFIELD[1]);
+                (site.id != MISTFIELD_ID, distance)
+            };
+            let a = priority(a);
+            let b = priority(b);
+            a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1))
+        });
+        let site = sites
+            .into_iter()
+            .next()
+            .expect("no settlement in the reference region");
+        if world.seed == 1337 {
+            assert_eq!(
+                site.id, MISTFIELD_ID,
+                "Mistfield ID must resolve after site relocation"
+            );
+        }
+        site
+    }
+
+    struct RoadCapture {
+        label: &'static str,
+        route_id: u64,
+        point: [f32; 2],
+        target: [f32; 2],
+        half_width: f32,
+        shoulder_width: f32,
+        query_radius: f32,
+    }
+    fn road_point_ahead(points: &[[f32; 2]], segment: usize, t: f32, distance: f32) -> [f32; 2] {
+        let mut point = [
+            points[segment][0] + (points[segment + 1][0] - points[segment][0]) * t,
+            points[segment][1] + (points[segment + 1][1] - points[segment][1]) * t,
+        ];
+        let mut remaining = distance;
+        for &next in &points[segment + 1..] {
+            let length = (next[0] - point[0]).hypot(next[1] - point[1]);
+            if length >= remaining && length > 0.001 {
+                return [
+                    point[0] + (next[0] - point[0]) * remaining / length,
+                    point[1] + (next[1] - point[1]) * remaining / length,
+                ];
+            }
+            remaining -= length;
+            point = next;
+        }
+        point
+    }
+    fn select_road_capture(
+        world: &World,
+        routes: &[fantasy_land::world::Road],
+        reference: [f32; 2],
+        kind: fantasy_land::world::RoadKind,
+        label: &'static str,
+        radius: f32,
+    ) -> Option<RoadCapture> {
+        let mut candidates = Vec::new();
+        for (route_index, route) in routes
+            .iter()
+            .enumerate()
+            .filter(|(_, route)| route.kind == kind)
+        {
+            for (segment, edge) in route.points.windows(2).enumerate() {
+                let dx = edge[1][0] - edge[0][0];
+                let dz = edge[1][1] - edge[0][1];
+                let squared = dx * dx + dz * dz;
+                if squared < 16.0 {
+                    continue;
+                }
+                let t = (((reference[0] - edge[0][0]) * dx + (reference[1] - edge[0][1]) * dz)
+                    / squared)
+                    .clamp(0.15, 0.85);
+                let point = [edge[0][0] + dx * t, edge[0][1] + dz * t];
+                let distance = (point[0] - reference[0]).hypot(point[1] - reference[1]);
+                candidates.push((distance, route_index, segment, t, point));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Terrain queries are bounded even when an outer query returns long
+        // polylines. Reject junctions whose visible surface belongs to a wider class.
+        for (_, index, segment, t, point) in candidates.into_iter().take(128) {
+            let sample = world.sample(point[0], point[1]);
+            if sample.road_kind != Some(kind) || sample.water_height > sample.height - 0.05 {
+                continue;
+            }
+            if geometry::blocks_player(world, point[0], point[1]) {
+                continue;
+            }
+            if world
+                .sites_near(point[0], point[1], 45.0)
+                .iter()
+                .any(|site| (site.x - point[0]).hypot(site.z - point[1]) < 40.0)
+            {
+                continue;
+            }
+            if world
+                .landmarks_near(point[0], point[1], 20.0)
+                .iter()
+                .any(|site| (site.x - point[0]).hypot(site.z - point[1]) < 15.0)
+            {
+                continue;
+            }
+            let route = &routes[index];
+            let target = road_point_ahead(&route.points, segment, t, 45.0);
+            if (target[0] - point[0]).hypot(target[1] - point[1]) < 12.0 {
+                continue;
+            }
+            return Some(RoadCapture {
+                label,
+                route_id: route.id,
+                point,
+                target,
+                half_width: kind.half_width(),
+                shoulder_width: kind.shoulder_width(),
+                query_radius: radius,
+            });
+        }
+        None
+    }
+    fn verify_roads(world: &World, renderer: &mut Renderer, dir: &str) {
+        use fantasy_land::world::RoadKind;
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 720;
+        let site = verification_region_site(world);
+        let reference = [site.x, site.z];
+        let mut maps = Vec::new();
+        for (label, span) in [("mistfield-region", 6000.0), ("broader-region", 24000.0)] {
+            let start = Instant::now();
+            let pixels = world.map_rgba(reference[0], reference[1], span, 512);
+            assert_road_map(&pixels, 512, label);
+            let file = format!("{dir}/roads-{label}.png");
+            save_png(&file, 512, 512, &pixels);
+            maps.push(serde_json::json!({"name":label,"file":file,"center":reference,"spanMeters":span,"pixels":512}));
+            println!("Road map {label}: {:?} -> {file}", start.elapsed());
+        }
+        let classes = [
+            (RoadKind::Main, "main"),
+            (RoadKind::Lane, "lane"),
+            (RoadKind::Trail, "trail"),
+        ];
+        let mut captures: [Option<RoadCapture>; 3] = [None, None, None];
+        for radius in [4000.0, 9000.0, 18000.0] {
+            let routes = world.road_routes_near(reference[0], reference[1], radius);
+            for (index, &(kind, label)) in classes.iter().enumerate() {
+                if captures[index].is_none() {
+                    let near = captures[0].as_ref().map_or(reference, |view| view.point);
+                    captures[index] =
+                        select_road_capture(world, &routes, near, kind, label, radius);
+                }
+            }
+            if captures.iter().all(Option::is_some) {
+                break;
+            }
+        }
+        renderer.set_quality(1);
+        renderer.resize(WIDTH, HEIGHT);
+        renderer.set_render_resolution(1);
+        renderer.set_filter(0, 1.0);
+        let mut views = Vec::new();
+        let mut warmups = 0;
+        for (index, capture) in captures.into_iter().enumerate() {
+            let capture = capture.unwrap_or_else(|| {
+                panic!(
+                    "no dry {} route view within 18 km of {:?}",
+                    classes[index].1, reference
+                )
+            });
+            let eye = glam::Vec3::new(
+                capture.point[0],
+                geometry::walk_height(world, capture.point[0], capture.point[1]) + 1.72,
+                capture.point[1],
+            );
+            let target = glam::Vec3::new(
+                capture.target[0],
+                geometry::walk_height(world, capture.target[0], capture.target[1]) + 0.7,
+                capture.target[1],
+            );
+            let delta = target - eye;
+            let yaw = delta.x.atan2(-delta.z);
+            let pitch = (delta.y.atan2(delta.x.hypot(delta.z)) - 0.035).clamp(-0.35, 0.15);
+            let start = Instant::now();
+            // Reuse the existing renderer and overlapping streamed chunks. Views
+            // within one chunk incur one warmup; more distant classes stream once
+            // per view, without the unrelated spawn/map verification captures.
+            renderer.update_chunks(world, eye, index == 0);
+            if index == 0 || renderer.pending_count() > 0 {
+                warmups += 1;
+                while renderer.pending_count() > 0 {
+                    renderer.update_chunks(world, eye, false);
+                }
+            }
+            renderer
+                .render(eye, yaw, pitch, 11.0)
+                .expect("render actual road class");
+            let pixels = renderer.capture_rgba().expect("capture actual road class");
+            assert_image(&pixels, WIDTH, HEIGHT, capture.label);
+            let file = format!("{dir}/road-{}.png", capture.label);
+            save_png(&file, WIDTH, HEIGHT, &pixels);
+            let local = world.map_rgba(capture.point[0], capture.point[1], 1000.0, 256);
+            assert_road_map(&local, 256, capture.label);
+            let map_file = format!("{dir}/road-{}-local-map.png", capture.label);
+            save_png(&map_file, 256, 256, &local);
+            views.push(serde_json::json!({
+                "class":capture.label,"routeId":capture.route_id,"file":file,"localMap":map_file,
+                "eye":eye.to_array(),"target":target.to_array(),"yaw":yaw,"pitch":pitch,"hour":11.0,
+                "widthMeters":capture.half_width*2.0,"shoulderWidthMeters":capture.shoulder_width,
+                "selectionRadiusMeters":capture.query_radius,"verifiedDryClassAtCamera":true,
+                "chunkCount":renderer.chunk_count(),"triangleCount":renderer.triangle_count(),
+            }));
+            println!(
+                "Road {}: route {}, camera {:?}, warm/render {:?} -> {file}",
+                capture.label,
+                capture.route_id,
+                capture.point,
+                start.elapsed()
+            );
+        }
+        fs::write(
+            format!("{dir}/roads-verification.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "seed":world.seed,"roadNetwork":world.road_stats(),"referenceSite":site.name,"referenceSiteId":site.id,
+                "referencePosition":reference,"maps":maps,"views":views,"warmups":warmups,
+                "captureDimensions":[WIDTH,HEIGHT],"sceneResolution":"native","filter":"clean",
+                "appearanceNote":"Maps are actual world.map_rgba output. Each native capture stands on a dry route of its stated class. Inspect route hierarchy, bends, shoulders and off-road gaps visually; these image checks do not assert road-network quality."
+            })).unwrap(),
+        ).unwrap();
+        println!(
+            "Road verification passed: actual regional maps and all three native road classes"
+        );
+    }
+    fn assert_road_map(pixels: &[u8], resolution: u32, label: &str) {
+        assert_eq!(
+            pixels.len(),
+            resolution as usize * resolution as usize * 4,
+            "{label}: wrong map dimensions"
+        );
+        assert!(
+            pixels.chunks_exact(4).all(|p| p[3] == 255),
+            "{label}: map is not opaque"
+        );
+        let colors: std::collections::HashSet<_> =
+            pixels.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect();
+        assert!(colors.len() > 16, "{label}: map is empty or near-solid");
+    }
+
     fn verify_grounding(world: &World, renderer: &mut Renderer, dir: &str) {
         const WIDTH: u32 = 1280;
         const HEIGHT: u32 = 720;
-        // Seed1337 regression: Mistfield is173m from the procedural spawn. Its
-        // offset tent used to reuse the tower height, floating up to5.165m.
-        let site = [-16545.926, -12303.939];
-        let tent = [-16555.926, -12295.939];
+        // Resolve the stable site ID: road revisions may move its coordinates.
+        // The compound layout retains its independently grounded tent offset.
+        let reference = verification_region_site(world);
+        let site = [reference.x, reference.z];
+        let tent = [site[0] - 10.0, site[1] + 8.0];
         let ground_eye = |x, z| glam::Vec3::new(x, geometry::walk_height(world, x, z) + 1.72, z);
-        let primary = ground_eye(-16570.0, -12278.0);
+        let primary = ground_eye(site[0] - 24.0, site[1] + 26.0);
         let tent_target = glam::Vec3::new(
             tent[0],
             geometry::walk_height(world, tent[0], tent[1]) + 1.0,
@@ -149,8 +406,8 @@ fn main() {
         renderer.resize(WIDTH, HEIGHT);
         renderer.set_render_resolution(1);
         renderer.set_filter(0, 1.0);
-        // Teleport before streaming. All views remain in this same192m chunk,
-        // so warm the world once and reuse identical terrain/props thereafter.
+        // All viewpoints fit the warmed finest-terrain ring, even if the moved
+        // site straddles a chunk edge. Reuse the same meshes for every view.
         let start = Instant::now();
         renderer.update_chunks(world, primary, true);
         while renderer.pending_count() > 0 {
@@ -166,13 +423,13 @@ fn main() {
             ("mistfield-repro", primary, tent_target, Some(0.665_f32)),
             (
                 "mistfield-downslope",
-                ground_eye(-16571.0, -12274.0),
+                ground_eye(site[0] - 25.0, site[1] + 30.0),
                 tent_target,
                 None,
             ),
             (
                 "mistfield-side",
-                ground_eye(-16530.0, -12280.0),
+                ground_eye(site[0] + 16.0, site[1] + 24.0),
                 tent_target,
                 None,
             ),
@@ -183,18 +440,11 @@ fn main() {
                 None,
             ),
         ];
-        let chunk = |p: glam::Vec3| {
-            [
-                (p.x / geometry::CHUNK_SIZE).floor() as i32,
-                (p.z / geometry::CHUNK_SIZE).floor() as i32,
-            ]
-        };
         let mut views = Vec::new();
         for (name, eye, target, fixed_yaw) in scenes {
-            assert_eq!(
-                chunk(eye),
-                chunk(primary),
-                "grounding view left its warmed chunk"
+            assert!(
+                (eye.x - primary.x).abs() < 96.0 && (eye.z - primary.z).abs() < 96.0,
+                "grounding view left the warmed finest-terrain neighborhood"
             );
             let direction = target - eye;
             let yaw = fixed_yaw.unwrap_or_else(|| direction.x.atan2(-direction.z));
@@ -215,7 +465,7 @@ fn main() {
         fs::write(
             format!("{dir}/grounding-verification.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "seed":world.seed,"regressionSeed":1337,"site":"Mistfield",
+                "seed":world.seed,"regressionSeed":1337,"site":reference.name,"siteId":reference.id,
                 "sitePosition":site,"tentPosition":tent,"views":views,
                 "captureDimensions":[WIDTH,HEIGHT],"sceneResolution":"native",
                 "filter":"clean","warmupCount":1,
@@ -223,7 +473,10 @@ fn main() {
                 "appearanceNote":"Inspect tent hems, campfire stones, bench feet, tower foundations, signpost and banner bases. Opaque/nonempty GPU checks do not prove ground contact; geometry tests validate support vertices and LOD equality."
             })).unwrap(),
         ).unwrap();
-        println!("Grounding capture passed:4 Mistfield views, native1280x720,11:00, one warmup");
+        println!(
+            "Grounding capture passed: 4 {} views, native 1280x720, 11:00, one warmup",
+            reference.name
+        );
     }
 
     fn verify_filters(

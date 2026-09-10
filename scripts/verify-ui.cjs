@@ -143,6 +143,39 @@ async function verifyAsciiResolutionSettings() {
   console.log('PASS: ASCII full-mode preference; size/palette API calls; disabled ASCII strength; resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
 }
 
+function verifyAtlasRoutes() {
+  const strokes = [];
+  let path = [], dash = [7, 3], savedStyle;
+  const pen = {
+    lineWidth:9, strokeStyle:'original', lineCap:'butt', lineJoin:'miter',
+    save(){savedStyle={width:this.lineWidth,color:this.strokeStyle,cap:this.lineCap,join:this.lineJoin,dash:[...dash]};},
+    restore(){this.lineWidth=savedStyle.width;this.strokeStyle=savedStyle.color;this.lineCap=savedStyle.cap;this.lineJoin=savedStyle.join;dash=savedStyle.dash;},
+    setLineDash(value){dash=Array.from(value);},beginPath(){path=[];},
+    moveTo(x,y){path.push(['move',x,y]);},lineTo(x,y){path.push(['line',x,y]);},
+    stroke(){strokes.push({width:this.lineWidth,color:this.strokeStyle,dash:[...dash],path:[...path]});}
+  };
+  context.routePen=pen;
+  run('map.x=0;map.z=0;map.span=6000;');
+  const routes={roads:[[[100,100],[200,200],[300,300]]],routes:[{id:1,kind:'main',points:[[0,0],[500,400]]},{id:2,kind:'lane',points:[[30,40],[200,150]]},{id:3,kind:'trail',points:[[20,80],[160,220]]}]};
+  context.routeFeatures=routes;
+  run('drawMapRoutes(routePen,routeFeatures,map.span)');
+  assert.deepEqual(strokes.map(stroke=>stroke.width),[.7,1,1.5]);
+  assert.deepEqual(strokes.map(stroke=>stroke.dash),[[2,4],[],[]]);
+  assert.equal(new Set(strokes.map(stroke=>stroke.color)).size,3);
+  assert.equal(strokes[2].path.length,2,'New routes must replace duplicate legacy roads.');
+  assert.deepEqual(strokes[2].path[0],['move',400,250],'Route coordinates must use the same atlas projection as features.');
+  assert.equal(pen.lineWidth,9);assert.equal(pen.strokeStyle,'original');assert.deepEqual(dash,[7,3],'Trail dashes must not leak into other atlas layers.');
+  strokes.length=0;run('map.span=40000;drawMapRoutes(routePen,routeFeatures,map.span)');
+  assert.equal(strokes.length,2,'Trails are hidden beyond the close survey.');
+  assert.ok(strokes.every(stroke=>stroke.dash.length===0));
+  assert.ok(strokes[1].width<=1.5 && strokes[1].width>=.9,'Regional roads stay thin in screen pixels.');
+  strokes.length=0;context.routeFeatures={routes:[],roads:routes.roads};run('drawMapRoutes(routePen,routeFeatures,6000)');
+  assert.equal(strokes.length,0,'An empty route list is authoritative.');
+  strokes.length=0;context.routeFeatures={roads:routes.roads};run('drawMapRoutes(routePen,routeFeatures,6000)');
+  assert.equal(strokes.length,1);assert.equal(strokes[0].width,1.5);assert.deepEqual(strokes[0].dash,[]);assert.equal(strokes[0].path.length,3);
+  console.log('PASS: atlas route precedence; three thin road classes; trail dash/zoom visibility; world-coordinate projection; legacy fallback; drawing state isolation.');
+}
+
 async function main(){
   assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),undefined); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
@@ -169,6 +202,7 @@ async function main(){
   const before=run('JSON.stringify(screenToWorld(140,180))');run('zoomMap(.7,140,180)');const after=run('JSON.stringify(screenToWorld(140,180))');assert.deepEqual(JSON.parse(before),JSON.parse(after));
   key('KeyI');assert.equal(run('modal'),'bag');key('KeyC');assert.equal(run('modal'),'character');assert.equal(ids['character-stamina'].textContent,'75 / 100');key('KeyK');assert.equal(run('modal'),'skills');key('Escape');assert.equal(run('modal'),null);
   assert.equal(key('Space').prevented,true);assert.equal(run('jumpQueued'),true);
+  verifyAtlasRoutes();
   await verifyFilterSettings();
   await verifyAsciiResolutionSettings();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');

@@ -134,3 +134,9 @@ body.mouse-focused #world { cursor: none; }
 #render-resolution, #ascii-palette { width: 140px; flex-shrink: 0; }
 #render-dimensions { display: inline-block; margin-top: 4px; color: #c4cbb0; font-variant-numeric: tabular-nums; }
 .ascii-options { display: block; }
+
+/* Route hierarchy mirrors the atlas strokes without introducing heavy symbols. */
+.map-legend i.route-key { width: 19px; height: 0; background: none; border-top: 1px solid; }
+.map-legend i.route-main { border-top-width: 1.5px; border-color: #c5a36eaa; }
+.map-legend i.route-lane { border-color: #b5a27b85; }
+.map-legend i.route-trail { border-top-style: dashed; border-color: #a8ad8770; }

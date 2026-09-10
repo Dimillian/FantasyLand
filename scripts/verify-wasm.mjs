@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import init, { inspect_world, inspect_map } from '../dist/pkg/fantasy_land.js';
+import init, { inspect_world, inspect_map, inspect_routes } from '../dist/pkg/fantasy_land.js';
 await init({ module_or_path: await fs.readFile(new URL('../dist/pkg/fantasy_land_bg.wasm', import.meta.url)) });
 const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
@@ -22,3 +22,14 @@ for (const span of [6000, 256000, 512000]) {
   console.log(`${span / 1000} km map from compiled WASM: ${(performance.now() - start).toFixed(1)} ms`);
 }
 console.log('WASM checks passed: deterministic drainage, seed changes, ecology, dry road spawn, atlas scales.');
+
+const routes = inspect_routes(1337, -16546, -12304, 16000);
+assert.ok(Array.isArray(routes) && routes.length > 0, 'classified atlas routes serialize into JS');
+for (const route of routes) {
+  assert.ok(Number.isSafeInteger(route.id), 'route IDs remain safe JS numbers');
+  assert.ok(['main', 'lane', 'trail'].includes(route.kind));
+  assert.ok(route.points.length >= 2 && route.points.every(p => p.length === 2 && p.every(Number.isFinite)));
+}
+const regional = inspect_routes(1337, -16546, -12304, 60000);
+assert.ok(regional.length > 0 && regional.every(r => r.kind === 'main'), 'regional atlas shows only main roads');
+console.log('WASM road checks passed: classified route serialization, finite geometry, zoom hierarchy.');

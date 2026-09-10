@@ -21,6 +21,7 @@ export const game_teleport: (a: number, b: number, c: number) => void;
 export const game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
 export const game_world_size: (a: number) => number;
 export const inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const inspect_routes: (a: number, b: number, c: number, d: number) => any;
 export const inspect_world: (a: number, b: number, c: number) => any;
 export const wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
 export const wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];

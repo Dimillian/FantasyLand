@@ -117,7 +117,8 @@ impl Player {
         self.stamina =
             (self.stamina + if sprinting { -11.0 * dt } else { 14.0 * dt }).clamp(0.0, 100.0);
         let sample = world.sample(self.position.x, self.position.z);
-        let swimming = sample.water_height > sample.height + 1.1 && sample.road < 0.4;
+        let swimming = sample.water_height
+            > geometry::walk_height(world, self.position.x, self.position.z) + 1.1;
         let pace = if swimming {
             2.5
         } else if sprinting {
@@ -186,8 +187,9 @@ mod tests {
     #[test]
     fn movement_jump_and_recovery() {
         let world = World::new(1337);
-        let s = world.spawn();
+        let (s, yaw) = world.spawn_view();
         let mut p = Player::new(&world, s[0], s[1]);
+        p.yaw = yaw;
         let initial = p.position;
         for _ in 0..120 {
             p.update(&world, 1.0 / 60.0, 1.0, 0.0, false, false);

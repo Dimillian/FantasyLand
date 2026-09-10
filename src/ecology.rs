@@ -123,6 +123,7 @@ mod tests {
             height: 120.0,
             biome: Biome::Forest,
             road: 0.0,
+            road_kind: None,
             river: 0.0,
             water_height: -10000.0,
             temperature: 0.55,

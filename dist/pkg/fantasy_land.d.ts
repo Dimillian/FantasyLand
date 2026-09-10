@@ -27,6 +27,8 @@ export class Game {
 
 export function inspect_map(seed: number, cx: number, cz: number, span: number, res: number): Uint8Array;
 
+export function inspect_routes(seed: number, cx: number, cz: number, span: number): any;
+
 export function inspect_world(seed: number, x: number, z: number): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -53,6 +55,7 @@ export interface InitOutput {
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly game_world_size: (a: number) => number;
     readonly inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly inspect_routes: (a: number, b: number, c: number, d: number) => any;
     readonly inspect_world: (a: number, b: number, c: number) => any;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];

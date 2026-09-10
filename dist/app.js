@@ -38,7 +38,7 @@ let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 256000;
 const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.atlas.span) ? saved.atlas : null;
-const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [] }, visibleFeatures: [], dragging: null, dirty: true };
+const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [], routes: null }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
 const mapContext = mapCanvas.getContext('2d');
 document.body.classList.add('intro-open');
@@ -264,6 +264,7 @@ function scheduleMapData(delay = 100) {
         sites: (features.sites || []).map((f) => normalizeFeature(f, 'settlement')),
         landmarks: (features.landmarks || []).map((f) => normalizeFeature(f, 'landmark')),
         roads: features.roads || [],
+        routes: Array.isArray(features.routes) ? features.routes : null,
       };
       map.dirty = true;
     } catch (error) {
@@ -272,6 +273,43 @@ function scheduleMapData(delay = 100) {
     }
     $('map-updating').classList.add('hidden');
   }, delay);
+}
+
+// All widths are CSS pixels: zoom changes geography, not road thickness.
+// An explicitly empty routes array is authoritative; only older engines fall
+// back to roads, whose unclassified lines are treated as main roads.
+function drawMapRoutes(ctx, features, span) {
+  const routes = Array.isArray(features.routes)
+    ? features.routes
+    : (features.roads || []).map((road) => ({ kind: 'main', points: road.points || road }));
+  const scale = clamp(15000 / Math.max(span, 1), .65, 1);
+  const styles = [
+    { kind: 'trail', color: '#a8ad8770', width: .7, dash: [2, 4] },
+    { kind: 'lane', color: '#b5a27b85', width: Math.max(.8, scale), dash: [] },
+    { kind: 'main', color: '#c5a36eaa', width: 1.5 * scale, dash: [] },
+  ];
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const style of styles) {
+    if (style.kind === 'trail' && span > 18000) continue;
+    ctx.strokeStyle = style.color;
+    ctx.lineWidth = style.width;
+    ctx.setLineDash(style.dash);
+    ctx.beginPath();
+    let hasSegments = false;
+    for (const route of routes) {
+      if (route.kind !== style.kind || !Array.isArray(route.points) || route.points.length < 2) continue;
+      route.points.forEach((point, i) => {
+        const position = worldToScreen(point.x ?? point[0], point.z ?? point[1]);
+        if (i === 0) ctx.moveTo(position.x, position.y);
+        else ctx.lineTo(position.x, position.y);
+      });
+      hasSegments = true;
+    }
+    if (hasSegments) ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawMap(now) {
@@ -299,17 +337,7 @@ function drawMap(now) {
   for (let x = Math.ceil(left.x / gridStep) * gridStep; x < right.x; x += gridStep) { const p = worldToScreen(x, 0); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, h); }
   for (let z = Math.ceil(left.z / gridStep) * gridStep; z < right.z; z += gridStep) { const p = worldToScreen(0, z); ctx.moveTo(0, p.y); ctx.lineTo(w, p.y); }
   ctx.stroke();
-  ctx.strokeStyle = '#d9c99177'; ctx.lineWidth = map.span < 15000 ? 1.8 : .8;
-  ctx.beginPath();
-  for (const road of map.features.roads) {
-    const points = road.points || road;
-    if (!Array.isArray(points)) continue;
-    points.forEach((point, i) => {
-      const p = worldToScreen(point.x ?? point[0], point.z ?? point[1]);
-      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
-    });
-  }
-  ctx.stroke();
+  drawMapRoutes(ctx, map.features, map.span);
   const half = worldSize / 2;
   const worldCorner = worldToScreen(-half, -half);
   ctx.strokeStyle = '#e7deaa55'; ctx.lineWidth = 1; ctx.strokeRect(worldCorner.x, worldCorner.y, worldSize * ppm, worldSize * ppm);

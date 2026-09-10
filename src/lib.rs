@@ -127,11 +127,13 @@ impl Game {
             .map(|s| s.name)
             .or_else(|| nearest.map(|s| s.name))
             .unwrap_or_else(|| {
-                if sample.road > 0.2 {
-                    "The King's Road".into()
-                } else {
-                    "The Wilds".into()
+                match sample.road_kind.filter(|_| sample.road > 0.2) {
+                    Some(world::RoadKind::Main) => "The King's Road",
+                    Some(world::RoadKind::Lane) => "Country Lane",
+                    Some(world::RoadKind::Trail) => "Wilderness Trail",
+                    None => "The Wilds",
                 }
+                .into()
             });
         serde_wasm_bindgen::to_value(&GameState {
             x: p.position.x,
@@ -172,7 +174,7 @@ impl Game {
         .unwrap_or(JsValue::NULL)
     }
     pub fn map_data(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
-        self.world.map_rgba(
+        self.world.map_background_rgba(
             cx,
             cz,
             span.clamp(128.0, world::WORLD_SIZE * 4.0),
@@ -185,6 +187,7 @@ impl Game {
             sites: Vec<world::Site>,
             landmarks: Vec<world::Landmark>,
             roads: Vec<Vec<[f32; 2]>>,
+            routes: Vec<world::Road>,
         }
         // Showing all regional sites at continent scale adds noise and expensive geometry.
         let radius = span * 0.72;
@@ -198,15 +201,13 @@ impl Game {
         } else {
             Vec::new()
         };
-        let roads = if span < 22000.0 {
-            self.world.roads_near(cx, cz, radius)
-        } else {
-            Vec::new()
-        };
+        let routes = self.world.road_map_routes(cx, cz, span);
+        let roads = routes.iter().map(|route| route.points.clone()).collect();
         serde_wasm_bindgen::to_value(&Features {
             sites,
             landmarks,
             roads,
+            routes,
         })
         .unwrap_or(JsValue::NULL)
     }
@@ -284,4 +285,11 @@ pub fn inspect_map(seed: u32, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> 
         span.clamp(128., world::WORLD_SIZE * 4.),
         res.clamp(32, 512),
     )
+}
+
+#[wasm_bindgen]
+pub fn inspect_routes(seed: u32, cx: f32, cz: f32, span: f32) -> JsValue {
+    let routes =
+        World::new(seed).road_map_routes(cx, cz, span.clamp(128.0, world::WORLD_SIZE * 4.0));
+    serde_wasm_bindgen::to_value(&routes).unwrap_or(JsValue::NULL)
 }
