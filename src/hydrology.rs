@@ -1,18 +1,18 @@
 //! Terrain-derived drainage. Priority-Flood finds spill routes; D8 receivers
 //! accumulate runoff. River profiles breach depressions and stay below terrain.
 //! See Barnes, Lehman & Mulla (2014), doi:10.1016/j.cageo.2013.04.024.
-use super::{distance2, hash, lerp, noise, rand01, raw_height, smooth, WORLD_SIZE};
+use super::{distance2, hash, lerp, noise, rand01, raw_height, smooth, SEA_LEVEL, WORLD_SIZE};
 use serde::Serialize;
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashSet},
 };
 
-pub const GRID: usize = 513;
+pub const GRID: usize = 769;
 pub const CELL: f32 = WORLD_SIZE / (GRID - 1) as f32;
 const HALF: f32 = WORLD_SIZE * 0.5;
 const BUCKET: f32 = 1000.0;
-const BUCKETS: usize = 257;
+const BUCKETS: usize = (WORLD_SIZE / BUCKET) as usize + 1;
 const CHANNEL_THRESHOLD: f32 = 24.0;
 const NONE: u32 = u32::MAX;
 const EPS: f32 = 0.003;
@@ -68,6 +68,11 @@ pub struct Stats {
     pub grid_resolution: usize,
     pub grid_spacing_m: f32,
     pub drainage_cells: usize,
+    pub land_cells: usize,
+    pub ocean_cells: usize,
+    pub coastal_outlets: usize,
+    pub retained_bytes: usize,
+    pub estimated_peak_generation_bytes: usize,
     pub river_segments: usize,
     pub headwaters: usize,
     pub confluences: usize,
@@ -84,6 +89,10 @@ pub struct Hydrology {
     buckets: Vec<Vec<u32>>,
     pub stats: Stats,
     // Audit data is dropped after generation in browser/native builds.
+    #[cfg(test)]
+    pub ocean: Vec<bool>,
+    #[cfg(test)]
+    pub mouths: Vec<[f32; 2]>,
     #[cfg(test)]
     pub conditioned: Vec<f32>,
     #[cfg(test)]
@@ -184,26 +193,60 @@ fn bucket(v: f32) -> usize {
     (((v + HALF) / BUCKET).floor() as i32).clamp(0, BUCKETS as i32 - 1) as usize
 }
 
+// Return the last land-side point before the first sea crossing of a refined
+// reach. Interior probes also catch narrow coastal inlets between land endpoints.
+fn coast_intersection(
+    a: [f32; 2],
+    b: [f32; 2],
+    height_at: &impl Fn(f32, f32) -> f32,
+) -> Option<[f32; 2]> {
+    let mut previous = a;
+    for n in 1..=8 {
+        let t = n as f32 / 8.0;
+        let point = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+        if height_at(point[0], point[1]) <= SEA_LEVEL {
+            let mut land = previous;
+            let mut sea = point;
+            for _ in 0..16 {
+                let middle = [(land[0] + sea[0]) * 0.5, (land[1] + sea[1]) * 0.5];
+                if height_at(middle[0], middle[1]) > SEA_LEVEL {
+                    land = middle;
+                } else {
+                    sea = middle;
+                }
+            }
+            return Some(land);
+        }
+        previous = point;
+    }
+    None
+}
+
 impl Hydrology {
     pub fn new(seed: u32) -> Self {
+        Self::from_height(seed, |x, z| raw_height(seed, x, z))
+    }
+    fn from_height(seed: u32, height_at: impl Fn(f32, f32) -> f32) -> Self {
         let size = GRID * GRID;
         let raw: Vec<f32> = (0..size)
             .map(|i| {
                 let p = node_position(i);
-                raw_height(seed, p[0], p[1])
+                height_at(p[0], p[1])
             })
             .collect();
-        let mut conditioned = raw.clone();
+        let ocean: Vec<bool> = raw.iter().map(|&h| h <= SEA_LEVEL).collect();
+        let land_cells = ocean.iter().filter(|&&sea| !sea).count();
+        let mut conditioned: Vec<f32> = raw.iter().map(|&h| h.max(SEA_LEVEL)).collect();
         let mut parent = vec![NONE; size];
         let mut visited = vec![false; size];
         let mut queue = BinaryHeap::new();
         for i in 0..size {
             let x = i % GRID;
             let z = i / GRID;
-            if x == 0 || z == 0 || x == GRID - 1 || z == GRID - 1 {
+            if ocean[i] || x == 0 || z == 0 || x == GRID - 1 || z == GRID - 1 {
                 visited[i] = true;
                 queue.push(FloodNode {
-                    height: raw[i],
+                    height: conditioned[i],
                     index: i as u32,
                 });
             }
@@ -260,11 +303,14 @@ impl Hydrology {
         }
         let mut accumulation: Vec<f32> = (0..size)
             .map(|i| {
+                if ocean[i] {
+                    return 0.0;
+                }
                 let p = node_position(i);
                 0.42 + noise(seed ^ 0x3102, p[0] / 29000.0, p[1] / 29000.0) * 1.28
             })
             .collect();
-        let mut catchment_cells = vec![1u32; size];
+        let mut catchment_cells: Vec<u32> = ocean.iter().map(|&sea| u32::from(!sea)).collect();
         for &id in order.iter().rev() {
             let i = id as usize;
             if receiver[i] != NONE {
@@ -286,9 +332,11 @@ impl Hydrology {
             }
             ids
         };
+        // Sea cells receive inland runoff, but never generate rain or channels.
         let active: Vec<bool> = accumulation
             .iter()
-            .map(|&a| a >= CHANNEL_THRESHOLD)
+            .enumerate()
+            .map(|(i, &a)| !ocean[i] && a >= CHANNEL_THRESHOLD)
             .collect();
         let mut upstream = vec![NONE; size];
         let mut incoming = vec![0u8; size];
@@ -313,13 +361,20 @@ impl Hydrology {
             let x = i % GRID;
             let z = i / GRID;
             if x > 0 && z > 0 && x + 1 < GRID && z + 1 < GRID {
-                positions[i][0] += (rand01(hash(seed ^ 0x6a31, x as i32, z as i32)) - 0.5) * 72.0;
-                positions[i][1] += (rand01(hash(seed ^ 0x6a32, x as i32, z as i32)) - 0.5) * 72.0;
+                let candidate = [
+                    positions[i][0]
+                        + (rand01(hash(seed ^ 0x6a31, x as i32, z as i32)) - 0.5) * 72.0,
+                    positions[i][1]
+                        + (rand01(hash(seed ^ 0x6a32, x as i32, z as i32)) - 0.5) * 72.0,
+                ];
+                if height_at(candidate[0], candidate[1]) > SEA_LEVEL {
+                    positions[i] = candidate;
+                }
             }
         }
         let mut tangents = vec![[0.0, 1.0]; size];
         for i in 0..size {
-            if !active[i] {
+            if !active[i] && incoming[i] == 0 {
                 continue;
             }
             let previous = if upstream[i] != NONE {
@@ -336,7 +391,7 @@ impl Hydrology {
         }
         let mut water_level: Vec<f32> = positions
             .iter()
-            .map(|p| raw_height(seed, p[0], p[1]) - 1.5)
+            .map(|p| (height_at(p[0], p[1]) - 1.5).max(SEA_LEVEL))
             .collect();
         // Burn the lowest upstream basin level through its spill route. Unlike
         // rendering the flood-filled DEM directly, this never makes aqueducts.
@@ -347,7 +402,7 @@ impl Hydrology {
                 continue;
             }
             let d = target as usize;
-            let mut lowest = water_level[i] - EPS;
+            let mut lowest = (water_level[i] - EPS).max(SEA_LEVEL);
             if active[i] {
                 for n in 0..=SUBDIV {
                     let t = n as f32 / SUBDIV as f32;
@@ -370,13 +425,16 @@ impl Hydrology {
                     let bank = lerp(width(accumulation[i]), width(accumulation[d]), t) * 2.1 + 8.0;
                     for side in [-1.0, 0.0, 1.0] {
                         let q = [p[0] + dir[1] * bank * side, p[1] - dir[0] * bank * side];
-                        lowest = lowest.min(raw_height(seed, q[0], q[1]) - 1.5);
+                        lowest = lowest.min((height_at(q[0], q[1]) - 1.5).max(SEA_LEVEL));
                     }
                 }
             }
-            water_level[d] = water_level[d].min(lowest - EPS);
+            water_level[d] = water_level[d].min((lowest - EPS).max(SEA_LEVEL));
         }
         let mut segments = Vec::new();
+        let mut coastal_outlets = 0usize;
+        #[cfg(test)]
+        let mut mouths = Vec::new();
         let mut maximum_incision = 0.0f32;
         let mut sum_incision = 0.0;
         for i in 0..size {
@@ -389,24 +447,29 @@ impl Hydrology {
             let mut last_width = width(accumulation[i]);
             for n in 1..=SUBDIV {
                 let t = n as f32 / SUBDIV as f32;
-                let p = if n == SUBDIV {
+                let candidate = if n == SUBDIV {
                     positions[d]
                 } else {
                     bezier(positions[i], positions[d], tangents[i], tangents[d], t)
                 };
+                // A D8 edge may enter a bay before its receiver cell. Stop at
+                // the first actual shoreline, rather than drawing seabed rivers.
+                let shore = coast_intersection(last, candidate, &height_at);
+                let p = shore.unwrap_or(candidate);
+                let mouth = shore.is_some();
                 let dir = normalize([p[0] - last[0], p[1] - last[1]]);
                 let bank = lerp(width(accumulation[i]), width(accumulation[d]), t) * 2.1 + 8.0;
-                let mut clearance = raw_height(seed, p[0], p[1]) - 1.5;
+                let mut clearance = (height_at(p[0], p[1]) - 1.5).max(SEA_LEVEL);
                 for side in [-1.0, 1.0] {
                     clearance = clearance.min(
-                        raw_height(
-                            seed,
-                            p[0] + dir[1] * bank * side,
-                            p[1] - dir[0] * bank * side,
-                        ) - 1.5,
+                        height_at(p[0] + dir[1] * bank * side, p[1] - dir[0] * bank * side)
+                            .max(SEA_LEVEL + 1.5)
+                            - 1.5,
                     );
                 }
-                let level = if n == SUBDIV {
+                let level = if mouth {
+                    SEA_LEVEL
+                } else if n == SUBDIV {
                     water_level[d]
                 } else {
                     lerp(water_level[i], water_level[d], t)
@@ -417,19 +480,27 @@ impl Hydrology {
                 let w = width(lerp(accumulation[i], accumulation[d], t));
                 let middle = [(last[0] + p[0]) * 0.5, (last[1] + p[1]) * 0.5];
                 let incision =
-                    (raw_height(seed, middle[0], middle[1]) - (last_level + level) * 0.5).max(0.0);
+                    (height_at(middle[0], middle[1]) - (last_level + level) * 0.5).max(0.0);
                 maximum_incision = maximum_incision.max(incision);
                 sum_incision += incision;
-                segments.push(Segment {
-                    a: last,
-                    b: p,
-                    level_a: last_level,
-                    level_b: level,
-                    width_a: last_width,
-                    width_b: w,
-                    flow: accumulation[i],
-                    influence: (340.0 + incision * 1.5 + w * 2.0).min(2200.0),
-                });
+                if distance2(last, p) > 0.001 {
+                    segments.push(Segment {
+                        a: last,
+                        b: p,
+                        level_a: last_level,
+                        level_b: level,
+                        width_a: last_width,
+                        width_b: w,
+                        flow: accumulation[i],
+                        influence: (340.0 + incision * 1.5 + w * 2.0).min(2200.0),
+                    });
+                }
+                if mouth {
+                    coastal_outlets += 1;
+                    #[cfg(test)]
+                    mouths.push(p);
+                    break;
+                }
                 last = p;
                 last_level = level;
                 last_width = w;
@@ -446,15 +517,30 @@ impl Hydrology {
                 }
             }
         }
+        let retained_bytes = segments.capacity() * std::mem::size_of::<Segment>()
+            + buckets.capacity() * std::mem::size_of::<Vec<u32>>()
+            + buckets
+                .iter()
+                .map(|b| b.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>();
+        // Approximate simultaneously live generation vectors, excluding allocator
+        // overhead and test-only diagnostic copies. The heap peak is bounded by
+        // one FloodNode per cell, including the initially queued ocean outlets.
+        let estimated_peak_generation_bytes = retained_bytes + size * (4 * 11 + 8 * 3 + 3);
         let stats = Stats {
             grid_resolution: GRID,
             grid_spacing_m: CELL,
             drainage_cells: size,
+            land_cells,
+            ocean_cells: size - land_cells,
+            coastal_outlets,
+            retained_bytes,
+            estimated_peak_generation_bytes,
             river_segments: segments.len(),
             headwaters: (0..size).filter(|&i| active[i] && incoming[i] == 0).count(),
             confluences: incoming.iter().filter(|&&n| n > 1).count(),
             outlets: (0..size)
-                .filter(|&i| active[i] && receiver[i] == NONE)
+                .filter(|&i| receiver[i] == NONE && (active[i] || incoming[i] > 0))
                 .count(),
             max_catchment_km2: catchment_cells.iter().copied().max().unwrap_or(0) as f32
                 * CELL
@@ -468,6 +554,10 @@ impl Hydrology {
             segments,
             buckets,
             stats,
+            #[cfg(test)]
+            ocean,
+            #[cfg(test)]
+            mouths,
             #[cfg(test)]
             conditioned,
             #[cfg(test)]
@@ -499,6 +589,11 @@ impl Hydrology {
             river: 0.0,
             nearest: Hit::none(),
         };
+        // Ocean bathymetry and its constant sea surface belong to World;
+        // inland drainage must not carve a network into the ocean floor.
+        if raw <= SEA_LEVEL {
+            return result;
+        }
         let mut total = 0.0;
         let mut terrain_sum = 0.0;
         let mut level_sum = 0.0;
@@ -585,5 +680,186 @@ impl Hydrology {
         });
         found.dedup_by(|a, b| distance2(a.hit.point, b.hit.point) < 35.0 * 35.0);
         found
+    }
+}
+
+#[cfg(test)]
+mod coastal_tests {
+    use super::*;
+    fn archipelago_height(x: f32, z: f32) -> f32 {
+        let main = (1.0 - (x + 20000.0).hypot(z) / 75000.0) * 900.0;
+        let island = (1.0 - (x - 105000.0).hypot(z + 45000.0) / 12000.0) * 400.0;
+        let outer_island = (1.0 - (x - 160000.0).hypot(z - 62000.0) / 9000.0) * 300.0;
+        main.max(island).max(outer_island).max(-180.0)
+    }
+    #[test]
+    fn coastal_receivers_conserve_land_rainfall_and_stop_at_sea() {
+        let start = std::time::Instant::now();
+        let h = Hydrology::from_height(1337, archipelago_height);
+        let mut rank = vec![0usize; GRID * GRID];
+        for (index, &id) in h.order.iter().enumerate() {
+            rank[id as usize] = index;
+        }
+        let mut expected_rain = 0.0f64;
+        let mut outlet_rain = 0.0f64;
+        for i in 0..GRID * GRID {
+            if h.ocean[i] {
+                assert_eq!(h.receiver[i], NONE, "ocean acquired a drainage receiver");
+                assert_eq!(h.conditioned[i], SEA_LEVEL);
+                assert_eq!(h.water_level[i], SEA_LEVEL);
+            } else {
+                let p = node_position(i);
+                expected_rain +=
+                    (0.42 + noise(1337 ^ 0x3102, p[0] / 29000.0, p[1] / 29000.0) * 1.28) as f64;
+                assert_ne!(
+                    h.receiver[i], NONE,
+                    "interior island drainage failed to reach a coast"
+                );
+                assert!(
+                    h.ocean[h.basin[i] as usize],
+                    "island catchment does not terminate in ocean"
+                );
+            }
+            if h.receiver[i] == NONE {
+                outlet_rain += h.accumulation[i] as f64;
+            } else {
+                let next = h.receiver[i] as usize;
+                assert!(rank[next] < rank[i]);
+                assert!(h.conditioned[next] <= h.conditioned[i]);
+                assert!(h.water_level[next] <= h.water_level[i]);
+            }
+        }
+        assert!((outlet_rain - expected_rain).abs() < expected_rain * 0.00001);
+        assert!(h.stats.ocean_cells > h.stats.land_cells);
+        assert!(h.stats.coastal_outlets > 20);
+        println!(
+            "archipelago generation {:?}; {:?}",
+            start.elapsed(),
+            h.stats
+        );
+    }
+    #[test]
+    fn coastal_segments_end_at_shore_without_burning_ocean_trenches() {
+        let h = Hydrology::from_height(1337, archipelago_height);
+        assert!(!h.mouths.is_empty());
+        for &p in &h.mouths {
+            assert!(
+                archipelago_height(p[0], p[1]).abs() < 0.03,
+                "mouth missed coast {p:?}"
+            );
+        }
+        let mut outer_island_segments = 0;
+        let mut terminal_segments = 0;
+        for s in &h.segments {
+            assert!(s.level_a >= SEA_LEVEL && s.level_b >= SEA_LEVEL);
+            assert!(s.level_b <= s.level_a + 0.0001);
+            if s.level_b == SEA_LEVEL && archipelago_height(s.b[0], s.b[1]).abs() < 0.03 {
+                terminal_segments += 1;
+            }
+            for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let p = [lerp(s.a[0], s.b[0], t), lerp(s.a[1], s.b[1], t)];
+                let raw = archipelago_height(p[0], p[1]);
+                assert!(
+                    raw >= SEA_LEVEL - 0.03,
+                    "channel continued offshore {p:?}, raw {raw}"
+                );
+                let sample = h.terrain(p[0], p[1], raw);
+                assert!(
+                    sample.height >= SEA_LEVEL - 9.002,
+                    "sea floor propagated a deep incision"
+                );
+            }
+            if s.a[0] > 145000.0 {
+                let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
+                let hit = h.nearest(p[0], p[1]);
+                assert!(hit.distance < 0.02, "spatial index lost outer island river");
+                outer_island_segments += 1;
+            }
+        }
+        assert!(terminal_segments >= h.mouths.len());
+        assert!(outer_island_segments > 10);
+        for x in [-180000.0, -96000.0, 60000.0, 185000.0] {
+            let raw = archipelago_height(x, 0.0);
+            assert!(raw < SEA_LEVEL);
+            let sample = h.terrain(x, 0.0, raw);
+            assert_eq!(sample.height, raw, "ocean bathymetry was modified");
+            assert_eq!(sample.water, NO_WATER, "ocean sea surface belongs to World");
+            assert_eq!(sample.river, 0.0);
+        }
+        assert_eq!(GRID, 769);
+        assert!((CELL - 500.0).abs() < 0.001);
+        assert_eq!(BUCKETS, 385);
+        println!(
+            "{} coast mouths, {} outer-island channel segments; no offshore channel geometry",
+            h.mouths.len(),
+            outer_island_segments
+        );
+    }
+    #[test]
+    fn coastal_all_ocean_has_no_rainfall_or_rivers() {
+        let h = Hydrology::from_height(42, |_, _| -100.0);
+        assert!(h.segments.is_empty());
+        assert_eq!(h.stats.land_cells, 0);
+        assert_eq!(h.stats.coastal_outlets, 0);
+        assert!(h.accumulation.iter().all(|&a| a == 0.0));
+        assert!(h.receiver.iter().all(|&r| r == NONE));
+    }
+    #[test]
+    fn coastal_actual_world_profiles_mouths_and_memory_are_bounded() {
+        for seed in [1337, 42] {
+            let start = std::time::Instant::now();
+            let h = Hydrology::new(seed);
+            let elapsed = start.elapsed();
+            let mut max_mouth_level = 0.0f32;
+            let mut max_coast_bed = 0.0f32;
+            let mut offshore = 0;
+            assert!(h.stats.land_cells > 10000 && h.stats.ocean_cells > 10000);
+            assert!(h.stats.coastal_outlets > 20);
+            assert!(h.stats.retained_bytes < 90 * 1024 * 1024);
+            assert!(h.stats.estimated_peak_generation_bytes < 140 * 1024 * 1024);
+            for (i, s) in h.segments.iter().enumerate() {
+                assert!(s.level_a >= SEA_LEVEL && s.level_b >= SEA_LEVEL);
+                assert!(s.level_b <= s.level_a + 0.0001);
+                if i % 7 == 0 {
+                    for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                        let p = [lerp(s.a[0], s.b[0], t), lerp(s.a[1], s.b[1], t)];
+                        let raw = raw_height(seed, p[0], p[1]);
+                        assert!(
+                            raw >= SEA_LEVEL - 0.03,
+                            "real-world river segment enters ocean at {p:?}, raw {raw}"
+                        );
+                        let hit = h.terrain(p[0], p[1], raw);
+                        if raw < 35.0 {
+                            assert!(hit.height >= SEA_LEVEL - 9.002);
+                            max_coast_bed = max_coast_bed.max(SEA_LEVEL - hit.height);
+                        }
+                    }
+                }
+            }
+            for p in &h.mouths {
+                let raw = raw_height(seed, p[0], p[1]);
+                assert!(
+                    raw.abs() < 0.05,
+                    "real-world mouth missed coast: {p:?}, raw {raw}"
+                );
+                let sample = h.terrain(p[0], p[1], raw);
+                if sample.water > NO_WATER + 1.0 {
+                    max_mouth_level = max_mouth_level.max(sample.water - SEA_LEVEL);
+                }
+            }
+            for index in (0..GRID * GRID).step_by(97) {
+                let p = node_position(index);
+                let raw = raw_height(seed, p[0], p[1]);
+                if raw <= SEA_LEVEL {
+                    let sample = h.terrain(p[0], p[1], raw);
+                    assert_eq!(sample.height, raw);
+                    assert_eq!(sample.water, NO_WATER);
+                    assert_eq!(sample.river, 0.0);
+                    offshore += 1;
+                }
+            }
+            assert!(offshore > 500);
+            println!("seed{seed} actual coastal hydrology {elapsed:?}, max queried mouth level{max_mouth_level:.4}, max coast bed depth{max_coast_bed:.3}; {:?}", h.stats);
+        }
     }
 }

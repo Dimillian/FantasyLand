@@ -242,7 +242,9 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
         let z = triangle.iter().map(|v| v.position[2]).sum::<f32>() / 3.0;
         let flow = world.water_flow(x, z);
         for v in triangle {
-            v.color = [flow[0], flow[1], 0.0];
+            // Blue stores ocean depth (+1); zero retains the river material.
+            v.color[0] = flow[0];
+            v.color[1] = flow[1];
         }
     }
     mesh
@@ -260,25 +262,39 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
         let (a, da) = points[i];
         let (b, db) = points[(i + 1) % 3];
         if da >= 0.0 {
-            polygon.push(a);
+            polygon.push((a, da));
         }
         if (da >= 0.0) != (db >= 0.0) {
             let t = da / (da - db);
-            polygon.push([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                a[2] + (b[2] - a[2]) * t,
-            ]);
+            polygon.push((
+                [
+                    a[0] + (b[0] - a[0]) * t,
+                    a[1] + (b[1] - a[1]) * t,
+                    a[2] + (b[2] - a[2]) * t,
+                ],
+                0.0,
+            ));
         }
     }
     for i in 1..polygon.len().saturating_sub(1) {
-        mesh.triangle(
-            polygon[0],
-            polygon[i],
-            polygon[i + 1],
-            [0.25, 0.39, 0.46],
-            4.0,
-        );
+        let start = mesh.vertices.len() as u32;
+        for (position, depth) in [polygon[0], polygon[i], polygon[i + 1]] {
+            mesh.vertices.push(Vertex {
+                position,
+                normal: [0.0, 1.0, 0.0],
+                color: [
+                    0.0,
+                    0.0,
+                    if position[1] <= crate::world::SEA_LEVEL + 0.01 {
+                        depth.max(0.0) + 1.0
+                    } else {
+                        0.0
+                    },
+                ],
+                material: 4.0,
+            });
+        }
+        mesh.indices.extend([start, start + 1, start + 2]);
     }
 }
 
@@ -663,13 +679,19 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     let z = gz as f32 * PROP_GRID + 2.0 + random(seed, 2) * (PROP_GRID - 4.0);
     let pick = random(seed, 3);
     let sample = world.sample(x, z);
-    if sample.road > 0.07 || sample.water_height > sample.height + 0.8 {
+    if sample.ocean || sample.road > 0.07 || sample.water_height > sample.height + 0.8 {
         return None;
     }
     let density = ecology::tree_density(world.seed, x, z, &sample);
     let species = random(seed, 6);
     let detail = random(seed, 8);
-    let kind = if sample.river > 0.28 || sample.water_height > sample.height - 0.8 {
+    let kind = if sample.shore != crate::world::ShoreKind::None {
+        if pick < 0.035 {
+            PropKind::Boulder
+        } else {
+            return None;
+        }
+    } else if sample.river > 0.28 || sample.water_height > sample.height - 0.8 {
         if pick < 0.64 {
             PropKind::Reed
         } else if pick < 0.77 {
@@ -2813,15 +2835,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sea_surface_clips_to_sloping_ground_and_interpolates_surf_depth() {
+        let terrain = [
+            GroundVertex {
+                position: [0., -4., 0.],
+                water: 0.,
+                color: [0.; 3],
+            },
+            GroundVertex {
+                position: [0., 4., 8.],
+                water: -10000.,
+                color: [0.; 3],
+            },
+            GroundVertex {
+                position: [8., -4., 0.],
+                water: 0.,
+                color: [0.; 3],
+            },
+        ];
+        let mut mesh = MeshData::default();
+        water_triangle(&mut mesh, terrain, 0.);
+        assert_mesh(&mesh);
+        assert_eq!(mesh.vertices.len(), 6);
+        for v in &mesh.vertices {
+            assert_eq!(v.position[1], 0.0);
+            assert!(
+                v.position[2] <= 4.013,
+                "sea extends beyond the visible slope"
+            );
+            assert!(v.color[2] >= 1.0, "ocean depth flag missing");
+        }
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|v| (v.color[2] - 1.0).abs() < 0.001),
+            "surf must reach the clipped shore"
+        );
+        assert!(
+            mesh.vertices.iter().any(|v| v.color[2] > 5.0),
+            "offshore depth was lost"
+        );
+        let dry = terrain.map(|mut v| {
+            v.position[1] += 10.;
+            v
+        });
+        let mut dry_mesh = MeshData::default();
+        water_triangle(&mut dry_mesh, dry, 0.);
+        assert!(
+            dry_mesh.vertices.is_empty(),
+            "dry coastal triangles must not carry an ocean plane"
+        );
+    }
+
+    #[test]
     fn crossing_keeps_its_upstream_deck_edge_above_water() {
         let world = World::new(1337);
-        // Retain the original upstream-edge water regression even when network
-        // topology no longer selects a road through this particular river.
-        let (x, z) = (-7614.833, 2457.720);
-        let sample = world.sample(x, z);
-        assert!(sample.water_height > sample.height);
-        let (a, b) = bridge_heights(&world, [x, z - 2.5], [x, z + 2.5]).unwrap();
-        assert!(a.min(b) > sample.water_height + 1.3);
+        // Resolve real crossings from the current drainage network: adding sea
+        // outlets moves the old fixed river coordinate onto dry land. Every
+        // selected span still checks the upstream side and both walking edges.
         let mut checked = 0;
         'routes: for road in world.road_routes_near(0.0, 0.0, 12000.0) {
             let half_width = bridge_half_width(road.kind);

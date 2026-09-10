@@ -36,7 +36,7 @@ let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
-let worldSize = 256000;
+let worldSize = 384000;
 const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.atlas.span) ? saved.atlas : null;
 const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [], routes: null }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
@@ -321,7 +321,7 @@ function drawMap(now) {
   const dpr = mapCanvas.width / w;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#283629'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#173b55'; ctx.fillRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = false;
   if (map.image && map.imageBounds) {
     const b = map.imageBounds;
@@ -338,9 +338,6 @@ function drawMap(now) {
   for (let z = Math.ceil(left.z / gridStep) * gridStep; z < right.z; z += gridStep) { const p = worldToScreen(0, z); ctx.moveTo(0, p.y); ctx.lineTo(w, p.y); }
   ctx.stroke();
   drawMapRoutes(ctx, map.features, map.span);
-  const half = worldSize / 2;
-  const worldCorner = worldToScreen(-half, -half);
-  ctx.strokeStyle = '#e7deaa55'; ctx.lineWidth = 1; ctx.strokeRect(worldCorner.x, worldCorner.y, worldSize * ppm, worldSize * ppm);
   const visible = [];
   const occupied = [];
   const features = [...map.features.sites.map((f) => ({ ...f, isSite: true })), ...map.features.landmarks];

@@ -1,12 +1,14 @@
 //! A sparse settlement graph with a connected town backbone and optional rural
 //! branches. Geometry is routed lazily; natural geography never depends on roads.
 use super::{
-    distance2, hash, lerp, rand01, segment_hit, smooth, RoadHit, World, HALF_WORLD, WORLD_SIZE,
+    distance2, hash, lerp, rand01, segment_hit, smooth, RoadHit, World, HALF_WORLD, SITE_SPACING,
+    WORLD_SIZE,
 };
 use serde::Serialize;
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    cmp::Reverse,
+    collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 
@@ -81,6 +83,8 @@ pub struct Stats {
 #[derive(Clone, Debug)]
 struct Node {
     id: u32,
+    key: u32,
+    landmass: u32,
     p: [f32; 2],
     height: f32,
     cell: [i32; 2],
@@ -94,9 +98,13 @@ struct Edge {
     id: u64,
     join: Option<(usize, f32)>,
     ends: [[f32; 2]; 2],
+    corridor: Vec<[f32; 2]>,
 }
 const GRAPH_CELL: f32 = 2048.;
-const GRAPH_N: usize = 126;
+const GRAPH_N: usize = (WORLD_SIZE / GRAPH_CELL) as usize + 2;
+const SITE_EXTENT: i32 = (HALF_WORLD / SITE_SPACING) as i32 + 2;
+const SITE_AXIS: u32 = (SITE_EXTENT * 2 + 1) as u32;
+const ROAD_COAST_CLEARANCE: f32 = 16.;
 const QUERY_CELL: f32 = 128.;
 // Includes the route corridor, shifted crossing approaches and a branch's
 // possible join displacement on a curved parent road.
@@ -140,9 +148,10 @@ fn normalize(p: [f32; 2]) -> [f32; 2] {
 }
 fn edge_id(a: u32, b: u32, kind: RoadKind) -> u64 {
     let (a, b) = if a < b { (a, b) } else { (b, a) };
-    // Node indices are below 16384. Packed indices are collision-free and
-    // remain exact JavaScript numbers; legacy Site.id hashes can collide.
-    ((a as u64) << 16) | ((b as u64) << 2) | kind as u64
+    // Cell-derived keys remain stable when coastal sites are excluded. The
+    // 24-bit lower key field accommodates the larger world without overlap;
+    // this world's IDs still fit exactly in JavaScript's 53 integer bits.
+    ((a as u64) << 26) | ((b as u64) << 2) | kind as u64
 }
 fn route_seed(a: u32, b: u32, kind: RoadKind) -> u32 {
     let (a, b) = if a < b { (a, b) } else { (b, a) };
@@ -201,16 +210,30 @@ impl Network {
     pub fn new(world: &World) -> Self {
         let mut result = Self::empty();
         let mut cells = HashMap::new();
-        for i in -54..=54 {
-            for j in -54..=54 {
+        for i in -SITE_EXTENT..=SITE_EXTENT {
+            for j in -SITE_EXTENT..=SITE_EXTENT {
                 let p = world.node(i, j);
                 if p[0].abs() > HALF_WORLD || p[1].abs() > HALF_WORLD {
+                    continue;
+                }
+                let coast = world.coast_info(p[0], p[1]);
+                let Some(landmass) = coast.landmass_id else {
+                    continue;
+                };
+                // Buildings and their approach roads need a dry, stable margin.
+                let river = world.river(p[0], p[1]);
+                if coast.distance < 100.
+                    || world.ground(p[0], p[1]) < 3.
+                    || river.distance < river.width * 2. + 35.
+                {
                     continue;
                 }
                 let id = hash(world.seed ^ 0x4101, i, j);
                 cells.insert((i, j), result.nodes.len());
                 result.nodes.push(Node {
                     id,
+                    key: (i + SITE_EXTENT) as u32 * SITE_AXIS + (j + SITE_EXTENT) as u32,
+                    landmass,
                     p,
                     height: world.ground(p[0], p[1]),
                     cell: [i, j],
@@ -230,7 +253,7 @@ impl Network {
             for i in c[0] - radius..=c[0] + radius {
                 for j in c[1] - radius..=c[1] + radius {
                     if let Some(&n) = cells.get(&(i, j)) {
-                        if n != center {
+                        if n != center && nodes[n].landmass == nodes[center].landmass {
                             out.push(n);
                         }
                     }
@@ -267,6 +290,12 @@ impl Network {
                         lerp(nodes[a].p[1], nodes[b].p[1], t),
                     ];
                     let h = world.ground(p[0], p[1]);
+                    let coast = world.coast_info(p[0], p[1]);
+                    wet += if coast.landmass_id != Some(nodes[a].landmass) {
+                        distance * 0.35
+                    } else {
+                        (300. - coast.distance).max(0.)
+                    };
                     rise += (h - previous).abs();
                     previous = h;
                     let r = world.river(p[0], p[1]);
@@ -288,51 +317,78 @@ impl Network {
         let mut chosen = BTreeSet::new();
         let mut edges = Vec::new();
         for &(_, a, b) in &candidates {
-            if union.join(a, b) {
+            if union.root(a) != union.root(b) {
+                let Some(corridor) =
+                    land_corridor(world, nodes[a].p, nodes[b].p, nodes[a].landmass)
+                else {
+                    continue;
+                };
+                union.join(a, b);
                 chosen.insert((a, b));
                 edges.push(Edge {
                     a,
                     b,
                     kind: RoadKind::Main,
-                    id: edge_id(a as u32, b as u32, RoadKind::Main),
+                    id: edge_id(nodes[a].key, nodes[b].key, RoadKind::Main),
                     join: None,
                     ends: [nodes[a].p, nodes[b].p],
+                    corridor,
                 });
             }
         }
-        // The local nearest-neighbor graph is normally connected. This bounded
-        // fallback joins any rare boundary component without axial chains.
-        while let Some(&a) = towns
-            .iter()
-            .find(|&&a| union.root(a) != union.root(towns[0]))
-        {
-            let root = union.root(a);
-            let mut best = (f32::INFINITY, 0, 0);
-            for &b in &towns {
-                if union.root(b) != root {
-                    continue;
-                }
-                for &c in &towns {
-                    if union.root(c) == root {
+        // Repair only nearby components on the SAME landmass. A mainland and
+        // an island can never acquire a fallback bridge. A genuinely unroutable
+        // component remains independent instead of adding an ocean chord.
+        let mut failed_repairs = BTreeSet::new();
+        for _ in 0..towns.len().min(64) {
+            let mut repairs = Vec::new();
+            for &a in &towns {
+                for b in nearby(a, 14) {
+                    if b <= a
+                        || nodes[b].kind != 0
+                        || union.root(a) == union.root(b)
+                        || failed_repairs.contains(&(a, b))
+                    {
                         continue;
                     }
-                    let d = distance2(nodes[b].p, nodes[c].p);
-                    if d < best.0 {
-                        best = (d, b, c);
+                    let distance = distance2(nodes[a].p, nodes[b].p);
+                    if distance <= 32000. * 32000. {
+                        repairs.push((distance, a, b));
                     }
                 }
             }
-            let (_, a, b) = best;
-            union.join(a, b);
-            chosen.insert((a.min(b), a.max(b)));
-            edges.push(Edge {
-                a,
-                b,
-                kind: RoadKind::Main,
-                id: edge_id(a as u32, b as u32, RoadKind::Main),
-                join: None,
-                ends: [nodes[a].p, nodes[b].p],
+            repairs.sort_by(|a, b| {
+                a.0.total_cmp(&b.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.cmp(&b.2))
             });
+            let mut changed = false;
+            for (_, a, b) in repairs.into_iter().take(96) {
+                if union.root(a) == union.root(b) {
+                    continue;
+                }
+                let Some(corridor) =
+                    land_corridor(world, nodes[a].p, nodes[b].p, nodes[a].landmass)
+                else {
+                    failed_repairs.insert((a, b));
+                    continue;
+                };
+                union.join(a, b);
+                chosen.insert((a, b));
+                changed = true;
+                edges.push(Edge {
+                    a,
+                    b,
+                    kind: RoadKind::Main,
+                    id: edge_id(nodes[a].key, nodes[b].key, RoadKind::Main),
+                    join: None,
+                    ends: [nodes[a].p, nodes[b].p],
+                    corridor,
+                });
+            }
+            if !changed {
+                break;
+            }
         }
         let tree_edges = edges.len();
         let mut adjacency = vec![Vec::new(); nodes.len()];
@@ -373,19 +429,25 @@ impl Network {
             if detour / direct < 1.85 {
                 continue;
             }
+            let Some(corridor) = land_corridor(world, nodes[a].p, nodes[b].p, nodes[a].landmass)
+            else {
+                continue;
+            };
             edges.push(Edge {
                 a,
                 b,
                 kind: RoadKind::Main,
-                id: edge_id(a as u32, b as u32, RoadKind::Main),
+                id: edge_id(nodes[a].key, nodes[b].key, RoadKind::Main),
                 join: None,
                 ends: [nodes[a].p, nodes[b].p],
+                corridor,
             });
         }
         let main_count = edges.len();
         let mut connected = vec![false; nodes.len()];
-        for &n in &towns {
-            connected[n] = true;
+        for edge in &edges {
+            connected[edge.a] = true;
+            connected[edge.b] = true;
         }
         let mut villages: Vec<_> = nodes
             .iter()
@@ -400,27 +462,42 @@ impl Network {
                     .total_cmp(&distance2(nodes[a].p, nodes[c].p))
                     .then_with(|| b.cmp(&c))
             });
-            let Some(&b) = near.first() else { continue };
+            let Some((b, mut corridor)) = near.iter().take(6).find_map(|&b| {
+                land_corridor(world, nodes[a].p, nodes[b].p, nodes[a].landmass)
+                    .map(|path| (b, path))
+            }) else {
+                continue;
+            };
             let mut endpoint = nodes[b].p;
             let mut parent = None;
             let mut best = distance2(nodes[a].p, endpoint).sqrt();
             // A lane may terminate at a genuine T-junction on a main road,
             // rather than sending every village to a town-center star.
             for (index, e) in edges[..main_count].iter().enumerate() {
-                if nodes[a].p[0] < e.ends[0][0].min(e.ends[1][0]) - best
-                    || nodes[a].p[0] > e.ends[0][0].max(e.ends[1][0]) + best
-                    || nodes[a].p[1] < e.ends[0][1].min(e.ends[1][1]) - best
-                    || nodes[a].p[1] > e.ends[0][1].max(e.ends[1][1]) + best
-                {
+                if nodes[e.a].landmass != nodes[a].landmass {
                     continue;
                 }
-                let hit = segment_hit(nodes[a].p, e.ends[0], e.ends[1]);
-                let t = (distance2(e.ends[0], hit.point) / distance2(e.ends[0], e.ends[1]).max(1.))
-                    .sqrt();
-                if hit.distance < best * 0.80 && (0.12..0.88).contains(&t) {
-                    best = hit.distance;
-                    endpoint = hit.point;
-                    parent = Some((index, t));
+                let total: f32 = e
+                    .corridor
+                    .windows(2)
+                    .map(|p| distance2(p[0], p[1]).sqrt())
+                    .sum();
+                let mut covered = 0.;
+                for pair in e.corridor.windows(2) {
+                    let hit = segment_hit(nodes[a].p, pair[0], pair[1]);
+                    let length = distance2(pair[0], pair[1]).sqrt();
+                    let t = (covered + distance2(pair[0], hit.point).sqrt()) / total.max(1.);
+                    covered += length;
+                    if hit.distance < best * 0.80 && (0.12..0.88).contains(&t) {
+                        if let Some(path) =
+                            land_corridor(world, nodes[a].p, hit.point, nodes[a].landmass)
+                        {
+                            best = hit.distance;
+                            endpoint = hit.point;
+                            parent = Some((index, t));
+                            corridor = path;
+                        }
+                    }
                 }
             }
             if best > 10500. {
@@ -431,9 +508,10 @@ impl Network {
                 a,
                 b,
                 kind: RoadKind::Lane,
-                id: edge_id(a as u32, b as u32, RoadKind::Lane),
+                id: edge_id(nodes[a].key, nodes[b].key, RoadKind::Lane),
                 join: parent,
                 ends: [nodes[a].p, endpoint],
+                corridor,
             });
         }
         for a in 0..nodes.len() {
@@ -449,18 +527,24 @@ impl Network {
                     .total_cmp(&distance2(nodes[a].p, nodes[c].p))
                     .then_with(|| b.cmp(&c))
             });
-            let Some(&b) = near.first() else { continue };
-            if distance2(nodes[a].p, nodes[b].p) > 5200. * 5200. {
+            let Some((b, corridor)) = near.iter().take(4).find_map(|&b| {
+                if distance2(nodes[a].p, nodes[b].p) > 5200. * 5200. {
+                    return None;
+                }
+                land_corridor(world, nodes[a].p, nodes[b].p, nodes[a].landmass)
+                    .map(|path| (b, path))
+            }) else {
                 continue;
-            }
+            };
             connected[a] = true;
             edges.push(Edge {
                 a,
                 b,
                 kind: RoadKind::Trail,
-                id: edge_id(a as u32, b as u32, RoadKind::Trail),
+                id: edge_id(nodes[a].key, nodes[b].key, RoadKind::Trail),
                 join: None,
                 ends: [nodes[a].p, nodes[b].p],
+                corridor,
             });
         }
         result.stats = Stats {
@@ -473,16 +557,41 @@ impl Network {
             backbone_loops: main_count - tree_edges,
             approximate_length_km: edges
                 .iter()
-                .map(|e| distance2(e.ends[0], e.ends[1]).sqrt() / 1000.)
+                .map(|e| {
+                    e.corridor
+                        .windows(2)
+                        .map(|p| distance2(p[0], p[1]).sqrt() / 1000.)
+                        .sum::<f32>()
+                })
                 .sum(),
         };
         for (i, e) in edges.iter().enumerate() {
-            for z in bucket(e.ends[0][1].min(e.ends[1][1]) - ROUTE_PAD)
-                ..=bucket(e.ends[0][1].max(e.ends[1][1]) + ROUTE_PAD)
-            {
-                for x in bucket(e.ends[0][0].min(e.ends[1][0]) - ROUTE_PAD)
-                    ..=bucket(e.ends[0][0].max(e.ends[1][0]) + ROUTE_PAD)
-                {
+            let min_x = e
+                .corridor
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::INFINITY, f32::min)
+                - ROUTE_PAD;
+            let max_x = e
+                .corridor
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max)
+                + ROUTE_PAD;
+            let min_z = e
+                .corridor
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::INFINITY, f32::min)
+                - ROUTE_PAD;
+            let max_z = e
+                .corridor
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max)
+                + ROUTE_PAD;
+            for z in bucket(min_z)..=bucket(max_z) {
+                for x in bucket(min_x)..=bucket(max_x) {
                     result.buckets[z * GRAPH_N + x].push(i);
                 }
             }
@@ -495,20 +604,21 @@ impl Network {
             return route.clone();
         }
         let e = &self.edges[index];
-        let end = if let Some((parent, t)) = e.join {
-            point_at(&self.route(world, parent).points, t)
+        let end = if let Some((parent, _)) = e.join {
+            closest_path_point(&self.route(world, parent).points, e.ends[1])
         } else {
             e.ends[1]
         };
         let road = Rc::new(Road {
             id: e.id,
             kind: e.kind,
-            points: plan(
+            points: plan_land_route(
                 world,
-                e.ends[0],
+                &e.corridor,
                 end,
                 route_seed(self.nodes[e.a].id, self.nodes[e.b].id, e.kind),
                 e.kind,
+                self.nodes[e.a].landmass,
             ),
         });
         self.cache.borrow_mut().insert(index, road.clone());
@@ -600,11 +710,14 @@ impl Network {
                     return None;
                 }
                 if span > 90000. {
-                    (segment_hit([cx, cz], e.ends[0], e.ends[1]).distance <= radius).then(|| Road {
-                        id: e.id,
-                        kind: e.kind,
-                        points: e.ends.to_vec(),
-                    })
+                    e.corridor
+                        .windows(2)
+                        .any(|p| segment_hit([cx, cz], p[0], p[1]).distance <= radius)
+                        .then(|| Road {
+                            id: e.id,
+                            kind: e.kind,
+                            points: e.corridor.clone(),
+                        })
                 } else {
                     let r = self.route(world, id);
                     r.points
@@ -616,6 +729,240 @@ impl Network {
             .collect()
     }
 }
+/// Test the travelled corridor using only the continental mask. Rivers are
+/// deliberately not obstacles: bridge selection remains in the fine planner.
+fn land_segment(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> bool {
+    let length = distance2(a, b).sqrt();
+    let mut along = 0.;
+    loop {
+        let t = (along / length.max(0.001)).min(1.);
+        let p = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+        let coast = world.coast_info(p[0], p[1]);
+        if coast.landmass_id != Some(landmass)
+            || coast.distance < ROAD_COAST_CLEARANCE
+            || p[0].abs() > HALF_WORLD
+            || p[1].abs() > HALF_WORLD
+        {
+            return false;
+        }
+        if along >= length {
+            return true;
+        }
+        // Fine near a shore, coarse safely inland. Conservative coast distance
+        // keeps the segment sampling independent of map or query resolution.
+        along = (along + (coast.distance * 0.35).clamp(4., 192.)).min(length);
+    }
+}
+fn land_path(world: &World, points: &[[f32; 2]], landmass: u32) -> bool {
+    points.len() >= 2
+        && points
+            .windows(2)
+            .all(|p| land_segment(world, p[0], p[1], landmass))
+}
+
+/// Cheap coast-aware graph routing. Usually the direct route is dry; a bounded
+/// deterministic A* skirts an inlet when necessary. Failure means no road.
+fn land_corridor(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> Option<Vec<[f32; 2]>> {
+    if world.landmass_id(a[0], a[1]) != Some(landmass)
+        || world.landmass_id(b[0], b[1]) != Some(landmass)
+    {
+        return None;
+    }
+    if land_segment(world, a, b, landmass) {
+        return Some(vec![a, b]);
+    }
+    const CELL: f32 = 240.;
+    let length = distance2(a, b).sqrt();
+    let pad = (length * 0.42).clamp(900., 5200.);
+    let min = [
+        ((a[0].min(b[0]) - pad).max(-HALF_WORLD) / CELL).floor() * CELL,
+        ((a[1].min(b[1]) - pad).max(-HALF_WORLD) / CELL).floor() * CELL,
+    ];
+    let max = [
+        (a[0].max(b[0]) + pad).min(HALF_WORLD),
+        (a[1].max(b[1]) + pad).min(HALF_WORLD),
+    ];
+    let nx = ((max[0] - min[0]) / CELL).ceil() as usize + 1;
+    let nz = ((max[1] - min[1]) / CELL).ceil() as usize + 1;
+    if nx * nz > 50000 {
+        return None;
+    }
+    let index = |p: [f32; 2]| -> usize {
+        let x = ((p[0] - min[0]) / CELL).round().clamp(0., (nx - 1) as f32) as usize;
+        let z = ((p[1] - min[1]) / CELL).round().clamp(0., (nz - 1) as f32) as usize;
+        z * nx + x
+    };
+    let first = index(a);
+    let last = index(b);
+    if first == last {
+        return None;
+    }
+    let position = |id: usize| -> [f32; 2] {
+        if id == first {
+            a
+        } else if id == last {
+            b
+        } else {
+            [
+                min[0] + (id % nx) as f32 * CELL,
+                min[1] + (id / nx) as f32 * CELL,
+            ]
+        }
+    };
+    let mut costs = vec![f32::INFINITY; nx * nz];
+    let mut prior = vec![usize::MAX; nx * nz];
+    let mut closed = vec![false; nx * nz];
+    let mut open = BinaryHeap::new();
+    costs[first] = 0.;
+    open.push(Reverse((0_u64, first)));
+    let offsets = [
+        (-1_i32, 0_i32),
+        (0, -1),
+        (1, 0),
+        (0, 1),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (1, 1),
+    ];
+    let mut visited = 0;
+    while let Some(Reverse((_, current))) = open.pop() {
+        if closed[current] {
+            continue;
+        }
+        if current == last {
+            let mut path = vec![b];
+            let mut cursor = last;
+            while cursor != first {
+                cursor = prior[cursor];
+                if cursor == usize::MAX {
+                    return None;
+                }
+                path.push(position(cursor));
+            }
+            path.reverse();
+            // A few dry line-of-sight skips turn staircase cells into a sparse
+            // geometric corridor; later terrain routing supplies organic bends.
+            let mut compact = vec![a];
+            let mut from = 0;
+            while from + 1 < path.len() {
+                let mut to = (from + 24).min(path.len() - 1);
+                while to > from + 1 && !land_segment(world, path[from], path[to], landmass) {
+                    to -= 1;
+                }
+                compact.push(path[to]);
+                from = to;
+            }
+            return land_path(world, &compact, landmass).then_some(compact);
+        }
+        closed[current] = true;
+        visited += 1;
+        if visited > 14000 {
+            break;
+        }
+        let x = (current % nx) as i32;
+        let z = (current / nx) as i32;
+        let p = position(current);
+        for (dx, dz) in offsets {
+            let xx = x + dx;
+            let zz = z + dz;
+            if xx < 0 || zz < 0 || xx >= nx as i32 || zz >= nz as i32 {
+                continue;
+            }
+            let next = zz as usize * nx + xx as usize;
+            if closed[next] {
+                continue;
+            }
+            let q = position(next);
+            let coast = world.coast_info(q[0], q[1]);
+            if coast.landmass_id != Some(landmass) || coast.distance < ROAD_COAST_CLEARANCE {
+                continue;
+            }
+            let step = distance2(p, q).sqrt();
+            let coastal_cost = (1. - coast.distance / 700.).clamp(0., 1.) * 0.30;
+            let cost = costs[current] + step * (1. + coastal_cost);
+            if cost >= costs[next] || !land_segment(world, p, q, landmass) {
+                continue;
+            }
+            costs[next] = cost;
+            prior[next] = current;
+            let priority = ((cost + distance2(q, b).sqrt()) * 16.) as u64;
+            open.push(Reverse((priority, next)));
+        }
+    }
+    None
+}
+
+fn closest_path_point(points: &[[f32; 2]], p: [f32; 2]) -> [f32; 2] {
+    let mut closest = points.first().copied().unwrap_or(p);
+    let mut best = f32::INFINITY;
+    for pair in points.windows(2) {
+        let hit = segment_hit(p, pair[0], pair[1]);
+        if hit.distance < best {
+            best = hit.distance;
+            closest = hit.point;
+        }
+    }
+    closest
+}
+
+fn plan_land_route(
+    world: &World,
+    corridor: &[[f32; 2]],
+    end: [f32; 2],
+    seed: u32,
+    kind: RoadKind,
+    landmass: u32,
+) -> Vec<[f32; 2]> {
+    let mut anchors = corridor.to_vec();
+    if anchors.len() < 2 {
+        return Vec::new();
+    }
+    let old_end = *anchors.last().unwrap();
+    if distance2(old_end, end) > 0.01 {
+        // Keep the chosen coastal corridor stable; only the short final link
+        // changes when a lane joins the exact fine geometry of its parent.
+        let Some(connector) = land_corridor(world, old_end, end, landmass) else {
+            return Vec::new();
+        };
+        anchors.extend_from_slice(&connector[1..]);
+    }
+    let mut out = vec![anchors[0]];
+    for (i, pair) in anchors.windows(2).enumerate() {
+        let fine = plan_local(
+            world,
+            pair[0],
+            pair[1],
+            if i == 0 {
+                seed
+            } else {
+                hash(seed, i as i32, 0)
+            },
+            kind,
+        );
+        if land_path(world, &fine, landmass) {
+            out.extend_from_slice(&fine[1..]);
+        } else {
+            // A decorative bend or river-mouth approach may leave dry land.
+            // Fall back to the already checked corridor, never an ocean bridge.
+            let count = (distance2(pair[0], pair[1]).sqrt() / 38.).ceil().max(1.) as usize;
+            for n in 1..=count {
+                let t = n as f32 / count as f32;
+                out.push([
+                    lerp(pair[0][0], pair[1][0], t),
+                    lerp(pair[0][1], pair[1][1], t),
+                ]);
+            }
+        }
+    }
+    out.dedup_by(|a, b| distance2(*a, *b) < 0.01);
+    if land_path(world, &out, landmass) {
+        out
+    } else {
+        Vec::new()
+    }
+}
+
 fn point_at(points: &[[f32; 2]], t: f32) -> [f32; 2] {
     let length: f32 = points
         .windows(2)
@@ -655,7 +1002,7 @@ fn curve(
         ]);
     }
 }
-fn plan(world: &World, a: [f32; 2], b: [f32; 2], seed: u32, kind: RoadKind) -> Vec<[f32; 2]> {
+fn plan_local(world: &World, a: [f32; 2], b: [f32; 2], seed: u32, kind: RoadKind) -> Vec<[f32; 2]> {
     let distance = distance2(a, b).sqrt();
     if distance < 20. {
         return vec![a, b];
@@ -816,6 +1163,14 @@ mod road_network_tests {
             for edge in &network.edges {
                 assert!(ids.insert(edge.id));
                 assert!(edge.id < (1_u64 << 53));
+                assert_eq!(
+                    network.nodes[edge.a].landmass, network.nodes[edge.b].landmass,
+                    "inter-island road"
+                );
+                assert!(
+                    land_path(&world, &edge.corridor, network.nodes[edge.a].landmass),
+                    "coarse ocean shortcut"
+                );
                 if edge.kind == RoadKind::Main {
                     union.join(edge.a, edge.b);
                 }
@@ -835,9 +1190,33 @@ mod road_network_tests {
                 .enumerate()
                 .filter_map(|(i, n)| (n.kind == 0).then_some(i))
                 .collect();
-            let root = union.root(towns[0]);
-            assert!(towns.iter().all(|&node| union.root(node) == root));
-            assert!(network.stats.main_roads >= towns.len() - 1);
+            let mut by_landmass: HashMap<u32, Vec<usize>> = HashMap::new();
+            for &town in &towns {
+                by_landmass
+                    .entry(network.nodes[town].landmass)
+                    .or_default()
+                    .push(town);
+            }
+            assert!(
+                by_landmass.len() >= 2,
+                "offshore regions need their own settlement networks"
+            );
+            for (landmass, regional_towns) in &by_landmass {
+                let mut components = HashMap::new();
+                for &town in regional_towns {
+                    *components.entry(union.root(town)).or_insert(0usize) += 1;
+                }
+                let largest = *components.values().max().unwrap();
+                assert!(
+                    largest * 100 >= regional_towns.len() * 94,
+                    "seed{seed} landmass{landmass}: only {largest}/{} towns connected",
+                    regional_towns.len()
+                );
+            }
+            assert!(
+                network.stats.main_roads + by_landmass.len()
+                    >= towns.len().saturating_sub(towns.len() / 20)
+            );
             assert!(network.stats.main_roads <= towns.len() + towns.len() / 16);
             assert!(
                 network.edges.len() * 2 < network.nodes.len(),
@@ -862,11 +1241,11 @@ mod road_network_tests {
             let edge = &network.edges[index];
             let route = network.route(&world, index);
             assert_eq!(route.points[0], edge.ends[0]);
-            let endpoint = if let Some((parent, t)) = edge.join {
+            let endpoint = if let Some((parent, _)) = edge.join {
                 joins += 1;
                 assert_eq!(network.edges[parent].kind, RoadKind::Main);
                 assert_eq!(edge.kind, RoadKind::Lane);
-                point_at(&network.route(&world, parent).points, t)
+                closest_path_point(&network.route(&world, parent).points, edge.ends[1])
             } else {
                 edge.ends[1]
             };
@@ -947,5 +1326,149 @@ mod road_network_tests {
             .road_map_routes(0., 0., 24000.)
             .iter()
             .all(|r| r.kind != RoadKind::Trail));
+    }
+    #[test]
+    fn ocean_boundaries_hold_for_coarse_and_fine_routes() {
+        let world = World::new(1337);
+        let network = &world.roads;
+        assert_eq!(GRAPH_N, (WORLD_SIZE / GRAPH_CELL) as usize + 2);
+        assert!(
+            network
+                .nodes
+                .iter()
+                .any(|n| n.cell[0].abs() > 54 || n.cell[1].abs() > 54),
+            "larger-world nodes were clipped to old bounds"
+        );
+        let mut detours = 0;
+        let mut coastal = Vec::new();
+        for (i, edge) in network.edges.iter().enumerate() {
+            let landmass = network.nodes[edge.a].landmass;
+            assert!(land_path(&world, &edge.corridor, landmass));
+            if edge.corridor.len() > 2 {
+                detours += 1;
+                coastal.push(i);
+            } else if edge
+                .corridor
+                .iter()
+                .any(|p| world.coast_info(p[0], p[1]).distance < 1800.)
+            {
+                coastal.push(i);
+            }
+        }
+        let mut fine_points = 0;
+        for &index in coastal.iter().take(32) {
+            let edge = &network.edges[index];
+            let route = network.route(&world, index);
+            assert!(route.points.len() >= 2, "coastal road lost its endpoint");
+            assert!(land_path(
+                &world,
+                &route.points,
+                network.nodes[edge.a].landmass
+            ));
+            for pair in route.points.windows(2) {
+                let steps = (distance2(pair[0], pair[1]).sqrt() / 8.).ceil().max(1.) as usize;
+                for n in 0..=steps {
+                    let t = n as f32 / steps as f32;
+                    let p = [
+                        lerp(pair[0][0], pair[1][0], t),
+                        lerp(pair[0][1], pair[1][1], t),
+                    ];
+                    assert!(
+                        world.is_land(p[0], p[1]),
+                        "fine road crosses ocean at {p:?}"
+                    );
+                    fine_points += 1;
+                }
+            }
+        }
+        assert!(fine_points > 100, "coastal routing was not exercised");
+        let a = &network.nodes[0];
+        let b = network
+            .nodes
+            .iter()
+            .find(|b| b.landmass != a.landmass)
+            .unwrap();
+        assert!(
+            land_corridor(&world, a.p, b.p, a.landmass).is_none(),
+            "separate islands must not be joined"
+        );
+        let summary = world.road_map_routes(0., 0., WORLD_SIZE);
+        for road in summary {
+            let mass = world
+                .landmass_id(road.points[0][0], road.points[0][1])
+                .unwrap();
+            assert!(
+                land_path(&world, &road.points, mass),
+                "atlas summary crossed ocean"
+            );
+        }
+        println!(
+            "coastal detours{detours} routed{} finechecks{fine_points}",
+            coastal.len().min(32)
+        );
+    }
+
+    #[test]
+    fn expanded_cell_ids_are_exact_and_collision_free() {
+        let mut seen = HashSet::new();
+        for a in [0_u32, 16000, 16384, 24000, SITE_AXIS * SITE_AXIS - 2] {
+            for b in [1_u32, 16383, 16385, 26000, SITE_AXIS * SITE_AXIS - 1] {
+                if a >= b {
+                    continue;
+                }
+                for kind in [RoadKind::Main, RoadKind::Lane, RoadKind::Trail] {
+                    let id = edge_id(a, b, kind);
+                    assert!(id < (1_u64 << 53));
+                    assert!(seen.insert(id));
+                    assert_eq!(id, edge_id(b, a, kind));
+                }
+            }
+        }
+    }
+    #[test]
+    fn coastal_astar_skirts_a_bay_instead_of_crossing_water() {
+        let world = World::new(1337);
+        let network = &world.roads;
+        for node in network
+            .nodes
+            .iter()
+            .filter(|n| world.coast_info(n.p[0], n.p[1]).distance < 2600.)
+        {
+            for distance in [3600., 6000., 8400.] {
+                for direction in 0..16 {
+                    let angle = direction as f32 * std::f32::consts::TAU / 16.;
+                    let end = [
+                        node.p[0] + angle.cos() * distance,
+                        node.p[1] + angle.sin() * distance,
+                    ];
+                    let coast = world.coast_info(end[0], end[1]);
+                    if coast.landmass_id != Some(node.landmass)
+                        || coast.distance < 120.
+                        || land_segment(&world, node.p, end, node.landmass)
+                    {
+                        continue;
+                    }
+                    if let Some(path) = land_corridor(&world, node.p, end, node.landmass) {
+                        assert!(path.len() > 2);
+                        assert!(land_path(&world, &path, node.landmass));
+                        assert_eq!(path.first(), Some(&node.p));
+                        assert_eq!(path.last(), Some(&end));
+                        assert_eq!(
+                            path,
+                            land_corridor(&world, node.p, end, node.landmass).unwrap(),
+                            "A* must be deterministic"
+                        );
+                        println!(
+                            "A* coastal detour {:?} -> {:?}, {} anchors",
+                            node.p,
+                            end,
+                            path.len()
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        panic!("no coast-skirt case exercised A* on the generated mainland/islands");
     }
 }

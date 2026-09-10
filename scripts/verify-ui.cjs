@@ -45,7 +45,7 @@ function filterHarness(snapshot) {
     set_ascii:(scale,palette)=>{asciiCalls.push([scale,palette]);rendererEvents.push(['ascii',scale,palette]);},
     set_render_resolution:height=>{selectedResolution=height;resolutionCalls.push(height);rendererEvents.push(['resolution',height]);},
     render_resolution:()=>{const height=selectedResolution===1 ? surfaceHeight : selectedResolution || [240,360,450][selectedQuality];return new Uint32Array([Math.round(surfaceWidth/surfaceHeight*height),height]);},
-    world_size:()=>256000,
+    world_size:()=>384000,
     set_quality:value=>{selectedQuality=value;qualityCalls.push(value);rendererEvents.push(['quality',value]);},
     resize:(width,height)=>{surfaceWidth=width;surfaceHeight=height;rendererEvents.push(['resize',width,height]);},
     teleport:(x,z)=>teleports.push([x,z]),

@@ -131,6 +131,9 @@ impl Game {
                     Some(world::RoadKind::Main) => "The King's Road",
                     Some(world::RoadKind::Lane) => "Country Lane",
                     Some(world::RoadKind::Trail) => "Wilderness Trail",
+                    None if sample.ocean => "The Open Sea",
+                    None if sample.shore == world::ShoreKind::Beach => "Sandy Shore",
+                    None if sample.shore == world::ShoreKind::Cliff => "Sea Cliffs",
                     None => "The Wilds",
                 }
                 .into()
@@ -146,6 +149,9 @@ impl Game {
                 let trees =
                     ecology::tree_density(self.world.seed, p.position.x, p.position.z, &sample);
                 match sample.biome {
+                    _ if sample.ocean => "Ocean",
+                    _ if sample.shore == world::ShoreKind::Beach => "Sandy shore",
+                    _ if sample.shore == world::ShoreKind::Cliff => "Sea cliffs",
                     world::Biome::Alpine
                     | world::Biome::Desert
                     | world::Biome::Moor
@@ -258,6 +264,10 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         biome: String,
         road: f32,
         water_height: f32,
+        ocean: bool,
+        shore: world::ShoreKind,
+        landmass: Option<u32>,
+        world_size: f32,
         vegetation_density: f32,
         hydrology: world::HydrologyStats,
         spawn: [f32; 2],
@@ -270,6 +280,10 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         biome: s.biome.name().into(),
         road: s.road,
         water_height: s.water_height,
+        ocean: s.ocean,
+        shore: s.shore,
+        landmass: world.landmass_id(x, z),
+        world_size: world::WORLD_SIZE,
         vegetation_density: ecology::tree_density(seed, x, z, &s),
         hydrology: world.hydrology_stats(),
         spawn: world.spawn(),

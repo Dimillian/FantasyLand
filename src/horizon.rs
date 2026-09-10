@@ -15,7 +15,7 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
         for x in 0..=N {
             let wx = cx as f32 * PATCH_SIZE + x as f32 * PATCH_SIZE / N as f32;
             let wz = cz as f32 * PATCH_SIZE + z as f32 * PATCH_SIZE / N as f32;
-            let sample = world.sample(wx, wz);
+            let sample = world.natural_sample(wx, wz);
             let mut color = ecology::ground_color(world.seed, wx, wz, &sample);
             if sample.height < sample.water_height {
                 color = [0.12, 0.36, 0.44];
@@ -23,6 +23,8 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
             grid.push((
                 Vec3::new(wx, sample.height.max(sample.water_height), wz),
                 color,
+                sample.ocean,
+                (sample.water_height - sample.height).max(0.0),
             ));
         }
     }
@@ -43,16 +45,21 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
                     .cross(points[2].0 - points[0].0)
                     .normalize_or_zero()
                     .to_array();
+                let ocean = points.iter().all(|p| p.2);
                 let color = std::array::from_fn(|i| {
                     (points[0].1[i] + points[1].1[i] + points[2].1[i]) / 3.
                 });
                 let start = mesh.vertices.len() as u32;
-                for (position, _) in points {
+                for (position, _, _, depth) in points {
                     mesh.vertices.push(Vertex {
                         position: position.to_array(),
                         normal,
-                        color,
-                        material: 7.,
+                        color: if ocean {
+                            [0.0, 0.0, depth + 1.0]
+                        } else {
+                            color
+                        },
+                        material: if ocean { 8.0 } else { 7.0 },
                     });
                 }
                 mesh.indices.extend([start, start + 1, start + 2]);

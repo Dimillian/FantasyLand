@@ -14,7 +14,7 @@ assert.ok(a.sites.length > 0);
 const spawn = inspect_world(1337, ...a.spawn);
 assert.ok(spawn.road > .8, 'the player starts on a road');
 assert.ok(spawn.height > spawn.water_height, 'the starting point is on dry ground');
-for (const span of [6000, 256000, 512000]) {
+for (const span of [6000, 384000, 768000]) {
   const start = performance.now();
   const map = inspect_map(1337, 0, 0, span, 128);
   assert.equal(map.length, 128 * 128 * 4);
@@ -33,3 +33,12 @@ for (const route of routes) {
 const regional = inspect_routes(1337, -16546, -12304, 60000);
 assert.ok(regional.length > 0 && regional.every(r => r.kind === 'main'), 'regional atlas shows only main roads');
 console.log('WASM road checks passed: classified route serialization, finite geometry, zoom hierarchy.');
+
+assert.equal(a.world_size, 384000, 'expanded world includes the surrounding ocean');
+const ocean = inspect_world(1337, 185000, 185000);
+assert.ok(ocean.ocean && ocean.height < -100 && ocean.water_height === 0, 'deep ocean has a sea-level surface');
+assert.equal(ocean.landmass, undefined, 'open sea is not a landmass');
+assert.equal(ocean.vegetation_density, 0);
+assert.equal(ocean.sites.length, 0, 'no offshore settlements');
+assert.equal(inspect_routes(1337, 185000, 185000, 6000).length, 0, 'no roads across open ocean');
+console.log('WASM coastal checks passed: expanded map, deep ocean, sea level, no offshore trees, roads or settlements.');

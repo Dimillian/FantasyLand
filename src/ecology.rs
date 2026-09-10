@@ -1,7 +1,7 @@
 //! Shared ecological cover for meshes, distant terrain, and maps.
 //! Climate chooses the eligible vegetation; continuous regional fields determine
 //! forests, sparse woodland, and genuinely open country inside those climates.
-use crate::world::{hash, rand01, Biome, Sample};
+use crate::world::{hash, rand01, Biome, Sample, ShoreKind};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Ecology {
@@ -37,7 +37,9 @@ fn field(seed: u32, x: f32, z: f32) -> f32 {
 }
 
 pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
-    if matches!(terrain.biome, Biome::Alpine | Biome::Desert)
+    if terrain.ocean
+        || terrain.shore != ShoreKind::None
+        || matches!(terrain.biome, Biome::Alpine | Biome::Desert)
         || terrain.water_height > terrain.height - 0.3
     {
         return 0.0;
@@ -64,6 +66,20 @@ pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
 }
 
 pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
+    if terrain.ocean || terrain.shore != ShoreKind::None {
+        return Ecology {
+            tree_density: 0.0,
+            grass_density: if terrain.shore == ShoreKind::Beach && terrain.height > 3.0 {
+                0.025
+            } else {
+                0.0
+            },
+            grass_height: 0.5,
+            flowers: 0.0,
+            ferns: 0.0,
+            heather: 0.0,
+        };
+    }
     let trees = tree_density(seed, x, z, terrain);
     let open = 1.0 - smooth(0.08, 0.75, trees);
     let small = field(seed ^ 0x45434752, x / 65.0, z / 65.0);
@@ -104,6 +120,18 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
 /// The same canopy field darkens visible forest floors and their map footprints.
 /// This deliberately avoids per-triangle hue noise that would obscure clearings.
 pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
+    let shore_grain = if terrain.ocean || terrain.shore != ShoreKind::None {
+        field(seed ^ 0x53484f52, x / 75.0, z / 75.0)
+    } else {
+        0.0
+    };
+    if terrain.ocean || terrain.shore == ShoreKind::Beach {
+        let sand = mix([0.54, 0.48, 0.33], [0.65, 0.59, 0.43], shore_grain);
+        return mix([0.34, 0.36, 0.27], sand, smooth(-0.5, 2.8, terrain.height));
+    }
+    if terrain.shore == ShoreKind::Cliff {
+        return mix([0.39, 0.41, 0.38], [0.57, 0.56, 0.46], shore_grain);
+    }
     let cover = smooth(0.08, 0.76, tree_density(seed, x, z, terrain));
     match terrain.biome {
         Biome::Grassland | Biome::Forest => mix([0.36, 0.50, 0.18], [0.25, 0.40, 0.17], cover),
@@ -128,6 +156,8 @@ mod tests {
             water_height: -10000.0,
             temperature: 0.55,
             moisture: 0.60,
+            ocean: false,
+            shore: ShoreKind::None,
         }
     }
     #[test]
@@ -202,5 +232,21 @@ mod tests {
         let mut s = temperate();
         s.water_height = s.height + 0.2;
         assert_eq!(tree_density(1337, 500., 100., &s), 0.0);
+    }
+    #[test]
+    fn saltwater_and_exposed_shores_have_no_forest_or_marsh_plants() {
+        for shore in [ShoreKind::Beach, ShoreKind::Cliff] {
+            let mut terrain = temperate();
+            terrain.shore = shore;
+            let cover = sample(1337, 500., 100., &terrain);
+            assert_eq!(cover.tree_density, 0.0);
+            assert_eq!(cover.ferns + cover.flowers + cover.heather, 0.0);
+            assert!(cover.grass_density <= 0.025);
+        }
+        let mut terrain = temperate();
+        terrain.ocean = true;
+        terrain.height = -15.0;
+        let cover = sample(1337, 500., 100., &terrain);
+        assert_eq!(cover.tree_density + cover.grass_density, 0.0);
     }
 }

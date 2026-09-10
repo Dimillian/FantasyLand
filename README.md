@@ -19,7 +19,9 @@ Internal resolution is separately selectable from 120p to 1080p, preserving the 
 
 ## World
 
-The world is 256 × 256 km (65,536 km²), with signed coordinates centered on zero. Terrain streams in 192 m chunks with several levels of detail. Coarse terrain patches extend the real horizon to roughly 20 km at the default setting; distant mountains remain part of the same walkable world. The default seed is 1337.
+The world is 384 × 384 km (147,456 km², including ocean), with signed coordinates centered on zero. Terrain streams in 192 m chunks with several levels of detail. Coarse terrain patches extend the real horizon to roughly 20 km at the default setting; distant mountains remain part of the same walkable world. The default seed is 1337.
+
+A connected main continent and five substantial offshore islands sit inside an ocean margin. Warped landmass contours form bays, headlands and straits. Low shores descend through sandy beaches; high coastal relief forms rock cliffs. Shallow turquoise shelves deepen into the open sea, with depth-driven surf and animated water extending into the horizon. Rivers drain to sea-level outlets; offshore cells do not generate rain-fed river channels.
 
 Rolling foothills, larger mountain ridges, continuous river corridors and a climate model produce grassland, temperate forest, pine forest, moor, alpine, dryland and wetland biomes. Settlement sites have irregular positions around approximately 2.4 km spacing. A sparse network links major towns, branches toward selected villages, and leaves many rural sites isolated. Smaller points of interest occupy eligible 640 m cells with jitter, exclusions and occasional empty areas. Future settlement sites currently contain survey structures, banners and camps, not populated towns.
 
@@ -29,7 +31,7 @@ A shared ecological cover field creates open wildland, sparse woodland, and dens
 
 Structures sample their own footprints on the rendered terrain: tents and hearths have level retaining foundations, while tower legs, signs and bridge piers extend into the ground. Vegetation anchors use the matching terrain detail level, distant trees retain trunks, and grass/reed roots stay fixed in the wind. Road surfaces are clipped to terrain triangles to follow slopes and dips without suspended strips. Main roads have a 6.6 m traveled surface, country lanes 4.2 m, and wilderness trails 1.7 m, with softer verges and matching bridge widths. The atlas draws the same routes as thin vector strokes: solid main roads and lanes, dashed trails visible at closer zoom.
 
-Road topology uses a terrain-weighted town spanning tree with a few useful loops, selected village branches, and occasional hamlet trails. Terrain-cost routing favors gentler grades and dry ground, smooths the chosen corridors, and aligns river crossings across the channel. There are no guaranteed horizontal or vertical road chains. Detailed routes are generated on demand; the continent view uses coarse main-route summaries.
+Road topology uses a separate terrain-weighted town spanning tree on each landmass with a few useful loops, selected village branches, and occasional hamlet trails. Terrain-cost routing favors gentler grades and dry ground, smooths the chosen corridors, and aligns river crossings across the channel. There are no guaranteed horizontal or vertical road chains. Coastal corridors route around bays and stay on dry land; there are no road links across the ocean. Detailed routes are generated on demand; the continent view uses the same coastal corridors as coarse main-route summaries.
 
 Rivers come from catchments: Priority-Flood conditions a coarse elevation grid, downhill receivers route rainfall, and accumulated runoff determines channel formation and width. Tributaries share junctions with their downstream river. Smoothed channel paths carve the detailed terrain, and their directions drive the animated water. The atlas uses the same drainage network. This adapts the drainage-conditioning approach described by [Barnes, Lehman and Mulla](https://rbarnes.org/sci/2014_depressions.pdf); it is a terrain generator, not a fluid simulation.
 
@@ -53,6 +55,7 @@ cargo run --release --bin verify output/filters 1337 filters
 cargo run --release --bin verify output/ascii-verification 1337 ascii
 cargo run --release --bin verify output/grounding 1337 grounding
 cargo run --release --bin verify output/roads 1337 roads
+cargo run --release --bin verify output/coasts 1337 coasts
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```
@@ -71,4 +74,4 @@ The native verifier runs the same wgpu shaders on a real GPU, checks the rendere
 
 ## Code
 
-`world.rs` defines world identity, climate, terrain, features and maps. `roads.rs` builds the sparse transport graph and terrain-aware routes. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.
+`world.rs` defines world identity, climate, terrain, features and maps. `coast.rs` defines the landmass contours, shore profiles and ocean shelf. `roads.rs` builds the sparse transport graph and terrain-aware routes. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.

@@ -23,6 +23,7 @@ fn main() {
     let ascii_only = check.as_deref() == Some("ascii");
     let grounding_only = check.as_deref() == Some("grounding");
     let roads_only = check.as_deref() == Some("roads");
+    let coasts_only = check.as_deref() == Some("coasts");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -38,7 +39,7 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only && !ascii_only && !grounding_only && !roads_only {
+    if !filters_only && !ascii_only && !grounding_only && !roads_only && !coasts_only {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
         save_png(&format!("{dir}/world-map.png"), 512, 512, &map);
@@ -48,6 +49,10 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if coasts_only {
+        verify_coasts(&world, &mut renderer, &dir);
+        return;
+    }
     if roads_only {
         verify_roads(&world, &mut renderer, &dir);
         return;
@@ -380,6 +385,133 @@ fn main() {
         let colors: std::collections::HashSet<_> =
             pixels.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect();
         assert!(colors.len() > 16, "{label}: map is empty or near-solid");
+    }
+
+    fn verify_coasts(world: &World, renderer: &mut Renderer, dir: &str) {
+        use fantasy_land::world::ShoreKind;
+        let map = world.map_rgba(0., 0., WORLD_SIZE, 1024);
+        save_png(
+            &format!("{dir}/continent-and-islands.png"),
+            1024,
+            1024,
+            &map,
+        );
+        assert_road_map(&map, 1024, "continent and islands");
+        let mut scenes: Vec<(&str, [f32; 2], [f32; 2], f32)> = Vec::new();
+        // Find actual zero-contour crossings independently of preselected coordinates.
+        // The same shoreline is then inspected at walking and cliff-top height.
+        let mut candidates = Vec::new();
+        let half = WORLD_SIZE * 0.5;
+        let step = 1500.;
+        for row in 1..(WORLD_SIZE / step) as usize {
+            let z = -half + row as f32 * step;
+            let mut previous = world.is_land(-half, z);
+            for column in 1..=(WORLD_SIZE / step) as usize {
+                let x = -half + column as f32 * step;
+                let land = world.is_land(x, z);
+                if land != previous {
+                    let (mut lo, mut hi) = (x - step, x);
+                    for _ in 0..17 {
+                        let mid = (lo + hi) * 0.5;
+                        if world.is_land(mid, z) == previous {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let coast = [(lo + hi) * 0.5, z];
+                    let dx = world.coast_info(coast[0] + 24., z).distance
+                        - world.coast_info(coast[0] - 24., z).distance;
+                    let dz = world.coast_info(coast[0], z + 24.).distance
+                        - world.coast_info(coast[0], z - 24.).distance;
+                    let normal = glam::Vec2::new(dx, dz).normalize_or_zero();
+                    let p = [coast[0] + normal.x * 75., z + normal.y * 75.];
+                    let sample = world.natural_sample(p[0], p[1]);
+                    if sample.ocean
+                        || sample.water_height > sample.height
+                        || !sample.height.is_finite()
+                    {
+                        previous = land;
+                        continue;
+                    }
+                    candidates.push((
+                        p,
+                        normal.to_array(),
+                        sample.shore,
+                        world.landmass_id(p[0], p[1]),
+                        sample.height,
+                    ));
+                }
+                previous = land;
+            }
+        }
+        for (name, shore, island) in [
+            ("sandy-bay", ShoreKind::Beach, false),
+            ("sea-cliffs", ShoreKind::Cliff, false),
+            ("island-shore", ShoreKind::Beach, true),
+        ] {
+            let selected = candidates
+                .iter()
+                .filter(|c| c.2 == shore && c.3.is_some_and(|id| (id > 0) == island))
+                .min_by(|a, b| {
+                    let score = |c: &([f32; 2], [f32; 2], ShoreKind, Option<u32>, f32)| {
+                        if shore == ShoreKind::Cliff {
+                            -c.4
+                        } else {
+                            (c.0[0] + 90000.).hypot(c.0[1] + 25000.)
+                        }
+                    };
+                    score(a).total_cmp(&score(b))
+                })
+                .expect("world needs dry sandy and cliff coastlines on both landmass types");
+            scenes.push((
+                name,
+                selected.0,
+                selected.1,
+                if shore == ShoreKind::Cliff { 12. } else { 0. },
+            ));
+        }
+        renderer.set_quality(1);
+        renderer.resize(1280, 720);
+        renderer.set_render_resolution(1);
+        renderer.set_filter(1, 1.0);
+        let mut views = Vec::new();
+        for (name, p, normal, lift) in scenes {
+            let eye = glam::Vec3::new(
+                p[0],
+                geometry::walk_height(world, p[0], p[1]) + 1.72 + lift,
+                p[1],
+            );
+            let start = Instant::now();
+            renderer.update_chunks(world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(world, eye, false);
+            }
+            let along = glam::Vec2::new(normal[1], -normal[0]);
+            let direction = along * 0.84 - glam::Vec2::from_array(normal) * 0.54;
+            let yaw = direction.x.atan2(-direction.y);
+            let pitch = if lift > 0. { -0.26 } else { -0.06 };
+            renderer
+                .render(eye, yaw, pitch, 11.0)
+                .expect("render native coast");
+            let pixels = renderer.capture_rgba().unwrap();
+            assert_image(&pixels, 1280, 720, name);
+            save_png(&format!("{dir}/{name}.png"), 1280, 720, &pixels);
+            save_png(
+                &format!("{dir}/{name}-map.png"),
+                512,
+                512,
+                &world.map_rgba(p[0], p[1], 12000., 512),
+            );
+            views.push(serde_json::json!({"name":name,"eye":eye.to_array(),"yaw":yaw,"pitch":pitch,"landmass":world.landmass_id(p[0],p[1]),"shore":world.sample(p[0],p[1]).shore}));
+            println!(
+                "Coast {name}: eye{eye:?}, warmup{:?}, {} triangles",
+                start.elapsed(),
+                renderer.triangle_count()
+            );
+        }
+        fs::write(format!("{dir}/coasts.json"),serde_json::to_string_pretty(&serde_json::json!({"seed":world.seed,"sizeMeters":WORLD_SIZE,"views":views,"hydrology":world.hydrology_stats(),"roads":world.road_stats()})).unwrap()).unwrap();
+        println!("Coastal verification passed: actual atlas, beach, cliff and island GPU captures");
     }
 
     fn verify_grounding(world: &World, renderer: &mut Renderer, dir: &str) {

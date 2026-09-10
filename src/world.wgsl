@@ -121,22 +121,29 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
-fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>) -> vec3<f32> {
+fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32) -> vec3<f32> {
     let t = u.params.x;
     let p = world.xz;
+    let ocean = step(0.5, channel.z);
+    let depth = max(channel.z - 1.0, 0.0);
     let flow = normalize(channel.xy + vec2<f32>(0.00001));
-    let velocity = flow * 1.4;
+    let velocity = mix(flow * 1.4, vec2<f32>(0.72, 0.38), ocean);
     let near_detail = 1.0 - smoothstep(70.0, 350.0, distance);
+    // Band-limit the moving ripples at cliff-top and horizon distances. Without
+    // this their repeated normal pattern aliases into rings across the ocean.
+    let wave_detail = 1.0 - smoothstep(1.5, 10.0, footprint);
+    let fine_filter = 1.0 - smoothstep(0.6, 2.0, footprint);
+    let fine_detail = near_detail * fine_filter;
     let warp = noise((p - velocity * t) * 0.035);
     let phase_a = dot(p, vec2<f32>(0.31, 0.17)) - t * dot(velocity, vec2<f32>(0.31, 0.17)) + warp * 3.5;
     let phase_b = dot(p, vec2<f32>(-0.19, 0.43)) - t * dot(velocity, vec2<f32>(-0.19, 0.43));
     let phase_c = dot(p, vec2<f32>(1.41, 0.63)) - t * dot(velocity, vec2<f32>(1.41, 0.63)) + warp * 5.0;
-    let a = sin(phase_a);
-    let b = sin(phase_b);
-    let c = sin(phase_c) * near_detail;
+    let a = sin(phase_a) * wave_detail;
+    let b = sin(phase_b) * wave_detail;
+    let c = sin(phase_c) * fine_detail;
     let wave = a * 0.48 + b * 0.31 + c * 0.21;
-    let slope_x = cos(phase_a) * 0.035 + cos(phase_b) * -0.022 + cos(phase_c) * 0.035 * near_detail;
-    let slope_z = cos(phase_a) * 0.019 + cos(phase_b) * 0.049 + cos(phase_c) * 0.019 * near_detail;
+    let slope_x = (cos(phase_a) * 0.035 + cos(phase_b) * -0.022) * wave_detail + cos(phase_c) * 0.035 * fine_detail;
+    let slope_z = (cos(phase_a) * 0.019 + cos(phase_b) * 0.049) * wave_detail + cos(phase_c) * 0.019 * fine_detail;
     let normal = normalize(vec3<f32>(-slope_x, 1.0, -slope_z));
     let view = normalize(u.camera.xyz - world);
     let reflection = reflect(-view, normal);
@@ -146,6 +153,8 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>) -> vec3<f32>
     // continuous world-space noise so water chunk cells do not set its tone.
     let broad_current = noise((p - velocity * t) * 0.012);
     var color = mix(vec3<f32>(0.075, 0.285, 0.335), vec3<f32>(0.160, 0.435, 0.475), broad_current);
+    let sea = mix(vec3<f32>(0.11, 0.47, 0.46), vec3<f32>(0.025, 0.16, 0.30), smoothstep(0.0, 45.0, depth));
+    color = mix(color, sea * (0.94 + broad_current * 0.12), ocean);
     color *= u.light.w * (0.94 + wave * 0.12);
     var reflected_sky = sky_gradient(reflection);
     // Broad reflected weather is enough to suggest a real sky without tracing
@@ -155,19 +164,26 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>) -> vec3<f32>
     color = mix(color, reflected_sky, fresnel);
 
     // Interrupted flowing strokes, with fewer fine marks at grazing distance.
-    let breaks = smoothstep(0.30, 0.65, noise((p - velocity * t) * vec2<f32>(0.12, 0.35)));
+    let breaks = mix(0.5, smoothstep(0.30, 0.65, noise((p - velocity * t) * vec2<f32>(0.12, 0.35))), fine_filter);
     let crest = smoothstep(0.69, 0.91, a * 0.65 + c * 0.35) * breaks * near_detail;
     color += vec3<f32>(0.12, 0.15, 0.135) * crest * u.light.w;
     let half_vector = normalize(normalize(u.light.xyz) + view);
     let specular = pow(max(dot(normal, half_vector), 0.0), 115.0);
     let glint = smoothstep(0.40, 0.80, specular) * (0.3 + breaks * 0.7);
     color += vec3<f32>(0.42, 0.40, 0.29) * glint * daylight() * (0.30 + near_detail * 0.35);
+    // Broken surf follows the interpolated seabed depth, so it traces coves and
+    // headlands instead of drawing a straight wave across the shore.
+    let surf_phase = depth * 1.65 - t * 1.15 + noise(p * 0.045) * 2.2;
+    let surf = (1.0 - smoothstep(0.4, 3.5, depth)) * smoothstep(0.50, 0.91, sin(surf_phase));
+    let wash = (1.0 - smoothstep(0.0, 0.3, depth)) * 0.45;
+    color = mix(color, vec3<f32>(0.76, 0.83, 0.75) * u.light.w, max(surf * 0.75, wash) * ocean * (0.45 + breaks * 0.55));
     return color;
 }
 
 @fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
     let distance = length(v.world - u.camera.xyz);
-    if v.material > 6.5 && v.material < 7.5 {
+    let water_footprint = max(length(dpdx(v.world.xz)), length(dpdy(v.world.xz)));
+    if v.material > 6.5 && v.material < 8.5 {
         // Near terrain replaces far patches exactly on the streamed chunk mask.
         let tile_delta = floor(v.world.xz / 192.0) - floor(u.camera.xz / 192.0);
         if length(tile_delta) <= u.settings.x + 0.5 {
@@ -197,8 +213,8 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>) -> vec3<f32>
         // Backlit blades stay legible beside the darker opaque tree canopies.
         color = v.color * (0.85 + diffuse * 0.30) * u.light.w;
     }
-    if v.material > 3.5 && v.material < 4.5 {
-        color = water_color(v.world, distance, v.color);
+    if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
+        color = water_color(v.world, distance, v.color, water_footprint);
     }
 
     // Retain the low-poly palette while restoring rich midtones in daylight.

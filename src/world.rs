@@ -7,9 +7,14 @@
 use serde::Serialize;
 use std::{cell::RefCell, rc::Rc};
 
-pub const WORLD_SIZE: f32 = 256_000.0;
+pub const WORLD_SIZE: f32 = 384_000.0;
 pub const SITE_SPACING: f32 = 2_400.0;
 const HALF_WORLD: f32 = WORLD_SIZE * 0.5;
+const SITE_LIMIT: i32 = (HALF_WORLD / SITE_SPACING) as i32 + 2;
+const LANDMARK_LIMIT: i32 = (HALF_WORLD / 640.0) as i32 + 2;
+#[path = "coast.rs"]
+pub(crate) mod coast;
+pub use coast::{Info as CoastInfo, ShoreKind, SEA_LEVEL};
 #[path = "hydrology.rs"]
 mod hydrology;
 pub use hydrology::Stats as HydrologyStats;
@@ -61,6 +66,8 @@ pub struct Sample {
     pub biome: Biome,
     pub road: f32,
     pub road_kind: Option<RoadKind>,
+    pub ocean: bool,
+    pub shore: ShoreKind,
     pub river: f32,
     pub water_height: f32,
     pub temperature: f32,
@@ -168,6 +175,9 @@ fn segment_hit(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> RoadHit {
 }
 
 fn raw_height(seed: u32, x: f32, z: f32) -> f32 {
+    coast::elevation(coast::info(seed, x, z), inland_height(seed, x, z))
+}
+fn inland_height(seed: u32, x: f32, z: f32) -> f32 {
     let warp_x = (noise(seed ^ 0x1801, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
     let warp_z = (noise(seed ^ 0x1802, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
     let wx = x + warp_x;
@@ -178,7 +188,7 @@ fn raw_height(seed: u32, x: f32, z: f32) -> f32 {
     let ridge = (1.0 - (ridge_noise * 2.0 - 1.0).abs()).powi(3);
     let hill = fbm(seed ^ 0x1903, wx / 1400.0, wz / 1400.0);
     let rolling = fbm(seed ^ 0x1913, wx / 410.0, wz / 510.0);
-    let continental = (1.0 - smooth(0.72, 1.0, x.abs().max(z.abs()) / HALF_WORLD)).max(0.0);
+    let continental = 1.0;
     let detail = (noise(seed ^ 0x1904, x / 95.0, z / 95.0) - 0.5) * 6.0
         + (noise(seed ^ 0x1905, x / 30.0, z / 30.0) - 0.5) * 0.9;
     24.0 + continental
@@ -212,6 +222,15 @@ impl World {
             .height
     }
 
+    pub fn coast_info(&self, x: f32, z: f32) -> CoastInfo {
+        coast::info(self.seed, x, z)
+    }
+    pub fn is_land(&self, x: f32, z: f32) -> bool {
+        self.landmass_id(x, z).is_some()
+    }
+    pub fn landmass_id(&self, x: f32, z: f32) -> Option<u32> {
+        coast::landmass_id(self.seed, x, z)
+    }
     pub fn water_flow(&self, x: f32, z: f32) -> [f32; 2] {
         self.river(x, z).tangent
     }
@@ -274,10 +293,24 @@ impl World {
     fn sample_impl(&self, x: f32, z: f32, include_roads: bool) -> Sample {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
-        let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
+        let coast = self.coast_info(x, z);
+        let interior = inland_height(self.seed, x, z);
+        let raw = coast::elevation(coast, interior);
+        let mut water = self.hydrology.terrain(x, z, raw);
+        if coast.landmass_id.is_none() {
+            water.height = raw;
+        }
+        let ocean = coast.landmass_id.is_none()
+            || (coast.distance < 500.
+                && water.height < SEA_LEVEL
+                && water.water <= SEA_LEVEL + 0.05);
+        if ocean {
+            water.water = water.water.max(SEA_LEVEL);
+        }
+
         let river = water.nearest;
         let mut height = water.height;
-        let road_hit = if include_roads {
+        let road_hit = if include_roads && !ocean {
             self.nearest_road(x, z)
         } else {
             RoadHit {
@@ -297,7 +330,7 @@ impl World {
             );
         }
         let continental_heat = noise(self.seed ^ 0x3101, x / 47000.0, z / 47000.0);
-        let temperature = (0.66 + (continental_heat - 0.5) * 0.52 + z / HALF_WORLD * 0.23
+        let temperature = (0.66 + (continental_heat - 0.5) * 0.52 + z / 128000.0 * 0.23
             - (height - 180.0).max(0.0) * 0.00043)
             .clamp(0.0, 1.0);
         let rain = fbm(self.seed ^ 0x3102, x / 29000.0, z / 29000.0);
@@ -326,6 +359,8 @@ impl World {
             biome,
             road,
             road_kind: road_hit.kind.filter(|_| road > 0.),
+            ocean,
+            shore: coast::shore(coast.distance, interior),
             river: water.river,
             water_height: water.water,
             temperature,
@@ -335,8 +370,30 @@ impl World {
     pub fn height(&self, x: f32, z: f32) -> f32 {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
-        let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
-        let road_hit = self.nearest_road(x, z);
+        let coast = self.coast_info(x, z);
+        let interior = inland_height(self.seed, x, z);
+        let raw = coast::elevation(coast, interior);
+        let mut water = self.hydrology.terrain(x, z, raw);
+        if coast.landmass_id.is_none() {
+            water.height = raw;
+        }
+        let ocean = coast.landmass_id.is_none()
+            || (coast.distance < 500.
+                && water.height < SEA_LEVEL
+                && water.water <= SEA_LEVEL + 0.05);
+        if ocean {
+            water.water = water.water.max(SEA_LEVEL);
+        }
+
+        let road_hit = if !ocean {
+            self.nearest_road(x, z)
+        } else {
+            RoadHit {
+                distance: f32::MAX,
+                point: [x, z],
+                kind: None,
+            }
+        };
         let road = road_hit
             .kind
             .map_or(0., |kind| kind.strength(road_hit.distance));
@@ -381,16 +438,18 @@ impl World {
             return Vec::new();
         }
         let radius = radius.min(WORLD_SIZE * 1.5);
-        let min_i = (((x - radius) / SITE_SPACING).floor() as i32 - 1).max(-54);
-        let max_i = (((x + radius) / SITE_SPACING).ceil() as i32 + 1).min(54);
-        let min_j = (((z - radius) / SITE_SPACING).floor() as i32 - 1).max(-54);
-        let max_j = (((z + radius) / SITE_SPACING).ceil() as i32 + 1).min(54);
+        let min_i = (((x - radius) / SITE_SPACING).floor() as i32 - 1).max(-SITE_LIMIT);
+        let max_i = (((x + radius) / SITE_SPACING).ceil() as i32 + 1).min(SITE_LIMIT);
+        let min_j = (((z - radius) / SITE_SPACING).floor() as i32 - 1).max(-SITE_LIMIT);
+        let max_j = (((z + radius) / SITE_SPACING).ceil() as i32 + 1).min(SITE_LIMIT);
         let mut result = Vec::new();
         for i in min_i..=max_i {
             for j in min_j..=max_j {
                 let p = self.node(i, j);
                 if p[0].abs() <= HALF_WORLD
                     && p[1].abs() <= HALF_WORLD
+                    && self.coast_info(p[0], p[1]).distance > 80.
+                    && self.ground(p[0], p[1]) > SEA_LEVEL + 0.5
                     && distance2(p, [x, z]) <= radius * radius
                 {
                     result.push(self.site(i, j));
@@ -405,10 +464,10 @@ impl World {
             return Vec::new();
         }
         let radius = radius.min(WORLD_SIZE * 1.5);
-        let min_i = (((x - radius) / LANDMARK_SPACING).floor() as i32 - 1).max(-201);
-        let max_i = (((x + radius) / LANDMARK_SPACING).ceil() as i32 + 1).min(201);
-        let min_j = (((z - radius) / LANDMARK_SPACING).floor() as i32 - 1).max(-201);
-        let max_j = (((z + radius) / LANDMARK_SPACING).ceil() as i32 + 1).min(201);
+        let min_i = (((x - radius) / LANDMARK_SPACING).floor() as i32 - 1).max(-LANDMARK_LIMIT);
+        let max_i = (((x + radius) / LANDMARK_SPACING).ceil() as i32 + 1).min(LANDMARK_LIMIT);
+        let min_j = (((z - radius) / LANDMARK_SPACING).floor() as i32 - 1).max(-LANDMARK_LIMIT);
+        let max_j = (((z + radius) / LANDMARK_SPACING).ceil() as i32 + 1).min(LANDMARK_LIMIT);
         let mut result = Vec::new();
         const KINDS: [&str; 6] = [
             "ruin",
@@ -462,6 +521,10 @@ impl World {
                 if px.abs() > HALF_WORLD
                     || pz.abs() > HALF_WORLD
                     || distance2([px, pz], [x, z]) > radius * radius
+                {
+                    continue;
+                }
+                if self.coast_info(px, pz).distance < 60. || self.ground(px, pz) < SEA_LEVEL + 0.25
                 {
                     continue;
                 }
@@ -640,16 +703,24 @@ impl World {
                 let idx = py * res + px;
                 let out = idx * 4;
                 if x.abs() > HALF_WORLD || z.abs() > HALF_WORLD {
-                    pixels[out..out + 4].copy_from_slice(&[20, 28, 29, 255]);
+                    pixels[out..out + 4].copy_from_slice(&[14, 40, 58, 255]);
                     continue;
                 }
                 let s = self.natural_sample(x, z);
-                heights[idx] = s.height;
+                heights[idx] = if s.ocean { 0.0 } else { s.height };
                 let mut c = crate::ecology::ground_color(self.seed, x, z, &s);
                 // Ensure rivers remain legible when narrower than a map pixel.
                 let water = s.water_height > s.height;
-                if water {
+                if s.ocean {
+                    c = coast::ocean_color((SEA_LEVEL - s.height).max(0.));
+                } else if water {
                     c = [0.24, 0.40, 0.47];
+                } else {
+                    match s.shore {
+                        ShoreKind::Beach => c = [0.72, 0.65, 0.44],
+                        ShoreKind::Cliff => c = [0.48, 0.47, 0.41],
+                        ShoreKind::None => {}
+                    }
                 }
                 let highland = smooth(420.0, 1000.0, s.height);
                 for channel in 0..3 {
@@ -752,42 +823,107 @@ mod tests {
         for (n, &id) in h.order.iter().enumerate() {
             rank[id as usize] = n;
         }
+        let mut expected_rain = 0.0f64;
+        let mut discharged_rain = 0.0f64;
         for i in 0..h.receiver.len() {
+            if h.ocean[i] {
+                assert_eq!(
+                    h.receiver[i],
+                    u32::MAX,
+                    "ocean cell acquired a drainage receiver"
+                );
+                assert_eq!(h.conditioned[i], SEA_LEVEL);
+                assert_eq!(h.water_level[i], SEA_LEVEL);
+            } else {
+                let x = -WORLD_SIZE * 0.5 + (i % hydrology::GRID) as f32 * hydrology::CELL;
+                let z = -WORLD_SIZE * 0.5 + (i / hydrology::GRID) as f32 * hydrology::CELL;
+                expected_rain +=
+                    (0.42 + noise(w.seed ^ 0x3102, x / 29000.0, z / 29000.0) * 1.28) as f64;
+                assert!(
+                    h.ocean[h.basin[i] as usize],
+                    "inland catchment must terminate at an ocean outlet"
+                );
+            }
             let r = h.receiver[i];
             if r == u32::MAX {
+                discharged_rain += h.accumulation[i] as f64;
                 continue;
             }
             let r = r as usize;
             assert!(rank[r] < rank[i]);
             assert!(h.conditioned[r] <= h.conditioned[i]);
-            assert!(h.water_level[r] < h.water_level[i]);
+            assert!(h.water_level[r] <= h.water_level[i]);
+            if h.water_level[i] > SEA_LEVEL {
+                assert!(
+                    h.water_level[r] < h.water_level[i],
+                    "only sea-level tidal reaches may have a flat profile"
+                );
+            }
             assert!(h.accumulation[r] >= h.accumulation[i]);
             assert_eq!(h.basin[r], h.basin[i]);
         }
+        assert!((expected_rain - discharged_rain).abs() < expected_rain * 0.00001,
+            "land rainfall was lost or ocean rainfall was introduced: expected{expected_rain}, discharged{discharged_rain}");
         assert!(h.stats.confluences > 1000 && h.stats.headwaters > 1000 && h.stats.outlets > 20);
     }
     #[test]
     fn refined_channels_join_and_are_downhill() {
         let w = World::new(1337);
         let h = &w.hydrology;
-        for group in h.segments.chunks_exact(8) {
-            for s in group {
-                assert!(s.level_b <= s.level_a + 0.0001);
-                assert!(s.width_b >= s.width_a);
-            }
-            for p in group.windows(2) {
-                assert_eq!(p[0].b, p[1].a);
-                assert_eq!(p[0].level_b, p[1].level_a);
+        // Coast-clipped reaches have variable segment counts. Verify the actual
+        // endpoint graph instead of accidentally joining unrelated groups of8.
+        let mut nodes =
+            std::collections::HashMap::<(u32, u32), (f32, usize, usize, [f32; 2])>::new();
+        for s in &h.segments {
+            assert!(s.level_a >= SEA_LEVEL && s.level_b >= SEA_LEVEL);
+            assert!(s.level_b <= s.level_a + 0.0001);
+            assert!(s.width_b >= s.width_a);
+            for (point, level, incoming) in [(s.a, s.level_a, false), (s.b, s.level_b, true)] {
+                let entry = nodes
+                    .entry((point[0].to_bits(), point[1].to_bits()))
+                    .or_insert((level, 0, 0, point));
+                assert!(
+                    (entry.0 - level).abs() < 0.0001,
+                    "shared river endpoint has mismatched water levels at {point:?}: {} vs {level}",
+                    entry.0
+                );
+                if incoming {
+                    entry.1 += 1;
+                } else {
+                    entry.2 += 1;
+                }
             }
         }
+        let mut junctions = 0;
+        let mut coastal_ends = 0;
+        for &(level, incoming, outgoing, point) in nodes.values() {
+            if incoming >= 2 && outgoing > 0 {
+                junctions += 1;
+            }
+            if incoming > 0 && outgoing == 0 {
+                let raw = raw_height(w.seed, point[0], point[1]);
+                assert!(raw <= SEA_LEVEL + 0.05,
+                    "river geometry ends inland instead of joining its receiver: {point:?}, raw {raw}");
+                assert!(
+                    (level - SEA_LEVEL).abs() < 0.001,
+                    "coastal river endpoint does not meet sea level: {point:?}, level {level}"
+                );
+                coastal_ends += 1;
+            }
+        }
+        assert!(junctions > 0 && coastal_ends > 20);
+        // A raster junction at the sea may become separate mouths after clipping;
+        // inland junctions must remain connected in the emitted geometry.
+        assert!(junctions + h.stats.coastal_outlets >= h.stats.confluences);
         for s in h.segments.iter().step_by(23) {
             let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
-            let sample = h.terrain(p[0], p[1], raw_height(w.seed, p[0], p[1]));
-            assert!(sample.height < sample.water, "dry river {:?}", p);
+            let raw = raw_height(w.seed, p[0], p[1]);
+            assert!(raw >= SEA_LEVEL - 0.03, "river continued offshore at {p:?}");
+            let sample = h.terrain(p[0], p[1], raw);
+            assert!(sample.height < sample.water, "dry river {p:?}");
             assert!(
                 (sample.water - (s.level_a + s.level_b) * 0.5).abs() < 0.5,
-                "inconsistent surface {:?}",
-                p
+                "inconsistent surface {p:?}"
             );
         }
     }
