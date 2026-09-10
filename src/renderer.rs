@@ -1,6 +1,7 @@
 use crate::{
     geometry::{self, MeshData, Vertex, CHUNK_SIZE},
     horizon::{self, PATCH_SIZE},
+    postprocess::PostProcess,
     world::World,
 };
 use bytemuck::{Pod, Zeroable};
@@ -38,11 +39,9 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     world_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
-    blit_pipeline: wgpu::RenderPipeline,
+    post: PostProcess,
     uniform: wgpu::Buffer,
     uniform_group: wgpu::BindGroup,
-    blit_layout: wgpu::BindGroupLayout,
-    blit_group: wgpu::BindGroup,
     scene: wgpu::Texture,
     scene_view: wgpu::TextureView,
     depth: wgpu::Texture,
@@ -140,10 +139,6 @@ impl Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain, atmosphere and materials"),
             source: wgpu::ShaderSource::Wgsl(include_str!("world.wgsl").into()),
-        });
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Pixel presentation"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera and sunlight"),
@@ -247,51 +242,13 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Pixel source"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
-        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&blit_layout],
-            push_constant_ranges: &[],
-        });
-        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Nearest pixel upscale"),
-            layout: Some(&blit_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &blit_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &blit_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
         let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1);
-        let blit_group = Self::blit_group(&device, &blit_layout, &scene_view);
+        let post = PostProcess::new(
+            &device,
+            &scene_view,
+            [scene.width(), scene.height()],
+            format,
+        );
         let (capture, capture_view) = Self::capture_target(&device, width, height, format);
         Ok(Self {
             device,
@@ -300,11 +257,9 @@ impl Renderer {
             config,
             world_pipeline,
             sky_pipeline,
-            blit_pipeline,
+            post,
             uniform,
             uniform_group,
-            blit_layout,
-            blit_group,
             scene,
             scene_view,
             depth,
@@ -368,20 +323,6 @@ impl Renderer {
         let dv = depth.create_view(&Default::default());
         (scene, sv, depth, dv)
     }
-    fn blit_group(
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        view: &wgpu::TextureView,
-    ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(view),
-            }],
-        })
-    }
     fn capture_target(
         device: &wgpu::Device,
         width: u32,
@@ -421,11 +362,19 @@ impl Renderer {
         }
         (self.scene, self.scene_view, self.depth, self.depth_view) =
             Self::targets(&self.device, width, height, self.quality);
-        self.blit_group = Self::blit_group(&self.device, &self.blit_layout, &self.scene_view);
+        self.post.resize(
+            &self.device,
+            &self.scene_view,
+            [self.scene.width(), self.scene.height()],
+        );
         (self.capture, self.capture_view) =
             Self::capture_target(&self.device, width, height, self.config.format);
     }
+    pub fn set_filter(&mut self, mode: u32, strength: f32) {
+        self.post.set_filter(mode, strength);
+    }
     pub fn set_quality(&mut self, q: u32) {
+        let q = q.min(2);
         if q != self.quality {
             self.quality = q;
             self.center = None;
@@ -714,26 +663,8 @@ impl Renderer {
                 }
             }
         }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Pixel presentation"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.blit_pipeline);
-            pass.set_bind_group(0, &self.blit_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        self.post
+            .render(&self.queue, &mut encoder, output, [self.width, self.height]);
         self.queue.submit(Some(encoder.finish()));
         if let Some(frame) = frame {
             frame.present();

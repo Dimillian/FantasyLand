@@ -8,8 +8,10 @@ A first-person procedural fantasy exploration slice, built with Rust, WebAssembl
 - Click the world to focus and capture the mouse. Escape releases it. When a browser blocks capture, click-focused mouse look still works within the window; touch uses drag look.
 - M or Tab: open the unified atlas. M or Escape closes it; Tab navigates controls inside menus.
 - Drag the atlas to pan, scroll to zoom from the local landscape to the whole continent, select a location to set a waypoint or fast travel. Zoom and position persist between openings.
-- I: bag. C: character. K: skills. O: settings (seed, quality, sensitivity, daylight, return to spawn). F3: diagnostics.
+- I: bag. C: character. K: skills. O: settings (screen filter, seed, quality, sensitivity, daylight, return to spawn). F3: diagnostics.
 - Progress and preferences are stored on this device. Add `?seed=42` to explore another deterministic seed.
+
+Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the unfiltered image. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. Bloom extraction and blur run in linear light on small floating-point GPU targets, rebuilt when resolution or quality changes; Clean skips those passes.
 
 ## World
 
@@ -39,6 +41,7 @@ The build script also recognizes the isolated toolchain installed under `.tools/
 ```sh
 cargo test --release --lib
 cargo run --release --bin verify
+cargo run --release --bin verify output/filters 1337 filters
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```

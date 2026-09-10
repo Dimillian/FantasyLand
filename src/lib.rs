@@ -2,6 +2,7 @@ pub mod ecology;
 pub mod geometry;
 mod horizon;
 mod player;
+mod postprocess;
 pub mod renderer;
 pub mod world;
 
@@ -220,6 +221,9 @@ impl Game {
     }
     pub fn spawn(&self) -> Vec<f32> {
         self.world.spawn().to_vec()
+    }
+    pub fn set_filter(&mut self, mode: u32, strength: f32) {
+        self.renderer.set_filter(mode, strength);
     }
     pub fn set_quality(&mut self, q: u32) {
         self.renderer.set_quality(q.min(2));

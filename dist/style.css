@@ -124,3 +124,8 @@ body.mouse-focused #world { cursor: none; }
 @media (max-width: 900px) { .shortcuts { gap: 4px; }.vitals { width: 175px; } }
 @media (max-width: 680px) { .vitals { width: 150px; }.shortcuts { gap: 0; }.map-selection .plain-button, .setting-row { font-size: 14px; } }
 @media (max-width: 420px) { .vitals { width: 119px; }.character-stats > div { font-size: 12px; } }
+
+/* Clean keeps the chosen amount available for the next filtered mode. */
+.setting-row.setting-inactive { opacity: .45; }
+.setting-row input[type=range]:disabled { cursor: default; }
+#filter-strength-value { font-variant-numeric: tabular-nums; }

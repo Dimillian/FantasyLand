@@ -74,6 +74,13 @@ export class Game {
         wasm.game_return_to_spawn(this.__wbg_ptr);
     }
     /**
+     * @param {number} mode
+     * @param {number} strength
+     */
+    set_filter(mode, strength) {
+        wasm.game_set_filter(this.__wbg_ptr, mode, strength);
+    }
+    /**
      * @param {number} q
      */
     set_quality(q) {
@@ -235,6 +242,10 @@ function __wbg_get_imports() {
             const ret = arg0.createRenderPipeline(arg1);
             return ret;
         }, arguments); },
+        __wbg_createSampler_5970d585f322df95: function(arg0, arg1) {
+            const ret = arg0.createSampler(arg1);
+            return ret;
+        },
         __wbg_createShaderModule_744311a1dd685c14: function(arg0, arg1) {
             const ret = arg0.createShaderModule(arg1);
             return ret;
@@ -594,6 +605,15 @@ function __wbg_get_imports() {
         __wbg_set_access_67a4b0ae1c0f32f5: function(arg0, arg1) {
             arg0.access = __wbindgen_enum_GpuStorageTextureAccess[arg1];
         },
+        __wbg_set_address_mode_u_1a44abe112b27750: function(arg0, arg1) {
+            arg0.addressModeU = __wbindgen_enum_GpuAddressMode[arg1];
+        },
+        __wbg_set_address_mode_v_764da2dbc77dbf3e: function(arg0, arg1) {
+            arg0.addressModeV = __wbindgen_enum_GpuAddressMode[arg1];
+        },
+        __wbg_set_address_mode_w_7c5135c7d56f9b4c: function(arg0, arg1) {
+            arg0.addressModeW = __wbindgen_enum_GpuAddressMode[arg1];
+        },
         __wbg_set_alpha_52d96a0bda4f4afe: function(arg0, arg1) {
             arg0.alpha = arg1;
         },
@@ -661,6 +681,9 @@ function __wbg_get_imports() {
             arg0.color = arg1;
         },
         __wbg_set_compare_1e2214a402af6db3: function(arg0, arg1) {
+            arg0.compare = __wbindgen_enum_GpuCompareFunction[arg1];
+        },
+        __wbg_set_compare_e61cc62d8f7e2191: function(arg0, arg1) {
             arg0.compare = __wbindgen_enum_GpuCompareFunction[arg1];
         },
         __wbg_set_count_f285d8c62f4de679: function(arg0, arg1) {
@@ -798,6 +821,9 @@ function __wbg_get_imports() {
         __wbg_set_label_4d049edb707ba31c: function(arg0, arg1, arg2) {
             arg0.label = getStringFromWasm0(arg1, arg2);
         },
+        __wbg_set_label_5724e5c6286e8a4e: function(arg0, arg1, arg2) {
+            arg0.label = getStringFromWasm0(arg1, arg2);
+        },
         __wbg_set_label_8354c6463558484f: function(arg0, arg1, arg2) {
             arg0.label = getStringFromWasm0(arg1, arg2);
         },
@@ -828,20 +854,38 @@ function __wbg_get_imports() {
         __wbg_set_load_op_103e6ce0a06327b3: function(arg0, arg1) {
             arg0.loadOp = __wbindgen_enum_GpuLoadOp[arg1];
         },
+        __wbg_set_lod_max_clamp_3706b17de6a5a11a: function(arg0, arg1) {
+            arg0.lodMaxClamp = arg1;
+        },
+        __wbg_set_lod_min_clamp_1f4b28d77d0c87c4: function(arg0, arg1) {
+            arg0.lodMinClamp = arg1;
+        },
+        __wbg_set_mag_filter_2c8c212ff297b151: function(arg0, arg1) {
+            arg0.magFilter = __wbindgen_enum_GpuFilterMode[arg1];
+        },
         __wbg_set_mapped_at_creation_12773dff1bb6ea0f: function(arg0, arg1) {
             arg0.mappedAtCreation = arg1 !== 0;
         },
         __wbg_set_mask_94311bacf22c96b1: function(arg0, arg1) {
             arg0.mask = arg1 >>> 0;
         },
+        __wbg_set_max_anisotropy_56bff110d0b4830f: function(arg0, arg1) {
+            arg0.maxAnisotropy = arg1;
+        },
         __wbg_set_min_binding_size_164df827e02821e1: function(arg0, arg1) {
             arg0.minBindingSize = arg1;
+        },
+        __wbg_set_min_filter_66d70efb70601bf9: function(arg0, arg1) {
+            arg0.minFilter = __wbindgen_enum_GpuFilterMode[arg1];
         },
         __wbg_set_mip_level_count_3402f5315a423b69: function(arg0, arg1) {
             arg0.mipLevelCount = arg1 >>> 0;
         },
         __wbg_set_mip_level_count_ed029120a0ee12b8: function(arg0, arg1) {
             arg0.mipLevelCount = arg1 >>> 0;
+        },
+        __wbg_set_mipmap_filter_1b3d153bd834ec26: function(arg0, arg1) {
+            arg0.mipmapFilter = __wbindgen_enum_GpuMipmapFilterMode[arg1];
         },
         __wbg_set_module_119c125107e59165: function(arg0, arg1) {
             arg0.module = arg1;
@@ -1114,6 +1158,9 @@ function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4
 }
 
 
+const __wbindgen_enum_GpuAddressMode = ["clamp-to-edge", "repeat", "mirror-repeat"];
+
+
 const __wbindgen_enum_GpuBlendFactor = ["zero", "one", "src", "one-minus-src", "src-alpha", "one-minus-src-alpha", "dst", "one-minus-dst", "dst-alpha", "one-minus-dst-alpha", "src-alpha-saturated", "constant", "one-minus-constant", "src1", "one-minus-src1", "src1-alpha", "one-minus-src1-alpha"];
 
 
@@ -1132,6 +1179,9 @@ const __wbindgen_enum_GpuCompareFunction = ["never", "less", "equal", "less-equa
 const __wbindgen_enum_GpuCullMode = ["none", "front", "back"];
 
 
+const __wbindgen_enum_GpuFilterMode = ["nearest", "linear"];
+
+
 const __wbindgen_enum_GpuFrontFace = ["ccw", "cw"];
 
 
@@ -1139,6 +1189,9 @@ const __wbindgen_enum_GpuIndexFormat = ["uint16", "uint32"];
 
 
 const __wbindgen_enum_GpuLoadOp = ["load", "clear"];
+
+
+const __wbindgen_enum_GpuMipmapFilterMode = ["nearest", "linear"];
 
 
 const __wbindgen_enum_GpuPowerPreference = ["low-power", "high-performance"];

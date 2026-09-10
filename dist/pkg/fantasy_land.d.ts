@@ -12,6 +12,7 @@ export class Game {
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
+    set_filter(mode: number, strength: number): void;
     set_quality(q: number): void;
     set_time(hour: number): void;
     spawn(): Float32Array;
@@ -37,6 +38,7 @@ export interface InitOutput {
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_set_filter: (a: number, b: number, c: number) => void;
     readonly game_set_quality: (a: number, b: number) => void;
     readonly game_set_time: (a: number, b: number) => void;
     readonly game_spawn: (a: number) => [number, number];

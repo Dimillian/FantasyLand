@@ -25,6 +25,9 @@ let game, state = {}, started = false, locked = false, modal = null;
 let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
+// Existing v4 saves acquire the new visual preferences without moving the player.
+let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
+let filterStrength = Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
@@ -39,6 +42,7 @@ $('intro-seed').textContent = seed;
 $('seed-input').value = seed;
 $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
+updateFilterControls();
 
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
@@ -50,8 +54,26 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
+}
+
+function updateFilterControls() {
+  $('filter-select').value = String(filterMode);
+  $('filter-strength').value = String(Math.round(filterStrength * 100));
+  $('filter-strength-value').textContent = `${Math.round(filterStrength * 100)}%`;
+  $('filter-strength').disabled = filterMode === 0;
+  $('filter-strength-row').classList.toggle('setting-inactive', filterMode === 0);
+  $('filter-description').textContent = [
+    'Unfiltered, crisp scene colors.',
+    'Soft light around bright surfaces.',
+    'Classic monitor texture and soft glow.',
+  ][filterMode];
+}
+
+function applyFilter() {
+  updateFilterControls();
+  if (game) game.set_filter(filterMode, filterStrength);
 }
 
 function resize() {
@@ -461,6 +483,7 @@ async function boot() {
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
+    applyFilter();
     worldSize = Number(game.world_size());
     game.set_quality(quality);
     resize();
@@ -517,6 +540,19 @@ $('fast-travel').addEventListener('click', () => {
 });
 $('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
 $('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); saveProgress(); });
+$('filter-select').addEventListener('change', (event) => {
+  const selected = Number(event.target.value);
+  filterMode = [0, 1, 2].includes(selected) ? selected : 1;
+  applyFilter();
+  saveProgress();
+});
+$('filter-strength').addEventListener('input', (event) => {
+  if (filterMode === 0) return;
+  const amount = Number(event.target.value);
+  filterStrength = Number.isFinite(amount) ? clamp(amount / 100, 0, 1.5) : 1;
+  applyFilter();
+  saveProgress();
+});
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });
 $('time-setting').addEventListener('input', (event) => { game?.set_time(Number(event.target.value)); $('time-setting-label').textContent = formatTime(Number(event.target.value)); });
 $('seed-form').addEventListener('submit', (event) => {
