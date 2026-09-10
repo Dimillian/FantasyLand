@@ -26,8 +26,12 @@ let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
 // Existing v4 saves acquire the new visual preferences without moving the player.
-let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
+let filterMode = [0, 1, 2, 3].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
 let filterStrength = Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
+const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 450, 720, 1080];
+let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
+let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(saved.asciiScale ?? 2) : 2;
+let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
@@ -42,7 +46,9 @@ $('intro-seed').textContent = seed;
 $('seed-input').value = seed;
 $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
+$('render-resolution').value = String(renderResolution);
 updateFilterControls();
+updateAsciiControls();
 
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
@@ -54,7 +60,7 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -62,18 +68,36 @@ function updateFilterControls() {
   $('filter-select').value = String(filterMode);
   $('filter-strength').value = String(Math.round(filterStrength * 100));
   $('filter-strength-value').textContent = `${Math.round(filterStrength * 100)}%`;
-  $('filter-strength').disabled = filterMode === 0;
-  $('filter-strength-row').classList.toggle('setting-inactive', filterMode === 0);
+  $('filter-strength').disabled = filterMode === 0 || filterMode === 3;
+  $('filter-strength-row').classList.toggle('setting-inactive', filterMode === 0 || filterMode === 3);
+  $('ascii-options').classList.toggle('hidden', filterMode !== 3);
   $('filter-description').textContent = [
     'Unfiltered, crisp scene colors.',
     'Soft light around bright surfaces.',
     'Classic monitor texture and soft glow.',
+    'The world drawn entirely with colored glyphs.',
   ][filterMode];
 }
 
 function applyFilter() {
   updateFilterControls();
   if (game) game.set_filter(filterMode, filterStrength);
+}
+
+function updateAsciiControls() {
+  $('ascii-scale').value = String(asciiScale);
+  $('ascii-palette').value = String(asciiPalette);
+}
+
+function applyAscii() {
+  updateAsciiControls();
+  if (game) game.set_ascii(asciiScale, asciiPalette);
+}
+
+function updateRenderDimensions() {
+  if (!game) return;
+  const actual = game.render_resolution();
+  if (actual && actual.length >= 2) $('render-dimensions').textContent = `Actual ${actual[0]} × ${actual[1]}`;
 }
 
 function resize() {
@@ -83,6 +107,7 @@ function resize() {
   const width = Math.max(1, Math.round(canvas.clientWidth));
   const height = Math.max(1, Math.round(canvas.clientHeight));
   game.resize(width, height);
+  updateRenderDimensions();
   if (modal === 'map') resizeMap();
 }
 
@@ -483,9 +508,11 @@ async function boot() {
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
-    applyFilter();
     worldSize = Number(game.world_size());
     game.set_quality(quality);
+    game.set_render_resolution(renderResolution);
+    applyAscii();
+    applyFilter();
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
@@ -539,18 +566,38 @@ $('fast-travel').addEventListener('click', () => {
   toast(`Arrived at ${destination.name}.`);
 });
 $('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
-$('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); saveProgress(); });
+$('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); updateRenderDimensions(); saveProgress(); });
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
-  filterMode = [0, 1, 2].includes(selected) ? selected : 1;
+  filterMode = [0, 1, 2, 3].includes(selected) ? selected : 1;
   applyFilter();
   saveProgress();
 });
 $('filter-strength').addEventListener('input', (event) => {
-  if (filterMode === 0) return;
+  if (filterMode === 0 || filterMode === 3) return;
   const amount = Number(event.target.value);
   filterStrength = Number.isFinite(amount) ? clamp(amount / 100, 0, 1.5) : 1;
   applyFilter();
+  saveProgress();
+});
+$('render-resolution').addEventListener('change', (event) => {
+  const selected = Number(event.target.value);
+  renderResolution = RESOLUTION_OPTIONS.includes(selected) ? selected : 0;
+  $('render-resolution').value = String(renderResolution);
+  game?.set_render_resolution(renderResolution);
+  updateRenderDimensions();
+  saveProgress();
+});
+$('ascii-scale').addEventListener('change', (event) => {
+  const selected = Number(event.target.value);
+  asciiScale = [1, 2, 3].includes(selected) ? selected : 2;
+  applyAscii();
+  saveProgress();
+});
+$('ascii-palette').addEventListener('change', (event) => {
+  const selected = Number(event.target.value);
+  asciiPalette = [0, 1, 2].includes(selected) ? selected : 0;
+  applyAscii();
   saveProgress();
 });
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });

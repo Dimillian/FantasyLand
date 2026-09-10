@@ -4,7 +4,7 @@ const assert = require('assert/strict');
 const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html'), 'utf8');
 const source = fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '');
 class Element {
-  constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classList={ add(){}, remove(){}, toggle(){}, contains(){return true;} }; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; }
+  constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
   fire(name, data={}) { const event={target:this, preventDefault(){this.prevented=true;}, ...data}; for(const cb of this.listeners[name]||[]) cb(event); return event; }
   setAttribute(name,value){this.attributes[name]=value;}
@@ -24,7 +24,7 @@ document.exitPointerLock=()=>{document.pointerLockElement=null;document.fire('po
 const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,sensitivity:1.4,x:900,z:800,waypoint:{x:5,z:8,name:'Old'},atlas:{x:9,z:8,span:700}}) };
 let calls=0, looks=[], rejected;
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},set_time(){},set_quality(){},set_filter(){},return_to_spawn(){},teleport(){}};
+const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},set_time(){},set_quality(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -38,13 +38,24 @@ function filterHarness(snapshot) {
   filterDocument.getElementById = id => filterIds[id];
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [];
-  const engine = { set_filter:(mode,strength)=>filterCalls.push([mode,strength]), world_size:()=>256000, set_quality(){}, resize(){}, teleport:(x,z)=>teleports.push([x,z]), state:()=>({x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100}) };
+  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], rendererEvents = [];
+  let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
+  const engine = {
+    set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
+    set_ascii:(scale,palette)=>{asciiCalls.push([scale,palette]);rendererEvents.push(['ascii',scale,palette]);},
+    set_render_resolution:height=>{selectedResolution=height;resolutionCalls.push(height);rendererEvents.push(['resolution',height]);},
+    render_resolution:()=>{const height=selectedResolution===1 ? surfaceHeight : selectedResolution || [240,360,450][selectedQuality];return new Uint32Array([Math.round(surfaceWidth/surfaceHeight*height),height]);},
+    world_size:()=>256000,
+    set_quality:value=>{selectedQuality=value;qualityCalls.push(value);rendererEvents.push(['quality',value]);},
+    resize:(width,height)=>{surfaceWidth=width;surfaceHeight=height;rendererEvents.push(['resize',width,height]);},
+    teleport:(x,z)=>teleports.push([x,z]),
+    state:()=>({x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100})
+  };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
   const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,calls:filterCalls,teleports,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -53,8 +64,14 @@ async function verifyFilterSettings() {
   assert.equal(first.run('filterMode'),1); assert.equal(first.run('filterStrength'),1);
   assert.equal(first.ids['filter-select'].value,'1'); assert.equal(first.ids['filter-strength'].value,'100');
   assert.equal(first.ids['filter-strength'].disabled,false);
+  assert.equal(first.run('renderResolution'),0); assert.equal(first.run('asciiScale'),2); assert.equal(first.run('asciiPalette'),0);
+  assert.equal(first.ids['render-resolution'].value,'0'); assert.equal(first.ids['ascii-scale'].value,'2'); assert.equal(first.ids['ascii-palette'].value,'0');
+  assert.equal(first.ids['ascii-options'].classList.contains('hidden'),true);
   await first.run('boot()');
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
+  assert.deepEqual(first.asciiCalls,[[2,0]]); assert.deepEqual(first.resolutionCalls,[0]);
+  assert.equal(first.ids['render-dimensions'].textContent,'Actual 720 × 450');
+  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
@@ -84,6 +101,48 @@ async function verifyFilterSettings() {
   console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; v4 position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
 }
 
+async function verifyAsciiResolutionSettings() {
+  const existing = {seed:1337,x:810,z:-160,quality:2,sensitivity:1,filterMode:3,filterStrength:0,asciiScale:3,asciiPalette:1,renderResolution:360,waypoint:{x:900,z:-210,name:'The Pass'},atlas:{x:850,z:-180,span:8000}};
+  const selected = filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;');
+  assert.deepEqual(selected.calls,[[3,0]],'ASCII must remain selected even with a saved zero filter strength.');
+  assert.deepEqual(selected.asciiCalls,[[3,1]]); assert.deepEqual(selected.resolutionCalls,[360]);
+  assert.equal(selected.ids['ascii-options'].classList.contains('hidden'),false);
+  assert.equal(selected.ids['filter-strength'].disabled,true);
+  assert.equal(selected.ids['render-dimensions'].textContent,'Actual 576 × 360');
+  const before=selected.calls.length;
+  selected.ids['filter-strength'].value='120'; selected.ids['filter-strength'].fire('input');
+  assert.equal(selected.calls.length,before,'ASCII must ignore its disabled blend strength.');
+  selected.ids['ascii-scale'].value='1'; selected.ids['ascii-scale'].fire('change'); assert.deepEqual(selected.asciiCalls.at(-1),[1,1]);
+  selected.ids['ascii-palette'].value='2'; selected.ids['ascii-palette'].fire('change'); assert.deepEqual(selected.asciiCalls.at(-1),[1,2]);
+  selected.ids['render-resolution'].value='720'; selected.ids['render-resolution'].fire('change');
+  assert.equal(selected.resolutionCalls.at(-1),720); assert.equal(selected.ids['render-dimensions'].textContent,'Actual 1152 × 720');
+  const resolutionCallCount=selected.resolutionCalls.length;
+  selected.ids['quality-select'].value='0'; selected.ids['quality-select'].fire('change');
+  assert.equal(selected.qualityCalls.at(-1),0); assert.equal(selected.resolutionCalls.length,resolutionCallCount,'Changing world quality must not overwrite an explicit resolution.');
+  assert.equal(selected.ids['render-dimensions'].textContent,'Actual 1152 × 720');
+  const persisted=selected.saved();
+  assert.equal(persisted.asciiScale,1); assert.equal(persisted.asciiPalette,2); assert.equal(persisted.renderResolution,720); assert.equal(persisted.filterMode,3);
+  assert.equal(persisted.x,existing.x); assert.equal(persisted.z,existing.z); assert.deepEqual(persisted.waypoint,existing.waypoint); assert.deepEqual(persisted.atlas,existing.atlas);
+  const restored=filterHarness(persisted); await restored.run('boot()'); restored.run('initialReady=true;');
+  assert.deepEqual(restored.asciiCalls,[[1,2]]); assert.deepEqual(restored.resolutionCalls,[720]); assert.deepEqual(restored.calls,[[3,0]]);
+  restored.ids['render-resolution'].value='1'; restored.ids['render-resolution'].fire('change');
+  assert.equal(restored.ids['render-dimensions'].textContent,'Actual 800 × 500');
+  restored.ids.world.clientWidth=900;restored.ids.world.clientHeight=600;restored.run('resize()');
+  assert.equal(restored.ids['render-dimensions'].textContent,'Actual 900 × 600','Native actual dimensions must follow viewport resize.');
+  restored.ids['render-resolution'].value='0'; restored.ids['render-resolution'].fire('change');
+  assert.equal(restored.ids['render-dimensions'].textContent,'Actual 360 × 240');
+  restored.ids['quality-select'].value='1'; restored.ids['quality-select'].fire('change');
+  assert.equal(restored.ids['render-dimensions'].textContent,'Actual 540 × 360','Auto must follow world quality.');
+  restored.ids['filter-select'].value='1'; restored.ids['filter-select'].fire('change');
+  assert.equal(restored.ids['ascii-options'].classList.contains('hidden'),true); assert.equal(restored.ids['filter-strength'].disabled,false);
+  restored.ids['filter-select'].value='3'; restored.ids['filter-select'].fire('change');
+  assert.equal(restored.ids['ascii-options'].classList.contains('hidden'),false); assert.equal(restored.ids['filter-strength'].disabled,true);
+  assert.equal(restored.ids['ascii-scale'].value,'1'); assert.equal(restored.ids['ascii-palette'].value,'2');
+  const invalid=filterHarness({...existing,renderResolution:999,asciiScale:99,asciiPalette:99});
+  assert.equal(invalid.run('renderResolution'),0);assert.equal(invalid.run('asciiScale'),2);assert.equal(invalid.run('asciiPalette'),0);
+  console.log('PASS: ASCII full-mode preference; size/palette API calls; disabled ASCII strength; resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
+}
+
 async function main(){
   assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),undefined); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
@@ -111,6 +170,7 @@ async function main(){
   key('KeyI');assert.equal(run('modal'),'bag');key('KeyC');assert.equal(run('modal'),'character');assert.equal(ids['character-stamina'].textContent,'75 / 100');key('KeyK');assert.equal(run('modal'),'skills');key('Escape');assert.equal(run('modal'),null);
   assert.equal(key('Space').prevented,true);assert.equal(run('jumpQueued'),true);
   await verifyFilterSettings();
+  await verifyAsciiResolutionSettings();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

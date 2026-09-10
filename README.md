@@ -13,6 +13,10 @@ A first-person procedural fantasy exploration slice, built with Rust, WebAssembl
 
 Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the unfiltered image. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. Bloom extraction and blur run in linear light on small floating-point GPU targets, rebuilt when resolution or quality changes; Clean skips those passes.
 
+ASCII renders the view entirely as printable character cells. A GPU pass encodes one glyph and foreground color per cell from the scene's brightness and edge direction; a second draws original 5×7 bitmap glyphs against a terminal background. No original scene pixels show through. Choose Small, Medium or Large text and scene colors, amber or green phosphor. ASCII uses its own text-size controls rather than the effect-strength slider.
+
+Internal resolution is separately selectable from 120p to 1080p, preserving the viewport aspect ratio, with actual dimensions shown. Auto retains the quality preset's 270/450/720p cap; Native matches the game canvas. Explicit resolutions stay fixed when world quality changes and can supersample a smaller viewport. ASCII text size controls its character grid independently of the underlying scene resolution. These preferences preserve the existing player position and atlas view.
+
 ## World
 
 The world is 256 × 256 km (65,536 km²), with signed coordinates centered on zero. Terrain streams in 192 m chunks with several levels of detail. Coarse terrain patches extend the real horizon to roughly 20 km at the default setting; distant mountains remain part of the same walkable world. The default seed is 1337.
@@ -42,6 +46,7 @@ The build script also recognizes the isolated toolchain installed under `.tools/
 cargo test --release --lib
 cargo run --release --bin verify
 cargo run --release --bin verify output/filters 1337 filters
+cargo run --release --bin verify output/ascii-verification 1337 ascii
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```
@@ -56,7 +61,7 @@ The native verifier runs the same wgpu shaders on a real GPU, checks the rendere
 - Roads connect sites and follow/level local terrain; distant mountain roads can be too steep and still need pass/switchback routing.
 - Trunks and boulders block movement. Landmark structures are currently primarily visual, with limited structural collision.
 - Terrain and props generate incrementally on the browser's main thread. Worker scheduling and instancing are future optimizations.
-- The low-poly renderer is the first art target. ASCII++ is not implemented in this slice.
+- ASCII currently converts the rasterized 3D view into character cells; it is not a separate terminal application or a text representation of world geometry.
 
 ## Code
 

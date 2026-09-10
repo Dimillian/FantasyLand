@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Settings {
-    controls: [f32; 4], // mode, strength, reserved, reserved
+    controls: [f32; 4], // mode, strength, ASCII cell scale, ASCII palette
     output: [f32; 4],   // presentation width/height
 }
 struct Target {
@@ -20,6 +20,13 @@ struct Level {
 
 pub struct PostProcess {
     source_layout: wgpu::BindGroupLayout,
+    ascii_layout: wgpu::BindGroupLayout,
+    ascii_pipeline: wgpu::RenderPipeline,
+    ascii_source: wgpu::BindGroup,
+    ascii_texture: wgpu::Texture,
+    ascii_view: wgpu::TextureView,
+    ascii_scale: u32,
+    ascii_palette: u32,
     presentation_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
@@ -39,6 +46,7 @@ impl PostProcess {
         device: &wgpu::Device,
         scene: &wgpu::TextureView,
         size: [u32; 2],
+        output_size: [u32; 2],
         format: wgpu::TextureFormat,
     ) -> Self {
         let texture = |binding| wgpu::BindGroupLayoutEntry {
@@ -61,6 +69,20 @@ impl PostProcess {
             label: Some("Bloom source"),
             entries: &[texture(0), sampler_entry(1)],
         });
+        let uniform_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let ascii_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ASCII cell source"),
+            entries: &[texture(0), sampler_entry(1), uniform_entry(2)],
+        });
         let presentation_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Filter composition"),
@@ -70,6 +92,7 @@ impl PostProcess {
                     texture(2),
                     texture(3),
                     sampler_entry(4),
+                    texture(6),
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -97,8 +120,12 @@ impl PostProcess {
             label: Some("Bloom pyramid"),
             source: wgpu::ShaderSource::Wgsl(include_str!("bloom.wgsl").into()),
         });
+        let ascii_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ASCII cell encoder"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ascii.wgsl").into()),
+        });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Bloom and CRT presentation"),
+            label: Some("Bloom, CRT and ASCII presentation"),
             source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
         });
         let pipeline =
@@ -169,6 +196,15 @@ impl PostProcess {
             "fs_main",
             format,
         );
+        let ascii_pipeline = pipeline(
+            "Encode terminal cells",
+            &ascii_shader,
+            &ascii_layout,
+            "fs_main",
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let ascii_source = Self::ascii_source(device, &ascii_layout, scene, &sampler, &uniform);
+        let (ascii_texture, ascii_view) = Self::ascii_target(device, output_size, 2);
         let scene_source = Self::source(device, &source_layout, scene, &sampler);
         let levels = Self::levels(device, &source_layout, &sampler, size);
         let presentation_group = Self::composition(
@@ -178,9 +214,17 @@ impl PostProcess {
             &levels,
             &sampler,
             &uniform,
+            &ascii_view,
         );
         Self {
             source_layout,
+            ascii_layout,
+            ascii_pipeline,
+            ascii_source,
+            ascii_texture,
+            ascii_view,
+            ascii_scale: 2,
+            ascii_palette: 0,
             presentation_layout,
             sampler,
             uniform,
@@ -263,6 +307,7 @@ impl PostProcess {
         levels: &[Level],
         sampler: &wgpu::Sampler,
         uniform: &wgpu::Buffer,
+        ascii_view: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("World and bloom levels"),
@@ -289,13 +334,86 @@ impl PostProcess {
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
                 wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(ascii_view),
+                },
+                wgpu::BindGroupEntry {
                     binding: 5,
                     resource: uniform.as_entire_binding(),
                 },
             ],
         })
     }
-    pub fn resize(&mut self, device: &wgpu::Device, scene: &wgpu::TextureView, size: [u32; 2]) {
+    fn ascii_target(
+        device: &wgpu::Device,
+        output_size: [u32; 2],
+        scale: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Terminal glyph and foreground grid"),
+            size: wgpu::Extent3d {
+                width: output_size[0].div_ceil(6 * scale).max(1),
+                height: output_size[1].div_ceil(9 * scale).max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        (texture, view)
+    }
+    fn ascii_source(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        scene: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        uniform: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ASCII analysis input"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scene),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        })
+    }
+    pub fn set_ascii(&mut self, scale: u32, palette: u32) -> bool {
+        let changed = self.ascii_scale != scale.clamp(1, 3);
+        self.ascii_scale = scale.clamp(1, 3);
+        self.ascii_palette = if palette <= 2 { palette } else { 0 };
+        changed
+    }
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        scene: &wgpu::TextureView,
+        size: [u32; 2],
+        output_size: [u32; 2],
+    ) {
+        (self.ascii_texture, self.ascii_view) =
+            Self::ascii_target(device, output_size, self.ascii_scale);
+        self.ascii_source = Self::ascii_source(
+            device,
+            &self.ascii_layout,
+            scene,
+            &self.sampler,
+            &self.uniform,
+        );
         self.levels = Self::levels(device, &self.source_layout, &self.sampler, size);
         self.scene_source = Self::source(device, &self.source_layout, scene, &self.sampler);
         self.presentation_group = Self::composition(
@@ -305,10 +423,11 @@ impl PostProcess {
             &self.levels,
             &self.sampler,
             &self.uniform,
+            &self.ascii_view,
         );
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
-        self.mode = if mode <= 2 { mode } else { 1 };
+        self.mode = if mode <= 3 { mode } else { 1 };
         self.strength = if strength.is_finite() {
             strength.clamp(0.0, 1.5)
         } else {
@@ -326,11 +445,24 @@ impl PostProcess {
             &self.uniform,
             0,
             bytemuck::bytes_of(&Settings {
-                controls: [self.mode as f32, self.strength, 0.0, 0.0],
+                controls: [
+                    self.mode as f32,
+                    self.strength,
+                    self.ascii_scale as f32,
+                    self.ascii_palette as f32,
+                ],
                 output: [size[0] as f32, size[1] as f32, 0.0, 0.0],
             }),
         );
-        if self.mode != 0 && self.strength > 0.0 {
+        if self.mode == 3 {
+            Self::pass(
+                encoder,
+                &self.ascii_view,
+                &self.ascii_pipeline,
+                &self.ascii_source,
+            );
+        }
+        if matches!(self.mode, 1 | 2) && self.strength > 0.0 {
             for (i, level) in self.levels.iter().enumerate() {
                 let input = if i == 0 {
                     &self.scene_source

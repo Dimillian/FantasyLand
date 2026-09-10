@@ -222,6 +222,15 @@ impl Game {
     pub fn spawn(&self) -> Vec<f32> {
         self.world.spawn().to_vec()
     }
+    pub fn set_ascii(&mut self, cell_scale: u32, palette: u32) {
+        self.renderer.set_ascii(cell_scale, palette);
+    }
+    pub fn set_render_resolution(&mut self, height: u32) {
+        self.renderer.set_render_resolution(height);
+    }
+    pub fn render_resolution(&self) -> Vec<u32> {
+        self.renderer.render_resolution().to_vec()
+    }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.renderer.set_filter(mode, strength);
     }

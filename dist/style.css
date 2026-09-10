@@ -129,3 +129,8 @@ body.mouse-focused #world { cursor: none; }
 .setting-row.setting-inactive { opacity: .45; }
 .setting-row input[type=range]:disabled { cursor: default; }
 #filter-strength-value { font-variant-numeric: tabular-nums; }
+
+/* Resolution changes only scene pixels; settings retain the same text sizes. */
+#render-resolution, #ascii-palette { width: 140px; flex-shrink: 0; }
+#render-dimensions { display: inline-block; margin-top: 4px; color: #c4cbb0; font-variant-numeric: tabular-nums; }
+.ascii-options { display: block; }

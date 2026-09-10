@@ -55,6 +55,7 @@ pub struct Renderer {
     horizon_pending: VecDeque<(i32, i32)>,
     horizon_center: Option<(i32, i32)>,
     quality: u32,
+    resolution: u32,
     elapsed: f32,
     pub width: u32,
     pub height: u32,
@@ -242,11 +243,12 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1);
+        let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1, 0);
         let post = PostProcess::new(
             &device,
             &scene_view,
             [scene.width(), scene.height()],
+            [width, height],
             format,
         );
         let (capture, capture_view) = Self::capture_target(&device, width, height, format);
@@ -273,6 +275,7 @@ impl Renderer {
             horizon_pending: VecDeque::new(),
             horizon_center: None,
             quality: 1,
+            resolution: 0,
             elapsed: 0.0,
             width,
             height,
@@ -283,16 +286,20 @@ impl Renderer {
         width: u32,
         height: u32,
         quality: u32,
+        resolution: u32,
     ) -> (
         wgpu::Texture,
         wgpu::TextureView,
         wgpu::Texture,
         wgpu::TextureView,
     ) {
-        let rh = height.min([270, 450, 720][quality as usize]).max(1);
-        let rw = ((width as f32 / height.max(1) as f32) * rh as f32)
-            .round()
-            .max(1.) as u32;
+        let [rw, rh] = scene_dimensions(
+            width,
+            height,
+            quality,
+            resolution,
+            device.limits().max_texture_dimension_2d.min(4096),
+        );
         let make = |format, usage, label| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -361,14 +368,54 @@ impl Renderer {
             s.configure(&self.device, &self.config);
         }
         (self.scene, self.scene_view, self.depth, self.depth_view) =
-            Self::targets(&self.device, width, height, self.quality);
+            Self::targets(&self.device, width, height, self.quality, self.resolution);
         self.post.resize(
             &self.device,
             &self.scene_view,
             [self.scene.width(), self.scene.height()],
+            [self.width, self.height],
         );
         (self.capture, self.capture_view) =
             Self::capture_target(&self.device, width, height, self.config.format);
+    }
+    pub fn set_render_resolution(&mut self, resolution: u32) {
+        let resolution = if resolution <= 1 {
+            resolution
+        } else {
+            resolution.clamp(90, 2160)
+        };
+        if self.resolution != resolution {
+            self.resolution = resolution;
+            self.rebuild_scene();
+        }
+    }
+    pub fn render_resolution(&self) -> [u32; 2] {
+        [self.scene.width(), self.scene.height()]
+    }
+    pub fn set_ascii(&mut self, scale: u32, palette: u32) {
+        if self.post.set_ascii(scale, palette) {
+            self.post.resize(
+                &self.device,
+                &self.scene_view,
+                self.render_resolution(),
+                [self.width, self.height],
+            );
+        }
+    }
+    fn rebuild_scene(&mut self) {
+        (self.scene, self.scene_view, self.depth, self.depth_view) = Self::targets(
+            &self.device,
+            self.width,
+            self.height,
+            self.quality,
+            self.resolution,
+        );
+        self.post.resize(
+            &self.device,
+            &self.scene_view,
+            self.render_resolution(),
+            [self.width, self.height],
+        );
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.post.set_filter(mode, strength);
@@ -716,5 +763,61 @@ impl Renderer {
         drop(mapped);
         buffer.unmap();
         Ok(pixels)
+    }
+}
+
+// Fixed vertical resolutions can supersample small windows. Every mode keeps the
+// viewport aspect ratio and fits the adapter texture limits, including ultrawide.
+fn scene_dimensions(
+    width: u32,
+    height: u32,
+    quality: u32,
+    resolution: u32,
+    limit: u32,
+) -> [u32; 2] {
+    let width = width.max(1) as f64;
+    let height = height.max(1) as f64;
+    let requested = match resolution {
+        0 => height.min([270., 450., 720.][quality.min(2) as usize]),
+        1 => height,
+        n => n.clamp(90, 2160) as f64,
+    };
+    let rw = width / height * requested;
+    let scale = (limit.max(1) as f64 / rw.max(requested)).min(1.0);
+    [
+        (rw * scale).round().max(1.0) as u32,
+        (requested * scale).round().max(1.0) as u32,
+    ]
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::scene_dimensions;
+
+    #[test]
+    fn fixed_resolution_is_independent_of_world_quality() {
+        for quality in 0..=2 {
+            assert_eq!(scene_dimensions(1280, 720, quality, 240, 4096), [427, 240]);
+            assert_eq!(
+                scene_dimensions(1280, 720, quality, 1080, 4096),
+                [1920, 1080]
+            );
+            assert_eq!(scene_dimensions(1280, 720, quality, 1, 4096), [1280, 720]);
+        }
+        assert_eq!(scene_dimensions(1280, 720, 0, 0, 4096), [480, 270]);
+        assert_eq!(scene_dimensions(1280, 720, 1, 0, 4096), [800, 450]);
+    }
+
+    #[test]
+    fn extreme_aspects_fit_texture_limits_without_zero_dimensions() {
+        for (width, height) in [(0, 0), (20000, 1), (1, 20000), (5120, 1440)] {
+            for resolution in [0, 1, 240, 1080, u32::MAX] {
+                let size = scene_dimensions(width, height, 2, resolution, 4096);
+                assert!(size
+                    .into_iter()
+                    .all(|dimension| (1..=4096).contains(&dimension)));
+            }
+        }
+        assert_eq!(scene_dimensions(5120, 1440, 1, 1080, 4096), [3840, 1080]);
     }
 }

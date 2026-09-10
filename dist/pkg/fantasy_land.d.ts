@@ -10,10 +10,13 @@ export class Game {
     is_ready(): boolean;
     look(dx: number, dy: number): void;
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
+    render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
+    set_ascii(cell_scale: number, palette: number): void;
     set_filter(mode: number, strength: number): void;
     set_quality(q: number): void;
+    set_render_resolution(height: number): void;
     set_time(hour: number): void;
     spawn(): Float32Array;
     state(): any;
@@ -36,10 +39,13 @@ export interface InitOutput {
     readonly game_is_ready: (a: number) => number;
     readonly game_look: (a: number, b: number, c: number) => void;
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_set_ascii: (a: number, b: number, c: number) => void;
     readonly game_set_filter: (a: number, b: number, c: number) => void;
     readonly game_set_quality: (a: number, b: number) => void;
+    readonly game_set_render_resolution: (a: number, b: number) => void;
     readonly game_set_time: (a: number, b: number) => void;
     readonly game_spawn: (a: number) => [number, number];
     readonly game_state: (a: number) => any;

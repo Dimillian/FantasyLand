@@ -64,6 +64,15 @@ export class Game {
         return v1;
     }
     /**
+     * @returns {Uint32Array}
+     */
+    render_resolution() {
+        const ret = wasm.game_render_resolution(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * @param {number} width
      * @param {number} height
      */
@@ -72,6 +81,13 @@ export class Game {
     }
     return_to_spawn() {
         wasm.game_return_to_spawn(this.__wbg_ptr);
+    }
+    /**
+     * @param {number} cell_scale
+     * @param {number} palette
+     */
+    set_ascii(cell_scale, palette) {
+        wasm.game_set_ascii(this.__wbg_ptr, cell_scale, palette);
     }
     /**
      * @param {number} mode
@@ -85,6 +101,12 @@ export class Game {
      */
     set_quality(q) {
         wasm.game_set_quality(this.__wbg_ptr, q);
+    }
+    /**
+     * @param {number} height
+     */
+    set_render_resolution(height) {
+        wasm.game_set_render_resolution(this.__wbg_ptr, height);
     }
     /**
      * @param {number} hour
