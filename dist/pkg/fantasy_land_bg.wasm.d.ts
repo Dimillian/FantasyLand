@@ -1,0 +1,31 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_game_free: (a: number, b: number) => void;
+export const game_create: (a: any, b: number) => any;
+export const game_features: (a: number, b: number, c: number, d: number) => any;
+export const game_is_ready: (a: number) => number;
+export const game_look: (a: number, b: number, c: number) => void;
+export const game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const game_resize: (a: number, b: number, c: number) => void;
+export const game_return_to_spawn: (a: number) => void;
+export const game_set_quality: (a: number, b: number) => void;
+export const game_set_time: (a: number, b: number) => void;
+export const game_spawn: (a: number) => [number, number];
+export const game_state: (a: number) => any;
+export const game_teleport: (a: number, b: number, c: number) => void;
+export const game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+export const game_world_size: (a: number) => number;
+export const inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const inspect_world: (a: number, b: number, c: number) => any;
+export const wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+export const wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_destroy_closure: (a: number, b: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;

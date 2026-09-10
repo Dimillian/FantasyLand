@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#20231d" />
+    <meta name="description" content="Explore a vast procedurally generated fantasy wilderness. A playable Rust, WebAssembly and WebGPU experiment." />
+    <title>FantasyLand — The Wilderness</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <canvas id="world" aria-label="First-person view of the procedurally generated world" tabindex="0"></canvas>
+    <div class="vignette" aria-hidden="true"></div>
+
+    <header class="top-hud" id="top-hud">
+      <div class="location-panel hud-panel"><span class="small-label" id="region-label">THE ENDLESS MARCHES</span><strong id="place-name">The King’s Road</strong><span class="biome-label" id="biome-label">GENERATING WILDERNESS</span></div>
+      <div class="compass-panel hud-panel" aria-label="Compass"><div id="compass-track"></div><div class="compass-needle"></div><span id="heading-label">N · 000°</span></div>
+      <div class="clock-panel hud-panel"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="4"/></svg><div><span class="small-label">DAY I</span><strong id="clock">09:00</strong></div></div>
+    </header>
+
+    <div id="crosshair" aria-hidden="true"><span></span><span></span></div>
+    <div class="destination-marker hidden" id="destination-marker"><span class="diamond">◇</span><span id="marker-distance"></span></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div class="explore-hint" id="explore-hint"><span>W A S D</span> MOVE <i>·</i> <span>SHIFT</span> RUN <i>·</i> <span>M</span> MAP <i>·</i> <span>ESC</span> CURSOR</div>
+
+    <footer class="bottom-hud" id="bottom-hud">
+      <div class="character-card hud-panel"><div class="portrait" aria-hidden="true"><svg viewBox="0 0 40 48" shape-rendering="crispEdges"><path fill="#262b27" d="M8 41h24v7H8z"/><path fill="#6d756a" d="M11 27h18v12h6v9H5v-9h6z"/><path fill="#abb0a0" d="M13 7h14v4h4v20H9V11h4z"/><path fill="#d0d0b7" d="M17 3h6v5h4v3H13V8h4z"/><path fill="#586660" d="M9 16h22v8H9z"/><path fill="#bea17d" d="M14 22h12v15H14z"/><path fill="#252b27" d="M14 24h4v3h-4zm8 0h4v3h-4z"/><path fill="#665947" d="M17 33h6v6h-6z"/><path fill="#8c9587" d="M9 29h5v13H9zm17 0h5v13h-5z"/><path fill="#c0baa0" d="M18 7h4v15h-4z"/></svg></div><div><span class="small-label">THE WAYFARER</span><strong>Wilderness explorer</strong><div class="stamina-line"><span>ST</span><div class="meter"><i id="stamina-fill"></i></div></div></div></div>
+      <div class="journey-card hud-panel"><span class="small-label">YOUR JOURNEY</span><div class="journey-heading"><span id="target-icon">↟</span><strong id="journey-target">Follow your own path</strong></div><span id="journey-distance">Every horizon is within reach.</span></div>
+      <nav class="action-bar" aria-label="Game controls"><button id="local-map-button" class="hud-button" title="Local map (M)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2zm6-2v16m6-14v16"/></svg><span>LOCAL MAP</span><kbd>M</kbd></button><button id="world-map-button" class="hud-button" title="World map (Tab)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c6 6 6 12 0 18-6-6-6-12 0-18z"/></svg><span>WORLD MAP</span><kbd>TAB</kbd></button><button id="settings-button" class="hud-button settings-button" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg><span>SETTINGS</span></button></nav>
+    </footer>
+
+    <div id="touch-controls" class="touch-controls" aria-label="Touch movement controls"><button data-move="forward" aria-label="Walk forward">▲</button><button data-move="left" aria-label="Walk left">◀</button><button data-move="back" aria-label="Walk backward">▼</button><button data-move="right" aria-label="Walk right">▶</button><button data-move="sprint" aria-label="Sprint">RUN</button></div>
+    <pre id="diagnostics" class="hidden" aria-label="Performance diagnostics"></pre>
+
+    <section class="overlay intro-overlay" id="intro" aria-labelledby="intro-title">
+      <div class="intro-card">
+        <div class="intro-insignia" aria-hidden="true">♜</div><p class="eyebrow">A PROCEDURAL FANTASY WILDERNESS</p><h1 id="intro-title">FANTASYLAND</h1><div class="title-rule"><span></span><b>THE ENDLESS MARCHES</b><span></span></div>
+        <p class="intro-copy">Beyond the last hearth, a world awaits.<br/>Find your road. Walk to the horizon.</p>
+        <div class="loading-track" id="loading-track"><div></div></div><p class="loading-label" id="loading-label" role="status">Surveying the land…</p>
+        <button id="start-button" class="primary-button hidden">ENTER THE WILDERNESS <span>→</span></button>
+        <div class="intro-controls"><div><kbd>W A S D</kbd><span>MOVE</span></div><div><kbd>MOUSE</kbd><span>LOOK</span></div><div><kbd>SHIFT</kbd><span>RUN</span></div><div><kbd>M / TAB</kbd><span>MAPS</span></div></div>
+        <p class="prototype-note">EXPLORATION PROTOTYPE <span>·</span> SEED <span id="intro-seed">1337</span></p>
+        <div id="load-error" class="load-error hidden"><p id="load-error-message"></p><button id="retry-button" class="secondary-button">TRY AGAIN</button></div>
+      </div>
+    </section>
+
+    <section id="map-modal" class="overlay map-overlay hidden" aria-labelledby="map-title" aria-modal="true" role="dialog">
+      <div class="map-frame">
+        <header class="modal-header"><div><p class="eyebrow">THE WAYFARER’S ATLAS</p><h2 id="map-title">Local map</h2></div><div class="map-tabs" role="tablist" aria-label="Map extent"><button id="local-tab" role="tab" aria-selected="true">LOCAL <kbd>M</kbd></button><button id="world-tab" role="tab" aria-selected="false">WORLD <kbd>TAB</kbd></button></div><button class="close-button" id="close-map" aria-label="Close map">×</button></header>
+        <div class="map-body"><div class="map-canvas-wrap" id="map-canvas-wrap"><canvas id="map-canvas" aria-label="Interactive map. Drag to pan, scroll to zoom, and select a location." tabindex="0"></canvas><div class="map-corner top-left"><span class="small-label" id="map-view-label">LOCAL SURVEY</span><strong id="map-coordinates">0 E · 0 N</strong></div><div class="map-north"><span>N</span><svg viewBox="0 0 28 42" width="28" height="42" aria-hidden="true"><path d="M14 2 25 37 14 29 3 37Z"/></svg></div><div class="map-scale"><div id="map-scale-line"></div><span id="map-scale-text">1 km</span></div><div class="map-zoom"><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="center-map" aria-label="Center map on player" title="Center on you">⌖</button></div><span class="map-updating hidden" id="map-updating">SURVEYING…</span></div>
+          <aside class="map-sidebar"><section class="map-selection"><span class="small-label">DESTINATION</span><div class="selection-symbol" id="selection-symbol">⌖</div><h3 id="selection-name">The open road</h3><p id="selection-detail">Select a settlement, landmark, or point on the map to plan your journey.</p><p class="selection-distance" id="selection-distance"></p><button id="set-waypoint" class="primary-button" disabled>SET WAYPOINT</button><button id="fast-travel" class="secondary-button" disabled>FAST TRAVEL <span>→</span></button><button id="clear-waypoint" class="text-button hidden">Clear current waypoint</button><p class="travel-note">All marked locations are available for fast travel in this prototype.</p></section><section class="map-legend"><span class="small-label">THE LAND</span><div><i style="--swatch:#708349"></i>Grassland & meadows</div><div><i style="--swatch:#344f32"></i>Forest & woodland</div><div><i style="--swatch:#898261"></i>Highlands & mountains</div><div><i style="--swatch:#cebc80"></i>Drylands</div><div><i style="--swatch:#5d8794"></i>Rivers & water</div><div><span class="legend-glyph">◇</span>Landmark <span class="legend-glyph settlement">▪</span>Settlement</div></section></aside></div>
+        <footer class="map-footer"><span><kbd>DRAG</kbd> PAN <i>·</i> <kbd>SCROLL</kbd> ZOOM <i>·</i> CLICK TO SELECT</span><span id="map-seed">SEED 1337 · 256 × 256 KM</span></footer>
+      </div>
+    </section>
+
+    <section id="settings-modal" class="overlay settings-overlay hidden" aria-labelledby="settings-title" aria-modal="true" role="dialog"><div class="settings-frame"><header class="modal-header"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2 id="settings-title">Field notes & settings</h2></div><button id="close-settings" class="close-button" aria-label="Close settings">×</button></header><div class="settings-content"><label class="setting-row"><span>Render quality<small>Adjust terrain detail and draw distance.</small></span><select id="quality-select"><option value="0">Low</option><option value="1" selected>Balanced</option><option value="2">High</option></select></label><label class="setting-row"><span>Mouse sensitivity<small>Turn speed when looking around.</small></span><input id="sensitivity" type="range" min="0.35" max="2" step="0.05" value="1" /></label><label class="setting-row"><span>Time of day<small>Preview the wilderness in a different light.</small></span><input id="time-setting" type="range" min="5" max="20" step="0.25" value="9" /></label><div class="setting-row"><span>World seed<small>Every seed generates a different world.</small></span><form id="seed-form"><input id="seed-input" type="number" min="1" max="4294967295" aria-label="World seed" value="1337"/><button class="secondary-button" type="submit">GENERATE</button></form></div><div class="field-notes"><span class="small-label">EXPLORER’S NOTES</span><p><b>WASD</b> move · <b>Mouse</b> look · <b>Shift</b> sprint · <b>Space</b> jump<br/><b>M</b> local map · <b>Tab</b> world map · <b>Esc</b> release cursor · <b>F3</b> diagnostics</p><p>Your position and world seed are saved on this device. Settlements and landmarks mark future adventures; this slice focuses on walking the wilderness.</p></div><button id="return-to-spawn" class="text-button">Return to starting road</button></div></div></section>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
