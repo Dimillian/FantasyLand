@@ -8,7 +8,7 @@ A first-person procedural fantasy exploration slice, built with Rust, WebAssembl
 - Click the world to focus and capture the mouse. Escape releases it. When a browser blocks capture, click-focused mouse look still works within the window; touch uses drag look.
 - M or Tab: open the unified atlas. M or Escape closes it; Tab navigates controls inside menus.
 - Drag the atlas to pan, scroll to zoom from the local landscape to the whole continent, select a location to set a waypoint or fast travel. Zoom and position persist between openings.
-- I: bag. C: character. K: skills. O: settings (screen filter, seed, quality, sensitivity, daylight, return to spawn). F3: diagnostics.
+- I: bag. C: character. K: skills. O: settings (ground cover density, screen filter, seed, quality, sensitivity, daylight, return to spawn). F3: diagnostics.
 - Progress and preferences are stored on this device. Add `?seed=42` to explore another deterministic seed.
 
 Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the unfiltered image. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. Bloom extraction and blur run in linear light on small floating-point GPU targets, rebuilt when resolution or quality changes; Clean skips those passes.
@@ -16,6 +16,10 @@ Bloom is the default screen filter, with soft highlights across three blur scale
 ASCII renders the view entirely as printable character cells. A GPU pass encodes one glyph and foreground color per cell from the scene's brightness and edge direction; a second draws original 5×7 bitmap glyphs against a terminal background. No original scene pixels show through. Choose Small, Medium or Large text and scene colors, amber or green phosphor. ASCII uses its own text-size controls rather than the effect-strength slider.
 
 Internal resolution is separately selectable from 120p to 1080p, preserving the viewport aspect ratio, with actual dimensions shown. Auto retains the quality preset's 270/450/720p cap; Native matches the game canvas. Explicit resolutions stay fixed when world quality changes and can supersample a smaller viewport. ASCII text size controls its character grid independently of the underlying scene resolution. These preferences preserve the existing player position and atlas view.
+
+Ground cover density ranges from Off to 400% in Settings, independently of world quality. It controls grass, flowers, ferns and heather; 100% is the default. Changing it adjusts the number of submitted instances immediately, keeps existing plants in place, and preserves the saved position, atlas and other settings. F3 reports density, submitted cover instances and mesh buffer memory.
+
+Ground cover streams in 48 m tiles and shares procedural plant templates. A compact placement record replaces duplicated plant vertices. Each tile includes a 6 m terrain-height grid; the vertex shader uses the same alternating triangles as the visible ground to anchor roots on slopes. Whole tiles outside the visible range or camera frustum are rejected before vertex processing. Terrain, water and tree meshes also use full frustum culling. Generation uses small cover jobs and a shared time budget; individual terrain/prop jobs remain non-preemptible.
 
 ## World
 
@@ -56,11 +60,14 @@ cargo run --release --bin verify output/ascii-verification 1337 ascii
 cargo run --release --bin verify output/grounding 1337 grounding
 cargo run --release --bin verify output/roads 1337 roads
 cargo run --release --bin verify output/coasts 1337 coasts
+cargo run --release --bin verify output/cover 1337 cover
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```
 
 The native verifier runs the same wgpu shaders on a real GPU, checks the rendered output, and writes terrain/map images under `output/verification`. The WASM check loads the actual compiled module and verifies drainage, ecology and atlas generation independently of the graphics backend. The UI harness checks input and atlas behavior with DOM/pointer-lock mocks, including rejected capture and late responses after Escape; it is not a browser end-to-end test.
+
+The `cover` verifier compares Off, 100%, 200% and 400% from one fixed camera, checks that density changes preserve all resident buffers, then measures four 48 m streaming transitions. It writes `cover-report.json` with CPU submission, serialized GPU-completed frame timings and buffer payloads. These native measurements are not browser FPS. In the Apple M4 spawn check at Balanced/450p/Bloom, the new maximum-density layer used 2.31 MB and total mesh payload was 201.12 MB, versus 239.26 MB for the previous renderer at its default density.
 
 ## Current limits
 
@@ -69,9 +76,9 @@ The native verifier runs the same wgpu shaders on a real GPU, checks the rendere
 - Hydrology uses a 500 m drainage grid with refined channel curves and carved valleys. It does not yet simulate long-term erosion, seasonal floods, or persistent lakes.
 - Road corridors penalize steep slopes but do not guarantee a maximum grade or solve full mountain switchbacks. Some settlements intentionally have no road; fast travel and cross-country walking remain available.
 - Trunks and boulders block movement. Landmark structures are currently primarily visual, with limited structural collision.
-- Terrain and props generate incrementally on the browser's main thread. Worker scheduling and instancing are future optimizations.
+- Terrain and props generate incrementally on the browser's main thread. Ground cover is instanced and generated in small jobs; worker scheduling remains a future optimization.
 - ASCII currently converts the rasterized 3D view into character cells; it is not a separate terminal application or a text representation of world geometry.
 
 ## Code
 
-`world.rs` defines world identity, climate, terrain, features and maps. `coast.rs` defines the landmass contours, shore profiles and ocean shelf. `roads.rs` builds the sparse transport graph and terrain-aware routes. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.
+`world.rs` defines world identity, climate, terrain, features and maps. `coast.rs` defines the landmass contours, shore profiles and ocean shelf. `roads.rs` builds the sparse transport graph and terrain-aware routes. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `cover.rs` and `cover.wgsl` stream and instance nearby ground cover. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.

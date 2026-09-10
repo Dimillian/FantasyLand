@@ -24,7 +24,7 @@ document.exitPointerLock=()=>{document.pointerLockElement=null;document.fire('po
 const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,sensitivity:1.4,x:900,z:800,waypoint:{x:5,z:8,name:'Old'},atlas:{x:9,z:8,span:700}}) };
 let calls=0, looks=[], rejected;
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},set_time(){},set_quality(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},set_time(){},set_quality(){},set_ground_cover_density(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -38,9 +38,10 @@ function filterHarness(snapshot) {
   filterDocument.getElementById = id => filterIds[id];
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], rendererEvents = [];
+  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [];
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
   const engine = {
+    set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
     set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
     set_ascii:(scale,palette)=>{asciiCalls.push([scale,palette]);rendererEvents.push(['ascii',scale,palette]);},
     set_render_resolution:height=>{selectedResolution=height;resolutionCalls.push(height);rendererEvents.push(['resolution',height]);},
@@ -55,7 +56,7 @@ function filterHarness(snapshot) {
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
   const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -71,7 +72,7 @@ async function verifyFilterSettings() {
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
   assert.deepEqual(first.asciiCalls,[[2,0]]); assert.deepEqual(first.resolutionCalls,[0]);
   assert.equal(first.ids['render-dimensions'].textContent,'Actual 720 × 450');
-  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','resize'],'Preferences must apply after world quality and before resize.');
+  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','groundCover','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
@@ -143,6 +144,49 @@ async function verifyAsciiResolutionSettings() {
   console.log('PASS: ASCII full-mode preference; size/palette API calls; disabled ASCII strength; resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
 }
 
+async function verifyGroundCoverSettings() {
+  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:3,filterStrength:0.8,renderResolution:720,asciiScale:3,asciiPalette:2,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
+  const controls = html.match(/<input id="ground-cover-density"[^>]+>/)?.[0];
+  assert.ok(controls, 'Ground-cover control must exist in the actual settings HTML.');
+  for (const attr of ['type="range"','min="0"','max="400"','step="25"','value="100"','aria-describedby="ground-cover-density-help"']) assert.ok(controls.includes(attr), attr);
+  const selected = filterHarness(existing);
+  assert.equal(selected.run('groundCoverDensity'),1, 'Old v4 saves receive the 100% default.');
+  assert.equal(selected.ids['ground-cover-density'].value,'100');
+  assert.equal(selected.ids['ground-cover-density-value'].textContent,'100% · 1×');
+  await selected.run('boot()'); selected.run('initialReady=true;');
+  assert.deepEqual(selected.groundCoverCalls,[1]);
+  assert.ok(selected.rendererEvents.findIndex(e=>e[0]==='groundCover') < selected.rendererEvents.findIndex(e=>e[0]==='resize'), 'Density must reach the renderer before first resize.');
+  const eventsBefore = selected.rendererEvents.length;
+  const change = value => { selected.ids['ground-cover-density'].value=String(value); selected.ids['ground-cover-density'].fire('input'); };
+  change(225);
+  assert.deepEqual(selected.groundCoverCalls,[1,2.25], 'An input event must call the GPU API immediately.');
+  assert.deepEqual(selected.rendererEvents.slice(eventsBefore),[['groundCover',2.25]], 'Density must not resize, alter quality, or rebuild through unrelated APIs.');
+  assert.deepEqual(selected.teleports,[[637,222]], 'Live density changes must never teleport/reset the player.');
+  assert.equal(selected.ids['ground-cover-density-value'].textContent,'225% · 2.25×');
+  assert.equal(selected.ids['ground-cover-density'].attributes['aria-valuetext'],'225 percent, 2.25 times density');
+  const persisted = selected.saved();
+  for (const key of Object.keys(existing)) assert.deepEqual(persisted[key],existing[key], `Density must preserve existing ${key}.`);
+  assert.equal(persisted.groundCoverDensity,2.25);
+  const restored = filterHarness(persisted); await restored.run('boot()'); restored.run('initialReady=true;');
+  assert.deepEqual(restored.groundCoverCalls,[2.25]);
+  restored.ids['ground-cover-density'].value='0'; restored.ids['ground-cover-density'].fire('input');
+  assert.equal(restored.groundCoverCalls.at(-1),0); assert.equal(restored.saved().groundCoverDensity,0);
+  assert.equal(restored.ids['ground-cover-density-value'].textContent,'Off');
+  assert.equal(restored.ids['ground-cover-density'].attributes['aria-valuetext'],'Off');
+  const off = filterHarness(restored.saved()); await off.run('boot()');
+  assert.deepEqual(off.groundCoverCalls,[0], 'Off must survive reload.');
+  const count=selected.groundCoverCalls.length;
+  selected.ids['quality-select'].value='0'; selected.ids['quality-select'].fire('change');
+  assert.equal(selected.groundCoverCalls.length,count); assert.equal(selected.saved().groundCoverDensity,2.25, 'World quality must not replace explicit density.');
+  for (const [value, expected] of [[-25,0],[650,4],['not a number',1],['Infinity',1]]) { change(value); assert.equal(selected.groundCoverCalls.at(-1),expected); assert.equal(selected.saved().groundCoverDensity,expected); assert.equal(selected.ids['ground-cover-density'].value,String(expected*100)); }
+  change(400); assert.equal(selected.ids['ground-cover-density-value'].textContent,'400% · 4×');
+  for (const [value, expected] of [[-3,0],[8,4],['invalid',1],['Infinity',1],[null,1]]) {
+    const invalid=filterHarness({...existing,groundCoverDensity:value}); await invalid.run('boot()');
+    assert.deepEqual(invalid.groundCoverCalls,[expected], 'Saved values must be finite and bounded before reaching WASM.');
+  }
+  console.log('PASS: accessible ground-cover slider; old-save default; immediate GPU input calls; boot order; 0/Off and reload persistence; multiplier labels; finite validation/clamping; independence of quality; all existing v4 progress and preferences preserved.');
+}
+
 function verifyAtlasRoutes() {
   const strokes = [];
   let path = [], dash = [7, 3], savedStyle;
@@ -205,6 +249,7 @@ async function main(){
   verifyAtlasRoutes();
   await verifyFilterSettings();
   await verifyAsciiResolutionSettings();
+  await verifyGroundCoverSettings();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

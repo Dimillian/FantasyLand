@@ -1,11 +1,12 @@
 use crate::{
+    cover::{CoverLayer, CoverStats},
     geometry::{self, MeshData, Vertex, CHUNK_SIZE},
     horizon::{self, PATCH_SIZE},
     postprocess::PostProcess,
     world::World,
 };
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use std::collections::{HashMap, VecDeque};
 use wgpu::util::DeviceExt;
 
@@ -23,6 +24,8 @@ struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
+    bounds: [Vec3; 2],
+    bytes: u64,
 }
 struct Chunk {
     lod: u32,
@@ -57,6 +60,9 @@ pub struct Renderer {
     quality: u32,
     resolution: u32,
     elapsed: f32,
+    cover: CoverLayer,
+    ground_cover_density: f32,
+    cover_drawn_instances: u32,
     pub width: u32,
     pub height: u32,
 }
@@ -139,7 +145,9 @@ impl Renderer {
         }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain, atmosphere and materials"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("world.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("world.wgsl"), "\n", include_str!("cover.wgsl")).into(),
+            ),
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera and sunlight"),
@@ -252,6 +260,12 @@ impl Renderer {
             format,
         );
         let (capture, capture_view) = Self::capture_target(&device, width, height, format);
+        let cover = CoverLayer::new(
+            &device,
+            &uniform_layout,
+            &shader,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         Ok(Self {
             device,
             queue,
@@ -277,6 +291,9 @@ impl Renderer {
             quality: 1,
             resolution: 0,
             elapsed: 0.0,
+            cover,
+            ground_cover_density: 1.0,
+            cover_drawn_instances: 0,
             width,
             height,
         })
@@ -420,6 +437,34 @@ impl Renderer {
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.post.set_filter(mode, strength);
     }
+    pub fn set_ground_cover_density(&mut self, density: f32) {
+        // Resident instances are sorted by density threshold. Only each draw's
+        // prefix length changes, preserving terrain, trees and all tile buffers.
+        self.ground_cover_density = if density.is_finite() {
+            density.clamp(0.0, 4.0)
+        } else {
+            1.0
+        };
+    }
+    pub fn cover_stats(&self) -> CoverStats {
+        self.cover.stats()
+    }
+    pub fn cover_drawn_instances(&self) -> u32 {
+        self.cover_drawn_instances
+    }
+    pub fn ground_cover_density(&self) -> f32 {
+        self.ground_cover_density
+    }
+    pub fn mesh_bytes(&self) -> u64 {
+        self.chunks
+            .values()
+            .flat_map(|c| [&c.terrain, &c.props, &c.water])
+            .flatten()
+            .chain(self.horizon.values())
+            .map(|m| m.bytes)
+            .sum::<u64>()
+            + self.cover.stats().buffer_bytes
+    }
     pub fn set_quality(&mut self, q: u32) {
         let q = q.min(2);
         if q != self.quality {
@@ -430,6 +475,8 @@ impl Renderer {
         }
     }
     pub fn clear_chunks(&mut self) {
+        self.cover.clear();
+        self.cover_drawn_instances = 0;
         self.horizon.clear();
         self.horizon_pending.clear();
         self.horizon_center = None;
@@ -441,7 +488,19 @@ impl Renderer {
         if data.indices.is_empty() {
             return None;
         }
+        let mut bounds = [Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)];
+        for vertex in &data.vertices {
+            let p = Vec3::from_array(vertex.position);
+            bounds[0] = bounds[0].min(p);
+            bounds[1] = bounds[1].max(p);
+        }
+        // Wind and the most distant foliage must not disappear on frustum edges.
+        bounds[0] -= Vec3::ONE;
+        bounds[1] += Vec3::ONE;
         Some(GpuMesh {
+            bounds,
+            bytes: (data.vertices.len() * std::mem::size_of::<Vertex>() + data.indices.len() * 4)
+                as u64,
             vertices: self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -459,7 +518,7 @@ impl Renderer {
             count: data.indices.len() as u32,
         })
     }
-    fn update_horizon(&mut self, world: &World, position: Vec3, force: bool) {
+    fn prepare_horizon(&mut self, position: Vec3) {
         let cx = (position.x / PATCH_SIZE).floor() as i32;
         let cz = (position.z / PATCH_SIZE).floor() as i32;
         let radius = [8, 14, 16][self.quality as usize];
@@ -480,17 +539,21 @@ impl Renderer {
             requested.sort_by_key(|p| p.2);
             self.horizon_pending = requested.into_iter().map(|p| (p.0, p.1)).collect();
         }
-        for _ in 0..if force { 12 } else { 4 } {
-            let Some((x, z)) = self.horizon_pending.pop_front() else {
-                break;
-            };
-            if let Some(mesh) = self.upload(horizon::patch(world, x, z)) {
-                self.horizon.insert((x, z), mesh);
-            }
+    }
+    fn build_horizon(&mut self, world: &World) -> bool {
+        let Some((x, z)) = self.horizon_pending.pop_front() else {
+            return false;
+        };
+        if let Some(mesh) = self.upload(horizon::patch(world, x, z)) {
+            self.horizon.insert((x, z), mesh);
         }
+        true
     }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
-        self.update_horizon(world, position, force);
+        let clock = StreamClock::new();
+        let limit_ms = if force { 12.0 } else { 4.0 };
+        self.prepare_horizon(position);
+        self.cover.prepare(position);
         let cx = (position.x / CHUNK_SIZE).floor() as i32;
         let cz = (position.z / CHUNK_SIZE).floor() as i32;
         let radius = [8, 12, 16][self.quality as usize];
@@ -515,13 +578,7 @@ impl Renderer {
                     } else {
                         3
                     };
-                    let detail = if dist < 2.4 {
-                        2
-                    } else if dist < prop_radius {
-                        1
-                    } else {
-                        0
-                    };
+                    let detail = if dist < prop_radius { 1 } else { 0 };
                     if self
                         .chunks
                         .get(&(x, z))
@@ -538,15 +595,27 @@ impl Renderer {
                 .map(|(x, z, l, p, _)| (x, z, l, p))
                 .collect();
         }
+        // A time budget supplements the job cap. No large grass mesh is baked
+        // inside these 192m chunks; small cover tiles are independent jobs.
         let budget = if force { 9 } else { 2 };
-        for _ in 0..budget {
+        for job in 0..budget {
+            if job > 0 && clock.elapsed_ms() >= limit_ms * 0.55 {
+                break;
+            }
             let Some((x, z, lod, detail)) = self.pending.pop_front() else {
                 break;
             };
-            let terrain = self.upload(geometry::terrain_chunk(world, x, z, lod));
-            let water = self.upload(geometry::water_chunk(world, x, z, lod));
+            let previous = self.chunks.remove(&(x, z));
+            let (terrain, water) = if let Some(old) = previous.filter(|old| old.lod == lod) {
+                (old.terrain, old.water)
+            } else {
+                (
+                    self.upload(geometry::terrain_chunk(world, x, z, lod)),
+                    self.upload(geometry::water_chunk(world, x, z, lod)),
+                )
+            };
             let props_mesh = if detail > 0 {
-                self.upload(geometry::props_chunk_at_lod(world, x, z, detail == 2, lod))
+                self.upload(geometry::props_chunk_at_lod(world, x, z, false, lod))
             } else if lod <= 2 {
                 self.upload(geometry::distant_props_chunk_at_lod(world, x, z, lod))
             } else {
@@ -562,6 +631,24 @@ impl Renderer {
                     water,
                 },
             );
+        }
+        // Alternate cover and horizon work so both progress during exploration.
+        // At least one small cover tile can progress even after a costly terrain
+        // job; subsequent work respects the shared frame budget.
+        for job in 0..if force { 16 } else { 8 } {
+            if job > 0 && clock.elapsed_ms() >= limit_ms {
+                break;
+            }
+            let mut progressed = false;
+            if self.ground_cover_density > 0.0 {
+                progressed |= self.cover.build_next(world, &self.device);
+            }
+            if clock.elapsed_ms() < limit_ms || self.horizon.is_empty() {
+                progressed |= self.build_horizon(world);
+            }
+            if !progressed {
+                break;
+            }
         }
     }
     pub fn chunk_count(&self) -> usize {
@@ -582,9 +669,16 @@ impl Renderer {
                 .values()
                 .map(|m| m.count as usize / 3)
                 .sum::<usize>()
+            + self.cover.stats().loaded_instances as usize * 8
     }
     pub fn pending_count(&self) -> usize {
-        self.pending.len() + self.horizon_pending.len()
+        self.pending.len()
+            + self.horizon_pending.len()
+            + if self.ground_cover_density > 0.0 {
+                self.cover.pending_count()
+            } else {
+                0
+            }
     }
     pub fn advance_time(&mut self, dt: f32) {
         self.elapsed = (self.elapsed + dt.clamp(0.0, 0.1)).rem_euclid(86400.0);
@@ -607,8 +701,10 @@ impl Renderer {
         let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
         let sun = Vec3::new(sun_angle.cos(), sun_angle.sin(), -0.25).normalize();
         let fog_color = [0.48 * brightness, 0.64 * brightness, 0.76 * brightness];
+        let view_projection = projection * view;
+        let frustum = frustum_planes(view_projection);
         let globals = Globals {
-            view_projection: (projection * view).to_cols_array_2d(),
+            view_projection: view_projection.to_cols_array_2d(),
             camera: [eye.x, eye.y, eye.z, self.width as f32 / self.height as f32],
             light: [sun.x, sun.y, sun.z, brightness],
             fog: [
@@ -676,39 +772,32 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&self.world_pipeline);
-            let horizontal = Vec3::new(dir.x, 0., dir.z).normalize_or_zero();
-            for (&(cx, cz), mesh) in &self.horizon {
-                let offset = Vec3::new(
-                    (cx as f32 + 0.5) * PATCH_SIZE - eye.x,
-                    0.,
-                    (cz as f32 + 0.5) * PATCH_SIZE - eye.z,
-                );
-                if offset.dot(horizontal) < -PATCH_SIZE * 1.5 {
+            // Reject whole mesh bounds before vertex work. This includes side,
+            // vertical, near and far planes, rather than only the rear hemisphere.
+            for mesh in self.horizon.values() {
+                if !bounds_visible(&frustum, mesh.bounds, eye) {
                     continue;
                 }
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
-            for (&(cx, cz), chunk) in &self.chunks {
-                let offset = Vec3::new(
-                    (cx as f32 + 0.5) * CHUNK_SIZE - eye.x,
-                    0.,
-                    (cz as f32 + 0.5) * CHUNK_SIZE - eye.z,
-                );
-                let distance = offset.length();
-                if distance > CHUNK_SIZE * 2.0 && offset.dot(horizontal) < -CHUNK_SIZE * 1.5 {
-                    continue;
-                }
+            for chunk in self.chunks.values() {
                 for mesh in [&chunk.terrain, &chunk.props, &chunk.water]
                     .into_iter()
                     .flatten()
                 {
+                    if !bounds_visible(&frustum, mesh.bounds, eye) {
+                        continue;
+                    }
                     pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..mesh.count, 0, 0..1);
                 }
             }
+            self.cover_drawn_instances =
+                self.cover
+                    .draw(&mut pass, eye, view_projection, self.ground_cover_density);
         }
         self.post
             .render(&self.queue, &mut encoder, output, [self.width, self.height]);
@@ -766,8 +855,60 @@ impl Renderer {
     }
 }
 
-// Fixed vertical resolutions can supersample small windows. Every mode keeps the
-// viewport aspect ratio and fits the adapter texture limits, including ultrawide.
+// Browser time comes from Performance; std::time::Instant is unavailable on
+// wasm32-unknown-unknown. Native verification uses the same millisecond budget.
+struct StreamClock {
+    #[cfg(not(target_arch = "wasm32"))]
+    start: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    start: f64,
+}
+impl StreamClock {
+    fn new() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            start: std::time::Instant::now(),
+            #[cfg(target_arch = "wasm32")]
+            start: browser_clock_ms(),
+        }
+    }
+    fn elapsed_ms(&self) -> f64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.start.elapsed().as_secs_f64() * 1000.0
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            browser_clock_ms() - self.start
+        }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn browser_clock_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map_or(0.0, |p| p.now())
+}
+fn frustum_planes(matrix: Mat4) -> [Vec4; 6] {
+    let m = matrix.transpose();
+    [
+        m.w_axis + m.x_axis,
+        m.w_axis - m.x_axis,
+        m.w_axis + m.y_axis,
+        m.w_axis - m.y_axis,
+        m.z_axis,
+        m.w_axis - m.z_axis,
+    ]
+}
+fn bounds_visible(planes: &[Vec4; 6], bounds: [Vec3; 2], eye: Vec3) -> bool {
+    let center = (bounds[0] + bounds[1]) * 0.5 - eye;
+    let extent = (bounds[1] - bounds[0]) * 0.5;
+    planes
+        .iter()
+        .all(|p| p.truncate().dot(center) + p.w + p.truncate().abs().dot(extent) >= 0.0)
+}
+
+// Fixed vertical resolutions preserve aspect ratio and adapter texture limits.
 fn scene_dimensions(
     width: u32,
     height: u32,
@@ -819,5 +960,54 @@ mod resolution_tests {
             }
         }
         assert_eq!(scene_dimensions(5120, 1440, 1, 1080, 4096), [3840, 1080]);
+    }
+}
+
+#[cfg(test)]
+mod frustum_tests {
+    use super::*;
+    #[test]
+    fn rejects_outside_meshes_but_keeps_bounds_crossing_a_plane() {
+        let planes = frustum_planes(Mat4::perspective_rh(
+            72_f32.to_radians(),
+            16. / 9.,
+            0.08,
+            100.,
+        ));
+        let bounds = |center: Vec3, half: Vec3| [center - half, center + half];
+        assert!(bounds_visible(
+            &planes,
+            bounds(Vec3::new(0., 0., -10.), Vec3::ONE),
+            Vec3::ZERO
+        ));
+        for center in [
+            Vec3::new(0., 0., 10.),
+            Vec3::new(100., 0., -10.),
+            Vec3::new(0., 100., -10.),
+            Vec3::new(0., 0., -110.),
+        ] {
+            assert!(!bounds_visible(
+                &planes,
+                bounds(center, Vec3::ONE),
+                Vec3::ZERO
+            ));
+        }
+        assert!(bounds_visible(
+            &planes,
+            bounds(Vec3::new(0., 0., -101.), Vec3::splat(3.)),
+            Vec3::ZERO
+        ));
+        assert!(bounds_visible(
+            &planes,
+            bounds(Vec3::ZERO, Vec3::ONE),
+            Vec3::ZERO
+        ));
+        // Camera-relative testing must give identical results on remote islands.
+        let eye = Vec3::new(154000., 200., -87000.);
+        assert!(bounds_visible(
+            &planes,
+            bounds(eye + Vec3::new(0., 0., -10.), Vec3::ONE),
+            eye
+        ));
     }
 }

@@ -1,0 +1,723 @@
+//! Small, immutable ground-cover tiles; density only changes an instance prefix.
+use crate::{
+    ecology, geometry,
+    world::{hash, rand01, Biome, ShoreKind, World},
+};
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Vec3, Vec4};
+use serde::Serialize;
+use std::{
+    cell::Cell,
+    collections::{HashMap, VecDeque},
+};
+use wgpu::util::DeviceExt;
+
+pub const TILE_SIZE: f32 = 48.;
+pub const COVER_DISTANCE: f32 = 250.;
+const GRID_SIZE: usize = 11;
+const HEIGHT_STEP: f32 = 6.;
+const DIVISIONS: i32 = 32;
+const VARIANTS: u32 = 8;
+const TEMPLATE_VERTICES: u32 = 24;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CoverInstance {
+    // Tile-local XZ and uniform scale; CPU sin/cos removes vertex shader trig.
+    pub placement: [f32; 3],
+    pub rotation: [f32; 2],
+    // Packed RGB8 tint and template index.
+    pub data: [u32; 2],
+}
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TemplateVertex {
+    position: [f32; 4],
+    normal: [f32; 4],
+    // W=1 multiplies the biome tint; W=0 preserves flower/heather color.
+    color: [f32; 4],
+}
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TileUniform {
+    origin: [f32; 4],
+    // World seed and signed global 6m grid origin, stored as bit patterns.
+    grid: [u32; 4],
+}
+pub struct TileData {
+    pub instances: Vec<CoverInstance>,
+    pub ranks: Vec<f32>,
+    pub heights: Vec<f32>,
+    pub origin: [f32; 2],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub seed: u32,
+}
+impl TileData {
+    pub fn prefix_count(&self, density: f32) -> u32 {
+        prefix_count(&self.ranks, density)
+    }
+    pub fn buffer_bytes(&self) -> u64 {
+        (self.instances.len() * std::mem::size_of::<CoverInstance>()
+            + self.heights.len() * 4
+            + std::mem::size_of::<TileUniform>()) as u64
+    }
+}
+fn random(seed: u32, salt: u32) -> f32 {
+    rand01(hash(
+        seed ^ salt.wrapping_mul(747796405),
+        salt as i32,
+        (seed >> 16) as i32,
+    ))
+}
+fn prefix_count(ranks: &[f32], density: f32) -> u32 {
+    if !density.is_finite() || density <= 0. {
+        return 0;
+    }
+    if density >= 4. {
+        return ranks.len() as u32;
+    }
+    ranks.partition_point(|&rank| rank < density) as u32
+}
+fn color_mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+}
+fn pack_color(color: [f32; 3]) -> u32 {
+    let c = color.map(|v| (v.clamp(0., 1.) * 255.).round() as u32);
+    c[0] | c[1] << 8 | c[2] << 16
+}
+/// CPU equivalent of the vertex shader's exact LOD0 triangle lookup.
+pub fn surface_height(seed: u32, origin: [f32; 2], heights: &[f32], local: [f32; 2]) -> f32 {
+    let fx = ((local[0] + HEIGHT_STEP) / HEIGHT_STEP).clamp(0., 9.99999);
+    let fz = ((local[1] + HEIGHT_STEP) / HEIGHT_STEP).clamp(0., 9.99999);
+    let ix = fx.floor() as usize;
+    let iz = fz.floor() as usize;
+    let u = fx - ix as f32;
+    let v = fz - iz as f32;
+    let a = heights[iz * GRID_SIZE + ix];
+    let b = heights[(iz + 1) * GRID_SIZE + ix];
+    let c = heights[(iz + 1) * GRID_SIZE + ix + 1];
+    let d = heights[iz * GRID_SIZE + ix + 1];
+    let gx = (origin[0] / HEIGHT_STEP).round() as i32 - 1 + ix as i32;
+    let gz = (origin[1] / HEIGHT_STEP).round() as i32 - 1 + iz as i32;
+    if hash(seed, gx, gz) & 1 == 0 {
+        if u + v <= 1. {
+            a + (d - a) * u + (b - a) * v
+        } else {
+            c + (b - c) * (1. - u) + (d - c) * (1. - v)
+        }
+    } else if v >= u {
+        a + (c - b) * u + (b - a) * v
+    } else {
+        a + (d - a) * u + (c - d) * v
+    }
+}
+pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
+    let origin = [tx as f32 * TILE_SIZE, tz as f32 * TILE_SIZE];
+    let mut heights = Vec::with_capacity(GRID_SIZE * GRID_SIZE);
+    for z in 0..GRID_SIZE {
+        for x in 0..GRID_SIZE {
+            heights.push(
+                world
+                    .sample(
+                        origin[0] + (x as f32 - 1.) * HEIGHT_STEP,
+                        origin[1] + (z as f32 - 1.) * HEIGHT_STEP,
+                    )
+                    .height,
+            );
+        }
+    }
+    let low = heights.iter().copied().fold(f32::INFINITY, f32::min);
+    let high = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut plants = Vec::with_capacity(768);
+    for iz in 0..DIVISIONS {
+        for ix in 0..DIVISIONS {
+            let seed = hash(
+                world.seed ^ 0x47524153,
+                tx * DIVISIONS + ix,
+                tz * DIVISIONS + iz,
+            );
+            let local = [
+                (ix as f32 + 0.12 + random(seed, 301) * 0.76) * 1.5,
+                (iz as f32 + 0.12 + random(seed, 302) * 0.76) * 1.5,
+            ];
+            let x = origin[0] + local[0];
+            let z = origin[1] + local[1];
+            let sample = world.sample(x, z);
+            if sample.ocean
+                || sample.shore != ShoreKind::None
+                || sample.road > 0.10
+                || sample.water_height > sample.height + 0.15
+            {
+                continue;
+            }
+            let ecology = ecology::sample(world.seed, x, z, &sample);
+            if random(seed, 304) > ecology.grass_density {
+                continue;
+            }
+            let dx = surface_height(world.seed, origin, &heights, [local[0] + 0.5, local[1]])
+                - surface_height(world.seed, origin, &heights, [local[0] - 0.5, local[1]]);
+            let dz = surface_height(world.seed, origin, &heights, [local[0], local[1] + 0.5])
+                - surface_height(world.seed, origin, &heights, [local[0], local[1] - 0.5]);
+            if dx * dx + dz * dz > 1.44 {
+                continue;
+            }
+            let r = random(seed, 306);
+            let kind = if r < ecology.ferns {
+                2
+            } else if r < ecology.ferns + ecology.flowers {
+                3
+            } else if r < ecology.ferns + ecology.flowers + ecology.heather {
+                4
+            } else if sample.biome == Biome::Wetland {
+                1
+            } else {
+                0
+            };
+            let open = 1. - ecology.tree_density;
+            let color = match sample.biome {
+                Biome::Grassland | Biome::Forest => {
+                    color_mix([0.25, 0.41, 0.17], [0.38, 0.52, 0.19], open)
+                }
+                Biome::PineForest => color_mix([0.25, 0.36, 0.23], [0.39, 0.48, 0.23], open),
+                Biome::Wetland => [0.37, 0.49, 0.23],
+                Biome::Moor => [0.46, 0.46, 0.25],
+                Biome::Alpine => [0.49, 0.50, 0.34],
+                Biome::Desert => [0.70, 0.55, 0.29],
+            };
+            let instance = CoverInstance {
+                placement: [
+                    local[0],
+                    local[1],
+                    (0.62 + random(seed, 305) * 0.80) * ecology.grass_height,
+                ],
+                rotation: {
+                    let angle = random(seed, 401) * std::f32::consts::TAU;
+                    [angle.sin(), angle.cos()]
+                },
+                data: [
+                    pack_color(color),
+                    kind * VARIANTS + hash(seed, 403, 409) % VARIANTS,
+                ],
+            };
+            plants.push((random(seed, 397) * 4., seed, instance));
+        }
+    }
+    plants.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut instances = Vec::with_capacity(plants.len());
+    let mut ranks = Vec::with_capacity(plants.len());
+    for (rank, _, instance) in plants {
+        ranks.push(rank);
+        instances.push(instance);
+    }
+    TileData {
+        instances,
+        ranks,
+        heights,
+        origin,
+        seed: world.seed,
+        bounds_min: [origin[0] - 2.5, low - 0.1, origin[1] - 2.5],
+        bounds_max: [
+            origin[0] + TILE_SIZE + 2.5,
+            high + 2.5,
+            origin[1] + TILE_SIZE + 2.5,
+        ],
+    }
+}
+
+fn templates() -> Vec<TemplateVertex> {
+    let mut result = Vec::with_capacity((5 * VARIANTS * TEMPLATE_VERTICES) as usize);
+    for kind in 0..5 {
+        for variant in 0..VARIANTS {
+            let mesh = geometry::cover_template(kind, variant);
+            assert!(mesh.vertices.len() <= TEMPLATE_VERTICES as usize);
+            for vertex in &mesh.vertices {
+                let tint = ((vertex.color[0] - vertex.color[1]).abs() < 0.0001
+                    && (vertex.color[1] - vertex.color[2]).abs() < 0.0001)
+                    as u32 as f32;
+                result.push(TemplateVertex {
+                    position: [
+                        vertex.position[0],
+                        vertex.position[1],
+                        vertex.position[2],
+                        0.,
+                    ],
+                    normal: [vertex.normal[0], vertex.normal[1], vertex.normal[2], 0.],
+                    color: [vertex.color[0], vertex.color[1], vertex.color[2], tint],
+                });
+            }
+            for _ in mesh.vertices.len()..TEMPLATE_VERTICES as usize {
+                result.push(TemplateVertex::zeroed());
+            }
+        }
+    }
+    result
+}
+struct GpuTile {
+    instances: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    ranks: Vec<f32>,
+    bounds_min: Vec3,
+    bounds_max: Vec3,
+    bytes: u64,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct CoverStats {
+    pub tile_count: usize,
+    pub loaded_instances: usize,
+    pub buffer_bytes: u64,
+    pub pending_tiles: usize,
+    pub drawn_tiles: u32,
+    pub drawn_instances: u32,
+    pub drawn_triangles: u32,
+}
+pub struct CoverLayer {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    templates: wgpu::Buffer,
+    template_bytes: u64,
+    tiles: HashMap<(i32, i32), GpuTile>,
+    pending: VecDeque<(i32, i32)>,
+    center: Option<(i32, i32)>,
+    drawn: Cell<(u32, u32)>,
+}
+impl CoverLayer {
+    pub fn new(
+        device: &wgpu::Device,
+        uniform_layout: &wgpu::BindGroupLayout,
+        shader: &wgpu::ShaderModule,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Cover tile layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Cover pipeline layout"),
+            bind_group_layouts: &[uniform_layout, &layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Instanced ground cover"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_cover"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<CoverInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32x2,
+                            offset: 20,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let data = templates();
+        let template_bytes = (data.len() * std::mem::size_of::<TemplateVertex>()) as u64;
+        let templates = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shared cover templates"),
+            contents: bytemuck::cast_slice(&data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        Self {
+            pipeline,
+            layout,
+            templates,
+            template_bytes,
+            tiles: HashMap::new(),
+            pending: VecDeque::new(),
+            center: None,
+            drawn: Cell::new((0, 0)),
+        }
+    }
+    pub fn prepare(&mut self, position: Vec3) {
+        let center = (
+            (position.x / TILE_SIZE).floor() as i32,
+            (position.z / TILE_SIZE).floor() as i32,
+        );
+        if self.center == Some(center) {
+            return;
+        }
+        self.center = Some(center);
+        self.tiles
+            .retain(|&(x, z), _| (x - center.0).pow(2) + (z - center.1).pow(2) <= 49);
+        let mut requested = Vec::new();
+        for dz in -6i32..=6 {
+            for dx in -6i32..=6 {
+                if dx * dx + dz * dz > 42 {
+                    continue;
+                }
+                let key = (center.0 + dx, center.1 + dz);
+                if !self.tiles.contains_key(&key) {
+                    requested.push((dx * dx + dz * dz, key));
+                }
+            }
+        }
+        requested.sort_unstable_by_key(|&(distance, (x, z))| (distance, z, x));
+        self.pending = requested.into_iter().map(|(_, key)| key).collect();
+    }
+    pub fn build_next(&mut self, world: &World, device: &wgpu::Device) -> bool {
+        let Some((x, z)) = self.pending.pop_front() else {
+            return false;
+        };
+        let data = tile_data(world, x, z);
+        let bytes = data.buffer_bytes();
+        // Empty tiles still count as complete so they are not regenerated on movement.
+        let empty = CoverInstance::zeroed();
+        let contents = if data.instances.is_empty() {
+            bytemuck::bytes_of(&empty)
+        } else {
+            bytemuck::cast_slice(&data.instances)
+        };
+        let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cover instances"),
+            contents,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let heights = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cover terrain heights"),
+            contents: bytemuck::cast_slice(&data.heights),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let uniform = TileUniform {
+            origin: [data.origin[0], data.origin[1], 0., 0.],
+            grid: [world.seed, (x * 8 - 1) as u32, (z * 8 - 1) as u32, 0],
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cover tile origin"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Cover tile"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.templates.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: heights.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        });
+        self.tiles.insert(
+            (x, z),
+            GpuTile {
+                instances,
+                group,
+                ranks: data.ranks,
+                bounds_min: Vec3::from_array(data.bounds_min),
+                bounds_max: Vec3::from_array(data.bounds_max),
+                bytes: bytes
+                    + if data.instances.is_empty() {
+                        std::mem::size_of::<CoverInstance>() as u64
+                    } else {
+                        0
+                    },
+            },
+        );
+        true
+    }
+    pub fn draw<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        eye: Vec3,
+        view_projection: Mat4,
+        density: f32,
+    ) -> u32 {
+        let mut drawn_tiles = 0;
+        let mut drawn_instances = 0;
+        if density > 0. && density.is_finite() {
+            pass.set_pipeline(&self.pipeline);
+            for tile in self.tiles.values() {
+                let count = prefix_count(&tile.ranks, density);
+                if count == 0 || !visible(tile.bounds_min, tile.bounds_max, eye, view_projection) {
+                    continue;
+                }
+                pass.set_bind_group(1, &tile.group, &[]);
+                pass.set_vertex_buffer(0, tile.instances.slice(..));
+                pass.draw(0..TEMPLATE_VERTICES, 0..count);
+                drawn_tiles += 1;
+                drawn_instances += count;
+            }
+        }
+        self.drawn.set((drawn_tiles, drawn_instances));
+        drawn_instances
+    }
+    pub fn clear(&mut self) {
+        self.tiles.clear();
+        self.pending.clear();
+        self.center = None;
+        self.drawn.set((0, 0));
+    }
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+    pub fn stats(&self) -> CoverStats {
+        let (drawn_tiles, drawn_instances) = self.drawn.get();
+        CoverStats {
+            tile_count: self.tiles.len(),
+            loaded_instances: self.tiles.values().map(|t| t.ranks.len()).sum(),
+            buffer_bytes: self.template_bytes + self.tiles.values().map(|t| t.bytes).sum::<u64>(),
+            pending_tiles: self.pending.len(),
+            drawn_tiles,
+            drawn_instances,
+            drawn_triangles: drawn_instances * 8,
+        }
+    }
+}
+fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
+    let nearest = eye.clamp(min, max);
+    if (nearest - eye).length_squared() > COVER_DISTANCE * COVER_DISTANCE {
+        return false;
+    }
+    let mut clips = [Vec4::ZERO; 8];
+    for (i, clip) in clips.iter_mut().enumerate() {
+        let p = Vec3::new(
+            if i & 1 == 0 { min.x } else { max.x },
+            if i & 2 == 0 { min.y } else { max.y },
+            if i & 4 == 0 { min.z } else { max.z },
+        );
+        *clip = projection * (p - eye).extend(1.);
+    }
+    !(clips.iter().all(|p| p.x < -p.w)
+        || clips.iter().all(|p| p.x > p.w)
+        || clips.iter().all(|p| p.y < -p.w)
+        || clips.iter().all(|p| p.y > p.w)
+        || clips.iter().all(|p| p.z < 0.)
+        || clips.iter().all(|p| p.z > p.w))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn templates_and_instances_are_bounded() {
+        assert_eq!(std::mem::size_of::<CoverInstance>(), 28);
+        let vertices = templates();
+        assert_eq!(vertices.len(), 5 * 8 * 24);
+        assert!(vertices.iter().all(|v| v
+            .position
+            .iter()
+            .chain(v.normal.iter())
+            .chain(v.color.iter())
+            .all(|f| f.is_finite())));
+        assert!(vertices.iter().all(|v| v.position[0].abs() < 2.
+            && v.position[2].abs() < 2.
+            && v.position[1] >= 0.
+            && v.position[1] < 2.));
+    }
+    #[test]
+    fn live_prefix_is_nested_and_does_not_modify_data() {
+        let world = World::new(1337);
+        let p = world.spawn();
+        let tx = (p[0] / TILE_SIZE).floor() as i32;
+        let tz = (p[1] / TILE_SIZE).floor() as i32;
+        let a = tile_data(&world, tx, tz);
+        let b = tile_data(&world, tx, tz);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&a.instances),
+            bytemuck::cast_slice::<_, u8>(&b.instances)
+        );
+        assert_eq!(a.ranks, b.ranks);
+        assert_eq!(a.heights, b.heights);
+        assert_eq!(a.prefix_count(0.), 0);
+        assert_eq!(a.prefix_count(f32::NAN), 0);
+        assert_eq!(a.prefix_count(4.), a.instances.len() as u32);
+        let mut count = 0;
+        for density in [0.1, 0.5, 1., 1.5, 2., 3., 4.] {
+            let next = a.prefix_count(density);
+            assert!(next >= count);
+            count = next;
+        }
+        assert!(a.instances.len() <= 1024);
+        assert!(a.instances.len() > 250);
+        assert!(a.ranks.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(a.heights.len(), 121);
+        assert_eq!(
+            a.buffer_bytes(),
+            (a.instances.len() * 28 + 121 * 4 + 32) as u64
+        );
+    }
+    #[test]
+    fn blade_endpoints_match_actual_rendered_triangles_across_tile_and_chunk_seams() {
+        let world = World::new(1337);
+        let p = world.spawn();
+        let tx = (p[0] / 192.).floor() as i32 * 4;
+        let tz = (p[1] / 192.).floor() as i32 * 4;
+        let templates = templates();
+        let mut checked = 0;
+        let mut crossed = 0;
+        let mut worst = 0.0_f32;
+        for (dx, dz) in [(0, 0), (-1, 0), (0, -1), (-1, -1)] {
+            let tile = tile_data(&world, tx + dx, tz + dz);
+            for instance in tile
+                .instances
+                .iter()
+                .filter(|p| {
+                    p.placement[0] < 2.
+                        || p.placement[0] > 46.
+                        || p.placement[1] < 2.
+                        || p.placement[1] > 46.
+                })
+                .take(64)
+            {
+                let first = instance.data[1] as usize * 24;
+                for v in &templates[first..first + 24] {
+                    let [s, c] = instance.rotation;
+                    let scale = instance.placement[2];
+                    let x = tile.origin[0]
+                        + instance.placement[0]
+                        + (v.position[0] * c - v.position[2] * s) * scale;
+                    let z = tile.origin[1]
+                        + instance.placement[1]
+                        + (v.position[0] * s + v.position[2] * c) * scale;
+                    let local = [x - tile.origin[0], z - tile.origin[1]];
+                    let height = surface_height(world.seed, tile.origin, &tile.heights, local);
+                    let expected = geometry::terrain_surface_height_lod(&world, x, z, 0);
+                    worst = worst.max((height - expected).abs());
+                    assert!(
+                        (height - expected).abs() < 0.002,
+                        "surface mismatch at {x},{z}: {height} vs {expected}"
+                    );
+                    if local[0] < 0. || local[0] > 48. || local[1] < 0. || local[1] > 48. {
+                        crossed += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000);
+        assert!(crossed > 0);
+        println!("anchors checked={checked} outside-own-tile={crossed} max_error={worst}");
+    }
+    #[test]
+    fn generated_plants_preserve_water_road_and_coast_exclusions() {
+        let world = World::new(1337);
+        let p = world.spawn();
+        let tx = (p[0] / 48.).floor() as i32;
+        let tz = (p[1] / 48.).floor() as i32;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let tile = tile_data(&world, tx + dx, tz + dz);
+                for plant in tile.instances {
+                    let s = world.sample(
+                        tile.origin[0] + plant.placement[0],
+                        tile.origin[1] + plant.placement[1],
+                    );
+                    assert!(
+                        !s.ocean
+                            && s.shore == ShoreKind::None
+                            && s.road <= 0.10
+                            && s.water_height <= s.height + 0.15
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn culling_rejects_far_tiles_and_keeps_near_crossing_boxes() {
+        let eye = Vec3::new(0., 2., 0.);
+        let projection = Mat4::perspective_rh(1.3, 1.5, 0.08, 2000.);
+        assert!(visible(
+            Vec3::new(-3., -2., -30.),
+            Vec3::new(3., 4., -20.),
+            eye,
+            projection
+        ));
+        assert!(!visible(
+            Vec3::new(-3., -2., -400.),
+            Vec3::new(3., 4., -390.),
+            eye,
+            projection
+        ));
+        assert!(!visible(
+            Vec3::new(90., -2., -20.),
+            Vec3::new(100., 4., -10.),
+            eye,
+            projection
+        ));
+        assert!(!visible(
+            Vec3::new(-3., -2., 20.),
+            Vec3::new(3., 4., 30.),
+            eye,
+            projection
+        ));
+    }
+}

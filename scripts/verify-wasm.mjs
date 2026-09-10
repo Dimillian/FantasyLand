@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import init, { inspect_world, inspect_map, inspect_routes } from '../dist/pkg/fantasy_land.js';
+import init, { Game, inspect_world, inspect_map, inspect_routes } from '../dist/pkg/fantasy_land.js';
 await init({ module_or_path: await fs.readFile(new URL('../dist/pkg/fantasy_land_bg.wasm', import.meta.url)) });
 const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
@@ -42,3 +42,5 @@ assert.equal(ocean.vegetation_density, 0);
 assert.equal(ocean.sites.length, 0, 'no offshore settlements');
 assert.equal(inspect_routes(1337, 185000, 185000, 6000).length, 0, 'no roads across open ocean');
 console.log('WASM coastal checks passed: expanded map, deep ocean, sea level, no offshore trees, roads or settlements.');
+
+assert.equal(typeof Game.prototype.set_ground_cover_density, "function", "density control is present in the actual WASM bindings");

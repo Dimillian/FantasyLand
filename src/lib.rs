@@ -1,3 +1,4 @@
+pub mod cover;
 pub mod ecology;
 pub mod geometry;
 mod horizon;
@@ -42,6 +43,9 @@ struct GameState {
     day_time: f32,
     chunk_count: usize,
     triangle_count: usize,
+    ground_cover_density: f32,
+    cover_instances: u32,
+    mesh_megabytes: f32,
 }
 
 #[wasm_bindgen]
@@ -176,6 +180,9 @@ impl Game {
             day_time: self.hour,
             chunk_count: self.renderer.chunk_count(),
             triangle_count: self.renderer.triangle_count(),
+            ground_cover_density: self.renderer.ground_cover_density(),
+            cover_instances: self.renderer.cover_drawn_instances(),
+            mesh_megabytes: self.renderer.mesh_bytes() as f32 / 1_000_000.0,
         })
         .unwrap_or(JsValue::NULL)
     }
@@ -240,6 +247,9 @@ impl Game {
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.renderer.set_filter(mode, strength);
+    }
+    pub fn set_ground_cover_density(&mut self, density: f32) {
+        self.renderer.set_ground_cover_density(density);
     }
     pub fn set_quality(&mut self, q: u32) {
         self.renderer.set_quality(q.min(2));

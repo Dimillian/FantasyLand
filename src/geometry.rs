@@ -3732,3 +3732,20 @@ mod road_grounding_tests {
         );
     }
 }
+
+/// Local-space templates used by the instanced ground-cover layer.
+/// Kinds: dry grass, wet grass, fern, flowers, heather. Every recipe fits 8 triangles.
+pub(crate) fn cover_template(kind: u32, variant: u32) -> MeshData {
+    let mut mesh = MeshData::default();
+    let seed = hash(0x434f5645, kind as i32, variant as i32);
+    let base = [0.; 3];
+    let tint = [1.; 3];
+    match kind {
+        1 => grass_clump(&mut mesh, base, 1., seed, tint, true),
+        2 => fern(&mut mesh, base, 1., seed, tint),
+        3 => flowers(&mut mesh, base, 1., seed, tint),
+        4 => heather(&mut mesh, base, 1., seed),
+        _ => grass_clump(&mut mesh, base, 1., seed, tint, false),
+    }
+    mesh
+}

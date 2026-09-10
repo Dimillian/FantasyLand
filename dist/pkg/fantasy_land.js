@@ -97,6 +97,12 @@ export class Game {
         wasm.game_set_filter(this.__wbg_ptr, mode, strength);
     }
     /**
+     * @param {number} density
+     */
+    set_ground_cover_density(density) {
+        wasm.game_set_ground_cover_density(this.__wbg_ptr, density);
+    }
+    /**
      * @param {number} q
      */
     set_quality(q) {
@@ -570,6 +576,14 @@ function __wbg_get_imports() {
         __wbg_new_with_byte_offset_and_length_492c969e8b5da8a4: function(arg0, arg1, arg2) {
             const ret = new Uint8Array(arg0, arg1 >>> 0, arg2 >>> 0);
             return ret;
+        },
+        __wbg_now_0b7736bc17fd7719: function(arg0) {
+            const ret = arg0.now();
+            return ret;
+        },
+        __wbg_performance_d96ad0b441f4510a: function(arg0) {
+            const ret = arg0.performance;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
         __wbg_prototypesetcall_ae9f5e7459250748: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
@@ -1140,7 +1154,7 @@ function __wbg_get_imports() {
             arg0.writeBuffer(arg1, arg2, arg3, arg4, arg5);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 71, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 72, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_);
             return ret;
         },

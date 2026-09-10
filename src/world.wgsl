@@ -99,7 +99,7 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     return color;
 }
 
-@vertex fn vs_main(v: VertexIn) -> VertexOut {
+fn transform_vertex(v: VertexIn) -> VertexOut {
     var o: VertexOut;
     var p = v.position;
     if v.material > 0.5 && v.material < 1.5 {
@@ -119,6 +119,10 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     o.color = v.color;
     o.material = v.material;
     return o;
+}
+
+@vertex fn vs_main(v: VertexIn) -> VertexOut {
+    return transform_vertex(v);
 }
 
 fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32) -> vec3<f32> {

@@ -12,6 +12,7 @@ export const game_resize: (a: number, b: number, c: number) => void;
 export const game_return_to_spawn: (a: number) => void;
 export const game_set_ascii: (a: number, b: number, c: number) => void;
 export const game_set_filter: (a: number, b: number, c: number) => void;
+export const game_set_ground_cover_density: (a: number, b: number) => void;
 export const game_set_quality: (a: number, b: number) => void;
 export const game_set_render_resolution: (a: number, b: number) => void;
 export const game_set_time: (a: number, b: number) => void;

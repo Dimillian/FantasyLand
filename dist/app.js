@@ -32,6 +32,8 @@ const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 450, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
 let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(saved.asciiScale ?? 2) : 2;
 let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
+// Density is a renderer preference: preserve existing v4 world progress.
+let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 1)) ? clamp(Number(saved.groundCoverDensity ?? 1), 0, 4) : 1;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
@@ -47,6 +49,7 @@ $('seed-input').value = seed;
 $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
 $('render-resolution').value = String(renderResolution);
+updateGroundCoverControls();
 updateFilterControls();
 updateAsciiControls();
 
@@ -60,8 +63,21 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
+}
+
+function updateGroundCoverControls() {
+  const percent = Math.round(groundCoverDensity * 100);
+  const label = groundCoverDensity === 0 ? 'Off' : `${percent}% · ${Number(groundCoverDensity.toFixed(2))}×`;
+  $('ground-cover-density').value = String(percent);
+  $('ground-cover-density-value').textContent = label;
+  $('ground-cover-density').setAttribute('aria-valuetext', groundCoverDensity === 0 ? 'Off' : `${percent} percent, ${Number(groundCoverDensity.toFixed(2))} times density`);
+}
+
+function applyGroundCoverDensity() {
+  updateGroundCoverControls();
+  if (game) game.set_ground_cover_density(groundCoverDensity);
 }
 
 function updateFilterControls() {
@@ -477,7 +493,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} triangles\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -538,6 +554,7 @@ async function boot() {
     game.set_render_resolution(renderResolution);
     applyAscii();
     applyFilter();
+    applyGroundCoverDensity();
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
@@ -592,6 +609,13 @@ $('fast-travel').addEventListener('click', () => {
 });
 $('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
 $('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); updateRenderDimensions(); saveProgress(); });
+$('ground-cover-density').addEventListener('input', (event) => {
+  const percent = Number(event.target.value);
+  groundCoverDensity = Number.isFinite(percent) ? clamp(percent / 100, 0, 4) : 1;
+  // The engine updates a GPU density setting immediately; no terrain regeneration.
+  applyGroundCoverDensity();
+  saveProgress();
+});
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
   filterMode = [0, 1, 2, 3].includes(selected) ? selected : 1;

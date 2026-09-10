@@ -15,6 +15,7 @@ export class Game {
     return_to_spawn(): void;
     set_ascii(cell_scale: number, palette: number): void;
     set_filter(mode: number, strength: number): void;
+    set_ground_cover_density(density: number): void;
     set_quality(q: number): void;
     set_render_resolution(height: number): void;
     set_time(hour: number): void;
@@ -46,6 +47,7 @@ export interface InitOutput {
     readonly game_return_to_spawn: (a: number) => void;
     readonly game_set_ascii: (a: number, b: number, c: number) => void;
     readonly game_set_filter: (a: number, b: number, c: number) => void;
+    readonly game_set_ground_cover_density: (a: number, b: number) => void;
     readonly game_set_quality: (a: number, b: number) => void;
     readonly game_set_render_resolution: (a: number, b: number) => void;
     readonly game_set_time: (a: number, b: number) => void;

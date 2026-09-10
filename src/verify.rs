@@ -24,6 +24,7 @@ fn main() {
     let grounding_only = check.as_deref() == Some("grounding");
     let roads_only = check.as_deref() == Some("roads");
     let coasts_only = check.as_deref() == Some("coasts");
+    let cover_only = check.as_deref() == Some("cover");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -39,7 +40,8 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only && !ascii_only && !grounding_only && !roads_only && !coasts_only {
+    if !filters_only && !ascii_only && !grounding_only && !roads_only && !coasts_only && !cover_only
+    {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
         save_png(&format!("{dir}/world-map.png"), 512, 512, &map);
@@ -49,6 +51,10 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if cover_only {
+        verify_cover(&world, &mut renderer, &dir);
+        return;
+    }
     if coasts_only {
         verify_coasts(&world, &mut renderer, &dir);
         return;
@@ -136,6 +142,253 @@ fn main() {
         serde_json::to_string_pretty(&metadata).unwrap(),
     )
     .unwrap();
+    fn verify_cover(world: &World, renderer: &mut Renderer, dir: &str) {
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 720;
+        const HOUR: f32 = 11.0;
+        const CAPTURE_PITCH: f32 = -0.18;
+        const BENCHMARK_PITCH: f32 = -0.10;
+        const FRAMES: usize = 30;
+        let (spawn, yaw) = world.spawn_view();
+        let eye = glam::Vec3::new(
+            spawn[0],
+            geometry::walk_height(world, spawn[0], spawn[1]) + 1.72,
+            spawn[1],
+        );
+        renderer.set_quality(1);
+        renderer.resize(WIDTH, HEIGHT);
+        renderer.set_render_resolution(450);
+        renderer.set_filter(1, 1.0);
+        renderer.set_ground_cover_density(1.0);
+        let warm_start = Instant::now();
+        renderer.update_chunks(world, eye, true);
+        let warm_updates = drain_cover_queues(world, renderer, eye);
+        renderer.device.poll(wgpu::PollType::Wait).unwrap();
+        let warm_ms = warm_start.elapsed().as_secs_f64() * 1000.0;
+        let resident = cover_residency(renderer);
+        assert!(
+            resident["cover"]["loaded_instances"].as_u64().unwrap() > 0,
+            "spawn must contain resident ground cover"
+        );
+        println!("Cover warmed in {warm_ms:.1} ms: {resident}");
+
+        // Keep simulation time frozen: every density sees exactly the same
+        // camera, daylight, wind and postprocess inputs. No streaming here.
+        let mut captures = Vec::new();
+        let mut comparisons = Vec::new();
+        let mut previous_pixels: Option<Vec<u8>> = None;
+        let mut default_pixels = Vec::new();
+        let mut previous_drawn = 0;
+        for density in [0.0, 1.0, 2.0, 4.0] {
+            let before = cover_residency(renderer);
+            renderer.set_ground_cover_density(density);
+            assert_eq!(
+                cover_residency(renderer),
+                before,
+                "density {density}: setter changed resident resources or queues"
+            );
+            renderer.render(eye, yaw, CAPTURE_PITCH, HOUR).unwrap();
+            let pixels = renderer.capture_rgba().unwrap();
+            let label = format!("cover-{density:.0}x");
+            assert_image(&pixels, WIDTH, HEIGHT, &label);
+            save_png(&format!("{dir}/{label}.png"), WIDTH, HEIGHT, &pixels);
+            let stats = serde_json::to_value(renderer.cover_stats()).unwrap();
+            let drawn = stats["drawn_instances"].as_u64().unwrap();
+            if density == 0.0 {
+                assert_eq!(drawn, 0, "Off still submitted ground-cover instances");
+                assert_eq!(stats["drawn_tiles"].as_u64(), Some(0));
+                assert_eq!(stats["drawn_triangles"].as_u64(), Some(0));
+            } else {
+                assert!(
+                    drawn > previous_drawn,
+                    "density {density}: expected a larger submitted instance prefix"
+                );
+            }
+            if let Some(previous) = &previous_pixels {
+                let difference = compare_images(previous, &pixels, WIDTH, HEIGHT);
+                assert!(
+                    difference.changed_fraction > 0.0001,
+                    "density {density}: no visible cover change in fixed-camera capture"
+                );
+                comparisons.push(serde_json::json!({
+                    "toDensity": density, "difference": difference.json()
+                }));
+            }
+            assert_eq!(
+                cover_residency(renderer),
+                resident,
+                "density {density}: rendering changed resident resources"
+            );
+            if density == 1.0 {
+                default_pixels = pixels.clone();
+            }
+            captures.push(
+                serde_json::json!({"density":density,"file":format!("{label}.png"),"cover":stats}),
+            );
+            previous_pixels = Some(pixels);
+            previous_drawn = drawn;
+        }
+        renderer.set_ground_cover_density(1.0);
+        renderer.render(eye, yaw, CAPTURE_PITCH, HOUR).unwrap();
+        assert_pixels_equal(
+            &default_pixels,
+            &renderer.capture_rgba().unwrap(),
+            "returning to 1x must restore the identical fixed-time image",
+        );
+
+        let mut runs = Vec::new();
+        for (run, densities) in [[0.0, 1.0, 2.0, 4.0], [4.0, 2.0, 1.0, 0.0]]
+            .into_iter()
+            .enumerate()
+        {
+            for density in densities {
+                renderer.set_ground_cover_density(density);
+                assert_eq!(cover_residency(renderer), resident);
+                for _ in 0..3 {
+                    renderer.render(eye, yaw, BENCHMARK_PITCH, HOUR).unwrap();
+                    renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                }
+                let mut cpu_ms = Vec::with_capacity(FRAMES);
+                let mut completed_ms = Vec::with_capacity(FRAMES);
+                for _ in 0..FRAMES {
+                    let start = Instant::now();
+                    renderer.render(eye, yaw, BENCHMARK_PITCH, HOUR).unwrap();
+                    cpu_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                    renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                    completed_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                let entry = serde_json::json!({
+                    "run":run+1,"density":density,"frames":FRAMES,
+                    "cpuEncodeSubmit":timing_summary(&cpu_ms),
+                    "gpuCompletedFrame":timing_summary(&completed_ms),
+                    "cover":renderer.cover_stats(),
+                });
+                println!("Cover benchmark {entry}");
+                runs.push(entry);
+            }
+        }
+        assert_eq!(cover_residency(renderer), resident);
+
+        // Four genuine 48 m cover-tile transitions, retaining the warm world.
+        // Terrain chunk transitions are separately labelled rather than being
+        // mistaken for the cost of a cover-only boundary crossing.
+        renderer.set_ground_cover_density(4.0);
+        let mut movement = Vec::new();
+        let mut previous_eye = eye;
+        for step in 1..=4 {
+            let x = eye.x + step as f32 * 48.0;
+            let next_eye = glam::Vec3::new(x, geometry::walk_height(world, x, eye.z) + 1.72, eye.z);
+            let before = cover_residency(renderer);
+            let first = Instant::now();
+            renderer.update_chunks(world, next_eye, false);
+            let first_ms = first.elapsed().as_secs_f64() * 1000.0;
+            let after_first = cover_residency(renderer);
+            let mut updates = vec![first_ms];
+            for _ in 0..20000 {
+                if cover_queues_empty(renderer) {
+                    break;
+                }
+                let start = Instant::now();
+                renderer.update_chunks(world, next_eye, false);
+                updates.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            assert!(
+                cover_queues_empty(renderer),
+                "movement queues failed to drain"
+            );
+            renderer.render(next_eye, yaw, CAPTURE_PITCH, HOUR).unwrap();
+            renderer.device.poll(wgpu::PollType::Wait).unwrap();
+            let tile = |p: glam::Vec3| [(p.x / 48.0).floor() as i32, (p.z / 48.0).floor() as i32];
+            let chunk = |p: glam::Vec3| {
+                [
+                    (p.x / geometry::CHUNK_SIZE).floor() as i32,
+                    (p.z / geometry::CHUNK_SIZE).floor() as i32,
+                ]
+            };
+            assert_ne!(tile(previous_eye), tile(next_eye));
+            let entry = serde_json::json!({
+                "step":step,"position":[next_eye.x,next_eye.y,next_eye.z],
+                "fromCoverTile":tile(previous_eye),"toCoverTile":tile(next_eye),
+                "terrainChunkChanged":chunk(previous_eye)!=chunk(next_eye),
+                "firstUpdateChunksCpuMs":first_ms,"allUpdateChunksCpu":timing_summary(&updates),
+                "totalUpdateChunksCpuMs":updates.iter().sum::<f64>(),
+                "before":before,"afterFirstUpdate":after_first,"afterDrain":cover_residency(renderer),
+            });
+            println!("Cover movement {entry}");
+            movement.push(entry);
+            previous_eye = next_eye;
+        }
+        let report = serde_json::json!({
+            "seed":world.seed,"scene":"spawn","eye":[eye.x,eye.y,eye.z],"yaw":yaw,
+            "hour":HOUR,"capturePitch":CAPTURE_PITCH,"benchmarkPitch":BENCHMARK_PITCH,
+            "quality":"Balanced","output":[WIDTH,HEIGHT],"internal":[800,450],"filter":"Bloom",
+            "methodology":{
+                "frameTiming":"Native serialized render() plus device.poll(Wait), including CPU encoding/submission and GPU completion wait; no capture/readback in timed frames. Not pure GPU time or browser FPS.",
+                "sampling":"Two runs of 30 frames per density, reversed density order on the second run, 3 untimed completed frames before each sample. Fixed simulation time in captures and timings.",
+                "streaming":"CPU wall time of update_chunks only, force=false across four 48m tile crossings; queues drained at each position without clearing or regenerating the world. Terrain-chunk crossings are identified separately.",
+                "residency":"All density setters and fixed-camera renders preserve chunk counts, pending queues, mesh bytes, loaded cover tiles/instances and cover buffer bytes. Off changes only submitted cover draws; trees and structural props remain.",
+            },
+            "historicalBaseline":{
+                "source":"Prior native render-bench spawn, Balanced, 800x450 Bloom, pitch -0.10, hour 11",
+                "gpuCompletedMeanMs":[8.25597075,9.24977121],"meshBytes":239262012,
+                "limitations":"Historical runs used 100 animated frames after 20 warmups; current bounded runs use 30 frozen-time frames after 3 warmups. Host load and renderer changes can differ, so this is context rather than an isolated causal comparison. meshBytes is mesh/cover buffer payload, not total GPU memory.",
+            },
+            "warmup":{"elapsedMs":warm_ms,"subsequentUpdateCalls":warm_updates},
+            "resident":resident,"captures":captures,"captureDifferences":comparisons,
+            "runs":runs,"movement":movement,
+        });
+        fs::write(
+            format!("{dir}/cover-report.json"),
+            serde_json::to_string_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        println!("Cover density, fixed-resource invariants, native frame timings and tile streaming validated");
+    }
+
+    fn cover_residency(renderer: &Renderer) -> serde_json::Value {
+        let stats = serde_json::to_value(renderer.cover_stats()).unwrap();
+        let mut cover = serde_json::Map::new();
+        for key in [
+            "tile_count",
+            "loaded_instances",
+            "buffer_bytes",
+            "pending_tiles",
+        ] {
+            cover.insert(key.to_string(), stats[key].clone());
+        }
+        serde_json::json!({
+            "chunks":renderer.chunk_count(),"pending":renderer.pending_count(),
+            "meshBytes":renderer.mesh_bytes(),"cover":cover,
+        })
+    }
+
+    fn cover_queues_empty(renderer: &Renderer) -> bool {
+        let stats = serde_json::to_value(renderer.cover_stats()).unwrap();
+        renderer.pending_count() == 0 && stats["pending_tiles"].as_u64() == Some(0)
+    }
+
+    fn drain_cover_queues(world: &World, renderer: &mut Renderer, eye: glam::Vec3) -> usize {
+        for calls in 0..20000 {
+            if cover_queues_empty(renderer) {
+                return calls;
+            }
+            renderer.update_chunks(world, eye, false);
+        }
+        panic!("terrain/cover warmup queues failed to drain");
+    }
+
+    fn timing_summary(values: &[f64]) -> serde_json::Value {
+        assert!(!values.is_empty());
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        let percentile = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
+        serde_json::json!({
+            "samples":values.len(),"meanMs":values.iter().sum::<f64>()/values.len() as f64,
+            "minMs":sorted[0],"p50Ms":percentile(0.50),"p95Ms":percentile(0.95),
+            "maxMs":sorted[sorted.len()-1],
+        })
+    }
+
     fn verification_region_site(world: &World) -> fantasy_land::world::Site {
         const OLD_MISTFIELD: [f32; 2] = [-16545.926, -12303.939];
         const MISTFIELD_ID: u32 = 1845583983;
