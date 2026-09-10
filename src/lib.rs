@@ -1,3 +1,4 @@
+pub mod ecology;
 pub mod geometry;
 mod horizon;
 mod player;
@@ -27,8 +28,11 @@ struct GameState {
     yaw: f32,
     pitch: f32,
     biome: String,
+    landscape: String,
     grounded: bool,
     stamina: f32,
+    health: f32,
+    mana: f32,
     walked: f32,
     seed: u32,
     speed: f32,
@@ -78,6 +82,7 @@ impl Game {
         self.player
             .update(&self.world, dt, forward, strafe, sprint, jump);
         self.hour = (self.hour + dt / 120.0) % 24.0;
+        self.renderer.advance_time(dt);
         self.renderer
             .update_chunks(&self.world, self.player.position, false);
         self.renderer
@@ -134,8 +139,26 @@ impl Game {
             yaw: p.yaw,
             pitch: p.pitch,
             biome: sample.biome.name().to_string(),
+            landscape: {
+                let trees =
+                    ecology::tree_density(self.world.seed, p.position.x, p.position.z, &sample);
+                match sample.biome {
+                    world::Biome::Alpine
+                    | world::Biome::Desert
+                    | world::Biome::Moor
+                    | world::Biome::Wetland => sample.biome.name(),
+                    _ if trees < 0.025 => "Open wildland",
+                    _ if trees < 0.20 => "Sparse woodland",
+                    world::Biome::PineForest if trees > 0.70 => "Dense pine forest",
+                    _ if trees > 0.70 => "Dense forest",
+                    _ => "Woodland",
+                }
+                .to_string()
+            },
             grounded: p.grounded,
             stamina: p.stamina,
+            health: p.health,
+            mana: p.mana,
             walked: p.walked,
             seed: self.world.seed,
             speed: p.speed,
@@ -221,6 +244,8 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         biome: String,
         road: f32,
         water_height: f32,
+        vegetation_density: f32,
+        hydrology: world::HydrologyStats,
         spawn: [f32; 2],
         sites: Vec<world::Site>,
     }
@@ -231,6 +256,8 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         biome: s.biome.name().into(),
         road: s.road,
         water_height: s.water_height,
+        vegetation_density: ecology::tree_density(seed, x, z, &s),
+        hydrology: world.hydrology_stats(),
         spawn: world.spawn(),
         sites: world.sites_near(x, z, 4000.0),
     })

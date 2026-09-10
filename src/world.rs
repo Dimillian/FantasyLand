@@ -1,8 +1,8 @@
 //! Deterministic regional geography. All coordinates and elevations are meters.
 //!
-//! This is an analytic landscape model, not an erosion or hydraulic simulation.
-//! Shared spatial functions define river valleys and settlement connections before
-//! terrain chunks are sampled, so loading order never changes their boundaries.
+//! A continental DEM drives Priority-Flood spill routing, D8 catchments and
+//! accumulated river flow. Profiles carve downhill spillways through depressions;
+//! this is hydrologic conditioning, not a dynamic erosion simulation.
 
 use serde::Serialize;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -10,9 +10,10 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 pub const WORLD_SIZE: f32 = 256_000.0;
 pub const SITE_SPACING: f32 = 2_400.0;
 const HALF_WORLD: f32 = WORLD_SIZE * 0.5;
-const RIVER_SPACING: f32 = 11_000.0;
+#[path = "hydrology.rs"]
+mod hydrology;
+pub use hydrology::Stats as HydrologyStats;
 const LANDMARK_SPACING: f32 = 640.0;
-const NO_WATER: f32 = -10_000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Biome {
@@ -83,16 +84,9 @@ pub struct Landmark {
 #[derive(Clone, Debug)]
 pub struct World {
     pub seed: u32,
+    hydrology: Rc<hydrology::Hydrology>,
     road_cache: RefCell<HashMap<(i32, i32, bool), Rc<Vec<[f32; 2]>>>>,
     spawn_cache: RefCell<Option<([f32; 2], f32)>>,
-}
-
-#[derive(Clone, Copy)]
-struct River {
-    center: f32,
-    distance: f32,
-    width: f32,
-    level: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -167,96 +161,88 @@ fn segment_hit(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> RoadHit {
     }
 }
 
+fn raw_height(seed: u32, x: f32, z: f32) -> f32 {
+    let warp_x = (noise(seed ^ 0x1801, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
+    let warp_z = (noise(seed ^ 0x1802, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
+    let wx = x + warp_x;
+    let wz = z + warp_z;
+    let province = fbm(seed ^ 0x1901, wx / 25000.0, wz / 25000.0);
+    let mountains = smooth(0.38, 0.70, province);
+    let ridge_noise = noise(seed ^ 0x1902, wx / 5600.0, wz / 5600.0);
+    let ridge = (1.0 - (ridge_noise * 2.0 - 1.0).abs()).powi(3);
+    let hill = fbm(seed ^ 0x1903, wx / 1400.0, wz / 1400.0);
+    let rolling = fbm(seed ^ 0x1913, wx / 410.0, wz / 510.0);
+    let continental = (1.0 - smooth(0.72, 1.0, x.abs().max(z.abs()) / HALF_WORLD)).max(0.0);
+    let detail = (noise(seed ^ 0x1904, x / 95.0, z / 95.0) - 0.5) * 6.0
+        + (noise(seed ^ 0x1905, x / 30.0, z / 30.0) - 0.5) * 0.9;
+    24.0 + continental
+        * (95.0
+            + 110.0 * noise(seed ^ 0x1930, x / 48000.0, z / 48000.0)
+            + 76.0 * rolling
+            + 135.0 * hill
+            + mountains * (170.0 + 1420.0 * ridge))
+        + detail
+}
+
 impl World {
     pub fn new(seed: u32) -> Self {
         Self {
             seed,
+            hydrology: Rc::new(hydrology::Hydrology::new(seed)),
             road_cache: RefCell::new(HashMap::new()),
             spawn_cache: RefCell::new(None),
         }
     }
 
-    fn river_center(&self, stripe: i32, z: f32) -> f32 {
-        let base = stripe as f32 * RIVER_SPACING;
-        let offset = (rand01(hash(self.seed ^ 0x7001, stripe, 0)) - 0.5) * 1_200.0;
-        base + offset
-            + (noise(self.seed ^ 0x7102, stripe as f32 * 3.73 + 0.31, z / 6_200.0) - 0.5) * 3_800.0
-            + (noise(self.seed ^ 0x7203, stripe as f32 * 7.19 + 0.83, z / 1_500.0) - 0.5) * 400.0
-    }
-
-    fn river(&self, x: f32, z: f32) -> River {
-        let index = (x / RIVER_SPACING).round() as i32;
-        let mut best = River {
-            center: 0.0,
-            distance: f32::MAX,
-            width: 20.0,
-            level: 0.0,
-        };
-        for stripe in (index - 1)..=(index + 1) {
-            let center = self.river_center(stripe, z);
-            let distance = (x - center).abs();
-            if distance < best.distance {
-                // Every main channel has the same continuous downstream profile.
-                // Broad wet reaches are widened sections of the same watercourse.
-                let reach = noise(self.seed ^ 0x7320, stripe as f32 * 1.87 + 0.3, z / 3_000.0);
-                let width = 15.0 + 11.0 * reach + 200.0 * smooth(0.79, 0.96, reach);
-                best = River {
-                    center,
-                    distance,
-                    width,
-                    level: 45.0 + (z + HALF_WORLD) * 0.00075,
-                };
-            }
-        }
-        best
-    }
-
-    fn ground_with_river(&self, x: f32, z: f32, river: River) -> f32 {
-        let warp_x = (noise(self.seed ^ 0x1801, x / 13_000.0, z / 13_000.0) - 0.5) * 2_300.0;
-        let warp_z = (noise(self.seed ^ 0x1802, x / 13_000.0, z / 13_000.0) - 0.5) * 2_300.0;
-        let wx = x + warp_x;
-        let wz = z + warp_z;
-        let province = fbm(self.seed ^ 0x1901, wx / 25_000.0, wz / 25_000.0);
-        let mountains = smooth(0.38, 0.70, province);
-        let ridge_noise = noise(self.seed ^ 0x1902, wx / 5_600.0, wz / 5_600.0);
-        let ridge = (1.0 - (ridge_noise * 2.0 - 1.0).abs()).powi(3);
-        let hill = fbm(self.seed ^ 0x1903, wx / 1_400.0, wz / 1_400.0);
-        let rolling = fbm(self.seed ^ 0x1913, wx / 410.0, wz / 510.0);
-        // A narrow floodplain transitions quickly into walkable foothills. The
-        // previous kilometer-wide suppression made the first view look flat.
-        let bank_end = river.width * 1.85;
-        let local_fade = smooth(bank_end + 14.0, bank_end + 390.0, river.distance);
-        let regional_fade = smooth(bank_end + 70.0, bank_end + 1_650.0, river.distance);
-        let relief = (12.0 + 76.0 * rolling) * local_fade
-            + (36.0 + 135.0 * hill + mountains * (170.0 + 1_420.0 * ridge)) * regional_fade;
-        let detail = (noise(self.seed ^ 0x1904, x / 95.0, z / 95.0) - 0.5) * 6.0
-            + (noise(self.seed ^ 0x1905, x / 30.0, z / 30.0) - 0.5) * 0.9;
-        let land = river.level + 3.0 + relief + detail * local_fade;
-        let bank = smooth(river.width * 0.68, bank_end, river.distance);
-        lerp(river.level - 3.6, land, bank)
+    fn river(&self, x: f32, z: f32) -> hydrology::Hit {
+        self.hydrology.nearest(x, z)
     }
 
     fn ground(&self, x: f32, z: f32) -> f32 {
-        self.ground_with_river(x, z, self.river(x, z))
+        self.hydrology
+            .terrain(x, z, raw_height(self.seed, x, z))
+            .height
+    }
+
+    pub fn water_flow(&self, x: f32, z: f32) -> [f32; 2] {
+        self.river(x, z).tangent
+    }
+    pub fn hydrology_stats(&self) -> HydrologyStats {
+        self.hydrology.stats.clone()
+    }
+    pub fn vegetation_density(&self, x: f32, z: f32) -> f32 {
+        self.vegetation_density_from_sample(x, z, &self.sample(x, z))
+    }
+    pub fn vegetation_density_from_sample(&self, x: f32, z: f32, sample: &Sample) -> f32 {
+        crate::ecology::tree_density(self.seed, x, z, sample)
     }
 
     fn node(&self, i: i32, j: i32) -> [f32; 2] {
-        let mut x =
-            i as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2401, i, j)) - 0.5) * 700.0;
-        let z = j as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2402, i, j)) - 0.5) * 700.0;
-        // Only the nearest nominal stripe can be close enough to displace a
-        // site: meanders remain well inside half the inter-river distance.
-        let stripe = (x / RIVER_SPACING).round() as i32;
-        let center = self.river_center(stripe, z);
-        if (x - center).abs() < 380.0 {
-            let reach = noise(self.seed ^ 0x7320, stripe as f32 * 1.87 + 0.3, z / 3_000.0);
-            let width = 15.0 + 11.0 * reach + 200.0 * smooth(0.79, 0.96, reach);
-            if (x - center).abs() < width + 140.0 {
-                let sign = if x >= center { 1.0 } else { -1.0 };
-                x = center + sign * (width + 165.0);
+        let original = [
+            i as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2401, i, j)) - 0.5) * 700.0,
+            j as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2402, i, j)) - 0.5) * 700.0,
+        ];
+        let mut p = original;
+        for _ in 0..4 {
+            let river = self.river(p[0], p[1]);
+            if river.distance >= river.width * 2.0 + 85.0 {
+                break;
             }
+            let dir = if river.distance > 0.1 {
+                [
+                    (p[0] - river.point[0]) / river.distance,
+                    (p[1] - river.point[1]) / river.distance,
+                ]
+            } else {
+                [river.tangent[1], -river.tangent[0]]
+            };
+            let radius = river.width * 2.0 + 115.0;
+            p = [
+                river.point[0] + dir[0] * radius,
+                river.point[1] + dir[1] * radius,
+            ];
         }
-        [x, z]
+        p
     }
 
     fn edge_exists(&self, i: i32, j: i32, vertical: bool) -> bool {
@@ -278,178 +264,125 @@ impl World {
     }
 
     fn plan_road(&self, i: i32, j: i32, vertical: bool, a: [f32; 2], b: [f32; 2]) -> Vec<[f32; 2]> {
-        let ra = self.river(a[0], a[1]);
-        let rb = self.river(b[0], b[1]);
-        let sa = a[0] - ra.center;
-        let sb = b[0] - rb.center;
-        if sa * sb < 0.0 && (ra.center - rb.center).abs() < 4_500.0 {
-            let stripe = ((ra.center + rb.center) * 0.5 / RIVER_SPACING).round() as i32;
-            // Choose a short crossing near the direct connection. Width is
-            // evaluated explicitly so broad reaches favor nearby narrows.
-            let mut chosen = (a[1] + b[1]) * 0.5;
-            let mut best = f32::MAX;
-            for n in -5..=5 {
-                let z = (a[1] + b[1]) * 0.5 + n as f32 * 100.0;
-                let x = self.river_center(stripe, z);
-                let r = self.river(x, z);
-                let detour = distance2(a, [x, z]).sqrt() + distance2(b, [x, z]).sqrt();
-                let score = detour + r.width * 14.0;
-                if score < best {
-                    best = score;
-                    chosen = z;
-                }
-            }
-            let center = [self.river_center(stripe, chosen), chosen];
-            let r = self.river(center[0], center[1]);
-            let derivative = (self.river_center(stripe, chosen + 8.0)
-                - self.river_center(stripe, chosen - 8.0))
-                / 16.0;
-            let inv = (1.0 + derivative * derivative).sqrt().recip();
-            let normal = [inv, -derivative * inv];
-            let half_span = r.width * 2.15 + 16.0;
-            let sign = sa.signum();
-            let bank_a = [
-                center[0] + normal[0] * half_span * sign,
-                center[1] + normal[1] * half_span * sign,
-            ];
-            let bank_b = [
-                center[0] - normal[0] * half_span * sign,
-                center[1] - normal[1] * half_span * sign,
-            ];
-            let mut points = Vec::with_capacity(12);
-            self.bank_approach(&mut points, stripe, a, bank_a, sign, true);
-            points.push(bank_b);
-            self.bank_approach(&mut points, stripe, bank_b, b, -sign, false);
-            return points;
-        }
-        if sa * sb > 0.0
-            && (ra.center - rb.center).abs() < 4_500.0
-            && ra.distance.min(rb.distance) < 650.0
-        {
-            let stripe = ((ra.center + rb.center) * 0.5 / RIVER_SPACING).round() as i32;
-            let mut points = Vec::with_capacity(5);
-            self.bank_approach(&mut points, stripe, a, b, sa.signum(), true);
-            return points;
-        }
         let dx = b[0] - a[0];
         let dz = b[1] - a[1];
-        let len = (dx * dx + dz * dz).sqrt();
-        let side = [-dz / len, dx / len];
+        let length = (dx * dx + dz * dz).sqrt();
+        let side = [-dz / length, dx / length];
         let bend = (rand01(hash(
             self.seed ^ if vertical { 0x2601 } else { 0x2602 },
             i,
             j,
         )) - 0.5)
-            * 400.0;
-        let mut points = Vec::with_capacity(9);
-        points.push(a);
+            * 440.0;
+        let mut base = vec![a];
         let mut previous_height = self.ground(a[0], a[1]);
-        let end_height = self.ground(b[0], b[1]);
         let mut previous_offset = 0.0;
         for n in 1..8 {
             let t = n as f32 / 8.0;
             let arc = 4.0 * t * (1.0 - t);
-            let base = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
-            let mut chosen = base;
-            let mut score_best = f32::MAX;
-            let mut chosen_h = 0.0;
+            let p = [lerp(a[0], b[0], t), lerp(a[1], b[1], t)];
+            let mut chosen = p;
+            let mut best = f32::INFINITY;
+            let mut chosen_h = previous_height;
             let mut chosen_offset = 0.0;
-            // A bounded contour preference moves trails around local high spots;
-            // this is intentionally not advertised as full least-cost routing.
-            for offset in [-230.0, -115.0, 0.0, 115.0, 230.0] {
+            for offset in [-150.0, 0.0, 150.0] {
                 let lateral = (bend + offset) * arc;
-                let p = [base[0] + side[0] * lateral, base[1] + side[1] * lateral];
-                let r = self.river(p[0], p[1]);
-                if r.distance < r.width * 2.0 + 12.0 {
-                    continue;
-                }
-                let h = self.ground_with_river(p[0], p[1], r);
-                let grade = (h - previous_height).abs() / (len / 8.0);
+                let q = [p[0] + side[0] * lateral, p[1] + side[1] * lateral];
+                let h = self.ground(q[0], q[1]);
+                let grade = (h - previous_height).abs() / (length / 8.0);
                 let score = (h - previous_height).abs() * 0.75
-                    + (h - end_height).abs() * 0.11
-                    + offset.abs() * 0.13
-                    + (lateral - previous_offset).abs() * 0.23
-                    + ((grade - 0.24).max(0.0)).powi(2) * 1_400.0;
-                if score < score_best {
-                    score_best = score;
-                    chosen = p;
+                    + offset.abs() * 0.12
+                    + (lateral - previous_offset).abs() * 0.20
+                    + (grade - 0.30).max(0.0).powi(2) * 1000.0;
+                if score < best {
+                    best = score;
+                    chosen = q;
                     chosen_h = h;
                     chosen_offset = lateral;
                 }
             }
-            if score_best == f32::MAX {
-                chosen_h = self.ground(chosen[0], chosen[1]);
-            }
-            points.push(chosen);
+            base.push(chosen);
             previous_height = chosen_h;
             previous_offset = chosen_offset;
         }
-        points.push(b);
-        points
-    }
-
-    fn bank_approach(
-        &self,
-        out: &mut Vec<[f32; 2]>,
-        stripe: i32,
-        a: [f32; 2],
-        b: [f32; 2],
-        sign: f32,
-        include_first: bool,
-    ) {
-        let oa = (a[0] - self.river_center(stripe, a[1])).abs();
-        let ob = (b[0] - self.river_center(stripe, b[1])).abs();
-        let length = distance2(a, b).sqrt();
-        let crosswise = (oa - ob).abs() > length * 0.60;
-        let bends = if length > 450.0 && crosswise {
-            [-420.0, -280.0, -160.0, 160.0, 280.0, 420.0]
-        } else {
-            [0.0; 6]
-        };
-        let mut best_score = f32::INFINITY;
-        let mut chosen = Vec::new();
-        for bend in bends {
-            let mut route = Vec::with_capacity(9);
-            let mut prev_h = self.ground(a[0], a[1]);
-            let mut worst_grade = 0.0f32;
-            let mut ascent = 0.0;
-            let mut route_len = 0.0;
-            for n in 0..=8 {
-                let t = n as f32 / 8.0;
-                // An S bend has a straight tangent at both ends, keeping the
-                // approach aligned with the bridge before following the slope.
-                let shape = (std::f32::consts::TAU * t).sin() * (std::f32::consts::PI * t).sin();
-                let z = lerp(a[1], b[1], t) + bend * shape;
-                let center = self.river_center(stripe, z);
-                let r = self.river(center, z);
-                let offset = lerp(oa, ob, t).max(r.width * 2.15 + 14.0);
-                let p = if n == 0 {
-                    a
-                } else if n == 8 {
-                    b
-                } else {
-                    [center + sign * offset, z]
-                };
-                let h = self.ground(p[0], p[1]);
-                if let Some(previous) = route.last() {
-                    let d = distance2(*previous, p).sqrt();
-                    route_len += d;
-                    worst_grade = worst_grade.max((h - prev_h).abs() / d);
-                    ascent += (h - prev_h).abs();
+        base.push(b);
+        let mut route = vec![a];
+        for pair in base.windows(2) {
+            let crossings = self.hydrology.crossings(pair[0], pair[1]);
+            for crossing in crossings {
+                let river = crossing.hit;
+                let mut normal = [river.tangent[1], -river.tangent[0]];
+                if (pair[1][0] - pair[0][0]) * normal[0] + (pair[1][1] - pair[0][1]) * normal[1]
+                    < 0.0
+                {
+                    normal = [-normal[0], -normal[1]];
                 }
-                route.push(p);
-                prev_h = h;
+                let span = river.width * 2.15 + 12.0;
+                let before = [
+                    river.point[0] - normal[0] * span,
+                    river.point[1] - normal[1] * span,
+                ];
+                let after = [
+                    river.point[0] + normal[0] * span,
+                    river.point[1] + normal[1] * span,
+                ];
+                let previous = *route.last().unwrap();
+                self.dry_approach(&mut route, previous, before, hash(self.seed, i, j));
+                route.push(after);
             }
-            let score = worst_grade * 700.0 + route_len * 0.20 + ascent * 0.12;
-            if score < best_score {
-                best_score = score;
-                chosen = route;
-            }
-            if !crosswise || length <= 450.0 {
-                break;
+            let previous = *route.last().unwrap();
+            if self.river(previous[0], previous[1]).distance < 180.0 {
+                self.dry_approach(
+                    &mut route,
+                    previous,
+                    pair[1],
+                    hash(self.seed ^ 0x3371, i, j),
+                );
+            } else {
+                route.push(pair[1]);
             }
         }
-        out.extend(chosen.into_iter().skip(usize::from(!include_first)));
+        route.dedup_by(|a, b| distance2(*a, *b) < 0.01);
+        route
+    }
+
+    fn dry_approach(&self, out: &mut Vec<[f32; 2]>, a: [f32; 2], b: [f32; 2], seed: u32) {
+        let dx = b[0] - a[0];
+        let dz = b[1] - a[1];
+        let length = (dx * dx + dz * dz).sqrt();
+        if length < 10.0 {
+            out.push(b);
+            return;
+        }
+        let side = [-dz / length, dx / length];
+        let bend = (rand01(seed) - 0.5) * length.min(300.0) * 0.5;
+        for n in 1..=4 {
+            let t = n as f32 / 4.0;
+            let shape = (std::f32::consts::TAU * t).sin() * (std::f32::consts::PI * t).sin();
+            let mut p = [
+                lerp(a[0], b[0], t) + side[0] * bend * shape,
+                lerp(a[1], b[1], t) + side[1] * bend * shape,
+            ];
+            if n < 4 {
+                let r = self.river(p[0], p[1]);
+                if r.distance < r.width * 2.05 + 10.0 {
+                    let normal = [r.tangent[1], -r.tangent[0]];
+                    let sign = if (a[0] - r.point[0]) * normal[0] + (a[1] - r.point[1]) * normal[1]
+                        >= 0.0
+                    {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let d = r.width * 2.05 + 12.0;
+                    p = [
+                        r.point[0] + normal[0] * d * sign,
+                        r.point[1] + normal[1] * d * sign,
+                    ];
+                }
+            }
+            out.push(p);
+        }
     }
 
     fn nearest_road(&self, x: f32, z: f32) -> RoadHit {
@@ -505,33 +438,34 @@ impl World {
     pub fn sample(&self, x: f32, z: f32) -> Sample {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
-        let river = self.river(x, z);
-        let mut height = self.ground_with_river(x, z, river);
+        let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
+        let river = water.nearest;
+        let mut height = water.height;
         let road_hit = self.nearest_road(x, z);
         let road = 1.0 - smooth(3.1, 6.4, road_hit.distance);
-        if road > 0.0 && river.distance > river.width * 1.9 {
-            let center_height = self.ground(road_hit.point[0], road_hit.point[1]);
-            height = lerp(height, center_height + 0.015, road * 0.92);
+        if road > 0.0 && water.water < height {
+            height = lerp(
+                height,
+                self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
+                road * 0.92,
+            );
         }
-        // Temperature has a continental-scale north/south gradient; moisture
-        // combines broad weather provinces with a local riparian contribution.
-        let continental_heat = noise(self.seed ^ 0x3101, x / 47_000.0, z / 47_000.0);
-        let temperature = (0.49 + (continental_heat - 0.5) * 0.52 + z / HALF_WORLD * 0.23
-            - (height - river.level) * 0.00056)
+        let continental_heat = noise(self.seed ^ 0x3101, x / 47000.0, z / 47000.0);
+        let temperature = (0.66 + (continental_heat - 0.5) * 0.52 + z / HALF_WORLD * 0.23
+            - (height - 180.0).max(0.0) * 0.00043)
             .clamp(0.0, 1.0);
-        let province_moisture = fbm(self.seed ^ 0x3102, x / 29_000.0, z / 29_000.0);
-        let wet_edge = 1.0 - smooth(river.width * 1.6, 480.0 + river.width, river.distance);
-        let moisture = ((province_moisture - 0.5) * 1.55 + 0.49 + wet_edge * 0.24).clamp(0.0, 1.0);
+        let rain = fbm(self.seed ^ 0x3102, x / 29000.0, z / 29000.0);
+        let wet_edge = 1.0 - smooth(river.width * 1.8, river.width + 520.0, river.distance);
+        let moisture = ((rain - 0.5) * 1.55 + 0.49 + wet_edge * 0.22).clamp(0.0, 1.0);
         let cover = noise(self.seed ^ 0x3103, x / 720.0, z / 720.0);
-        let relief = height - river.level;
-        let biome = if relief > 490.0 || (temperature < 0.19 && relief > 180.0) {
+        let biome = if height > 1250.0 || (temperature < 0.17 && height > 720.0) {
             Biome::Alpine
-        } else if river.distance < river.width + 85.0 && moisture > 0.48 {
+        } else if river.distance < river.width + 42.0 && moisture > 0.48 {
             Biome::Wetland
-        } else if temperature > 0.58 && moisture < 0.38 {
+        } else if temperature > 0.61 && moisture < 0.36 {
             Biome::Desert
-        } else if temperature < 0.38 || relief > 230.0 {
-            if moisture > 0.35 && cover > 0.31 && relief < 420.0 {
+        } else if temperature < 0.38 || height > 720.0 {
+            if moisture > 0.34 && cover > 0.30 && height < 1150.0 {
                 Biome::PineForest
             } else {
                 Biome::Moor
@@ -541,38 +475,30 @@ impl World {
         } else {
             Biome::Grassland
         };
-        let water_height = if river.distance < river.width * 1.85 {
-            river.level
-        } else {
-            NO_WATER
-        };
         Sample {
             height,
             biome,
             road,
-            river: 1.0 - smooth(river.width, river.width * 1.9, river.distance),
-            water_height,
+            river: water.river,
+            water_height: water.water,
             temperature,
             moisture,
         }
     }
-
     pub fn height(&self, x: f32, z: f32) -> f32 {
-        // Match sample().height exactly; collisions and visible terrain agree.
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
-        let river = self.river(x, z);
-        let height = self.ground_with_river(x, z, river);
+        let water = self.hydrology.terrain(x, z, raw_height(self.seed, x, z));
         let road_hit = self.nearest_road(x, z);
         let road = 1.0 - smooth(3.1, 6.4, road_hit.distance);
-        if road > 0.0 && river.distance > river.width * 1.9 {
+        if road > 0.0 && water.water < water.height {
             lerp(
-                height,
+                water.height,
                 self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
                 road * 0.92,
             )
         } else {
-            height
+            water.height
         }
     }
 
@@ -712,7 +638,7 @@ impl World {
                 if road.distance < 18.0 {
                     continue;
                 }
-                let h = self.ground_with_river(px, pz, river);
+                let h = self.ground(px, pz);
                 let slope = (self.ground(px + 12.0, pz) - h)
                     .abs()
                     .max((self.ground(px, pz + 12.0) - h).abs())
@@ -898,10 +824,9 @@ impl World {
                 }
                 let s = self.sample(x, z);
                 heights[idx] = s.height;
-                let mut c = s.biome.color();
+                let mut c = crate::ecology::ground_color(self.seed, x, z, &s);
                 // Ensure rivers remain legible when narrower than a map pixel.
-                let river = self.river(x, z);
-                let water = s.water_height > s.height || river.distance < river.width + mpp * 0.43;
+                let water = s.water_height > s.height;
                 if water {
                     c = [0.24, 0.40, 0.47];
                 }
@@ -972,6 +897,29 @@ impl World {
                 }
             }
         }
+        // Explicit network strokes preserve tributaries at continental zoom;
+        // point sampling alone would miss channels narrower than one map pixel.
+        let minimum_flow = if span > 120000.0 {
+            65.0
+        } else if span > 40000.0 {
+            32.0
+        } else {
+            0.0
+        };
+        for segment in &self.hydrology.segments {
+            if segment.flow < minimum_flow {
+                continue;
+            }
+            let a = [
+                (segment.a[0] - cx) / mpp + res as f32 * 0.5,
+                (segment.a[1] - cz) / mpp + res as f32 * 0.5,
+            ];
+            let b = [
+                (segment.b[0] - cx) / mpp + res as f32 * 0.5,
+                (segment.b[1] - cz) / mpp + res as f32 * 0.5,
+            ];
+            draw_line(&mut pixels, res, a, b, [55, 115, 150], 0.94);
+        }
         pixels
     }
 }
@@ -1002,223 +950,246 @@ fn draw_line(pixels: &mut [u8], res: usize, a: [f32; 2], b: [f32; 2], color: [u8
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn deterministic_seed_and_chunk_edges() {
-        let a = World::new(71);
-        let b = World::new(71);
-        let c = World::new(72);
-        let mut changed = 0;
-        for x in -8..8 {
-            for z in -8..8 {
-                let p = [x as f32 * 128.0, z as f32 * 128.0];
-                let s = a.sample(p[0], p[1]);
-                assert_eq!(s.height.to_bits(), b.sample(p[0], p[1]).height.to_bits());
-                assert_eq!(s.height.to_bits(), a.height(p[0], p[1]).to_bits());
-                // The same chunk boundary coordinate reached from either side.
-                let edge_from_left = (x - 1) as f32 * 128.0 + 128.0;
-                assert_eq!(
-                    s.height.to_bits(),
-                    a.sample(edge_from_left, p[1]).height.to_bits()
-                );
-                changed += usize::from((s.height - c.height(p[0], p[1])).abs() > 0.01);
+    fn drainage_is_acyclic_downhill_and_conserves_accumulation() {
+        let w = World::new(1337);
+        let h = &w.hydrology;
+        let mut rank = vec![0usize; h.order.len()];
+        for (n, &id) in h.order.iter().enumerate() {
+            rank[id as usize] = n;
+        }
+        for i in 0..h.receiver.len() {
+            let r = h.receiver[i];
+            if r == u32::MAX {
+                continue;
+            }
+            let r = r as usize;
+            assert!(rank[r] < rank[i]);
+            assert!(h.conditioned[r] <= h.conditioned[i]);
+            assert!(h.water_level[r] < h.water_level[i]);
+            assert!(h.accumulation[r] >= h.accumulation[i]);
+            assert_eq!(h.basin[r], h.basin[i]);
+        }
+        assert!(h.stats.confluences > 1000 && h.stats.headwaters > 1000 && h.stats.outlets > 20);
+    }
+    #[test]
+    fn refined_channels_join_and_are_downhill() {
+        let w = World::new(1337);
+        let h = &w.hydrology;
+        for group in h.segments.chunks_exact(8) {
+            for s in group {
+                assert!(s.level_b <= s.level_a + 0.0001);
+                assert!(s.width_b >= s.width_a);
+            }
+            for p in group.windows(2) {
+                assert_eq!(p[0].b, p[1].a);
+                assert_eq!(p[0].level_b, p[1].level_a);
             }
         }
-        assert!(changed > 240);
-    }
-
-    #[test]
-    fn finite_world_and_biome_variety() {
-        let w = World::new(4281);
-        let mut counts = [0usize; 7];
-        let mut min_h = f32::MAX;
-        let mut max_h = f32::MIN;
-        for i in 0..96 {
-            for j in 0..96 {
-                let x = -HALF_WORLD + (i as f32 + 0.31) * WORLD_SIZE / 96.0;
-                let z = -HALF_WORLD + (j as f32 + 0.67) * WORLD_SIZE / 96.0;
-                let s = w.sample(x, z);
-                assert!(s.height.is_finite() && s.water_height.is_finite());
-                assert!((0.0..=1.0).contains(&s.temperature));
-                assert!((0.0..=1.0).contains(&s.moisture));
-                assert!((0.0..=1.0).contains(&s.road));
-                counts[s.biome as usize] += 1;
-                min_h = min_h.min(s.height);
-                max_h = max_h.max(s.height);
-            }
-        }
-        assert!(
-            counts.iter().all(|c| *c > 0),
-            "biome coverage: {:?}",
-            counts
-        );
-        assert!(max_h - min_h > 500.0, "terrain range {}..{}", min_h, max_h);
-    }
-
-    #[test]
-    fn roads_connect_sites_and_match_sampler() {
-        let w = World::new(4281);
-        for i in -3..3 {
-            for j in -3..3 {
-                let a = w.node(i, j);
-                let b = w.node(i + 1, j);
-                let distance = distance2(a, b).sqrt();
-                assert!((1_500.0..3_400.0).contains(&distance));
-                let points = w.road_points(i, j, false);
-                assert_eq!(points[0], a);
-                assert_eq!(*points.last().unwrap(), b);
-                for pair in points.windows(2) {
-                    for t in [0.0, 0.37, 0.73, 1.0] {
-                        let x = lerp(pair[0][0], pair[1][0], t);
-                        let z = lerp(pair[0][1], pair[1][1], t);
-                        assert!(w.sample(x, z).road > 0.99, "missing road at {},{}", x, z);
-                    }
-                }
-            }
-        }
-        let p = w.spawn();
-        assert!(w.sample(p[0], p[1]).road > 0.99);
-        assert!(w.sample(p[0], p[1]).height > w.sample(p[0], p[1]).water_height);
-    }
-
-    #[test]
-    fn continuous_downstream_water_and_dry_sites() {
-        let w = World::new(4281);
-        for stripe in -8..=8 {
-            let mut previous = f32::MIN;
-            for j in -100..100 {
-                let z = j as f32 * 1000.0;
-                let x = w.river_center(stripe, z);
-                let s = w.sample(x, z);
-                assert!(s.water_height > s.height);
-                assert!(s.water_height > previous);
-                assert!(s.river > 0.99);
-                previous = s.water_height;
-                let nearby = w.sample(w.river_center(stripe, z + 0.1), z + 0.1);
-                assert!((nearby.water_height - s.water_height).abs() < 0.001);
-            }
-        }
-        for site in w.sites_near(0.0, 0.0, 30_000.0) {
-            let s = w.sample(site.x, site.z);
-            assert!(s.height > s.water_height, "submerged site {}", site.name);
-        }
-    }
-
-    #[test]
-    fn maps_and_spatial_queries_are_repeatable() {
-        let w = World::new(4281);
-        let a = w.map_rgba(0.0, 0.0, 5_000.0, 64);
-        assert_eq!(a.len(), 64 * 64 * 4);
-        assert_eq!(a, w.map_rgba(0.0, 0.0, 5_000.0, 64));
-        assert!(a.chunks_exact(4).all(|p| p[3] == 255));
-        let sites = w.sites_near(0.0, 0.0, 7_500.0);
-        assert!((20..40).contains(&sites.len()));
-        let landmarks = w.landmarks_near(0.0, 0.0, 2_000.0);
-        assert!(
-            (12..40).contains(&landmarks.len()),
-            "{} nearby landmarks",
-            landmarks.len()
-        );
-        for l in landmarks {
-            assert!(distance2([l.x, l.z], [0.0, 0.0]) <= 2_000.0f32.powi(2));
-            assert!(w.sample(l.x, l.z).height > w.sample(l.x, l.z).water_height);
-        }
-        assert!(w.roads_near(0.0, 0.0, 5_000.0).len() > 10);
-    }
-
-    #[test]
-    fn procedural_spawn_is_dry_on_a_road_for_multiple_seeds() {
-        for seed in [0, 1, 71, 1337, 4281, 98765] {
-            let w = World::new(seed);
-            let p = w.spawn();
-            let s = w.sample(p[0], p[1]);
-            assert!(s.road > 0.99, "spawn off road for seed {}", seed);
-            assert!(s.height > s.water_height, "wet spawn for seed {}", seed);
-            eprintln!(
-                "seed {} spawn {:?}: {:?}, height {}",
-                seed, p, s.biome, s.height
-            );
-        }
-    }
-
-    #[test]
-    fn river_crossings_are_short_and_near_perpendicular() {
-        for seed in [1337, 42, 2026] {
-            let w = World::new(seed);
-            let mut crossings = 0;
-            for road in w.roads_near(0.0, 0.0, 20_000.0) {
-                for p in road.windows(2) {
-                    let dx = p[1][0] - p[0][0];
-                    let dz = p[1][1] - p[0][1];
-                    let length = (dx * dx + dz * dz).sqrt();
-                    for n in 1..8 {
-                        let t = n as f32 / 8.0;
-                        let x = lerp(p[0][0], p[1][0], t);
-                        let z = lerp(p[0][1], p[1][1], t);
-                        let r = w.river(x, z);
-                        if w.ground_with_river(x, z, r) >= r.level {
-                            continue;
-                        }
-                        crossings += 1;
-                        let stripe = (r.center / RIVER_SPACING).round() as i32;
-                        let slope = (w.river_center(stripe, z + 5.0)
-                            - w.river_center(stripe, z - 5.0))
-                            / 10.0;
-                        let alignment =
-                            ((dx * slope + dz) / (length * (1.0 + slope * slope).sqrt())).abs();
-                        assert!(
-                            alignment < 0.38,
-                            "oblique crossing seed{} at{},{}: alignment{}",
-                            seed,
-                            x,
-                            z,
-                            alignment
-                        );
-                        assert!(
-                            length < r.width * 6.0 + 80.0,
-                            "excessive bridge length {}",
-                            length
-                        );
-                        assert!(w.sample(x, z).road > 0.99);
-                    }
-                }
-            }
-            assert!(crossings > 40);
-        }
-    }
-
-    #[test]
-    fn first_view_has_immediate_relief_and_distant_mountains() {
-        for seed in [1337, 42, 2026] {
-            let w = World::new(seed);
-            let (p, yaw) = w.spawn_view();
-            let initial = w.height(p[0], p[1]);
-            let down = w.height(p[0] + yaw.sin() * 400.0, p[1] - yaw.cos() * 400.0);
-            let ridge = [1_600.0, 3_200.0, 5_000.0]
-                .into_iter()
-                .map(|d| w.height(p[0] + yaw.sin() * d, p[1] - yaw.cos() * d))
-                .fold(0.0, f32::max);
-            assert!(initial - down > 40.0, "spawn needs visible downhill relief");
+        for s in h.segments.iter().step_by(23) {
+            let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
+            let sample = h.terrain(p[0], p[1], raw_height(w.seed, p[0], p[1]));
+            assert!(sample.height < sample.water, "dry river {:?}", p);
             assert!(
-                ridge - initial > 300.0,
-                "spawn needs a real mountain horizon"
+                (sample.water - (s.level_a + s.level_b) * 0.5).abs() < 0.5,
+                "inconsistent surface {:?}",
+                p
             );
-            assert_eq!(w.spawn(), p);
-            assert_eq!(w.spawn_view(), (p, yaw));
         }
     }
-
     #[test]
-    #[ignore = "manual release-mode throughput measurement"]
-    fn sampler_throughput() {
-        let w = World::new(4281);
-        let now = std::time::Instant::now();
-        let mut sum = 0.0;
-        for n in 0..50_000 {
-            let x = (n % 250) as f32 * 8.0 - 1_000.0;
-            let z = (n / 250) as f32 * 8.0 - 800.0;
-            sum += std::hint::black_box(w.sample(x, z)).height;
+    fn deterministic_graph_seams_and_ecology() {
+        let a = World::new(42);
+        let b = World::new(42);
+        assert_eq!(a.hydrology.receiver, b.hydrology.receiver);
+        assert_eq!(a.hydrology.water_level, b.hydrology.water_level);
+        for n in 0..400 {
+            let x = (rand01(hash(17, n, 0)) - 0.5) * 250000.;
+            let z = (rand01(hash(17, n, 1)) - 0.5) * 250000.;
+            let s = a.sample(x, z);
+            assert!(s.height.is_finite() && s.water_height.is_finite());
+            assert_eq!(s.height.to_bits(), a.height(x, z).to_bits());
+            assert_eq!(s.height.to_bits(), b.height(x, z).to_bits());
+            assert_eq!(
+                a.vegetation_density_from_sample(x, z, &s),
+                crate::ecology::tree_density(a.seed, x, z, &s)
+            );
         }
-        eprintln!("50,000 samples: {:?}; checksum {}", now.elapsed(), sum);
+    }
+    #[test]
+    fn road_queries_and_spawn_are_consistent() {
+        let w = World::new(1337);
+        let (p, yaw) = w.spawn_view();
+        assert!(yaw.is_finite());
+        assert_eq!(w.spawn(), p);
+        let s = w.sample(p[0], p[1]);
+        assert!(s.road > 0.99 && s.height > s.water_height);
+        let mut count = 0;
+        for road in w.roads_near(p[0], p[1], 6000.) {
+            for pair in road.windows(2) {
+                for t in [0.0, 0.3, 0.7, 1.0] {
+                    let x = lerp(pair[0][0], pair[1][0], t);
+                    let z = lerp(pair[0][1], pair[1][1], t);
+                    assert!(w.sample(x, z).road > 0.99, "missing road {},{}", x, z);
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 500);
+    }
+    #[test]
+    fn hydrology_diagnostics() {
+        let w = World::new(1337);
+        let h = &w.hydrology;
+        let mut incision = Vec::new();
+        let mut unbanked = 0;
+        let mut worst_bank = 0.0f32;
+        let mut count = 0;
+        let mut max_step = 0.0f32;
+        for s in h.segments.iter().step_by(11) {
+            let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
+            let water = (s.level_a + s.level_b) * 0.5;
+            incision.push((raw_height(w.seed, p[0], p[1]) - water).max(0.0));
+            let dx = s.b[0] - s.a[0];
+            let dz = s.b[1] - s.a[1];
+            let len = (dx * dx + dz * dz).sqrt();
+            for side in [-1., 1.] {
+                let distance = (s.width_a + s.width_b) * 0.5 * 2.05 + 8.;
+                let q = [
+                    p[0] + dz / len * distance * side,
+                    p[1] - dx / len * distance * side,
+                ];
+                let sample = h.terrain(q[0], q[1], raw_height(w.seed, q[0], q[1]));
+                let difference = water - sample.height;
+                if difference > 3. {
+                    unbanked += 1;
+                }
+                worst_bank = worst_bank.max(difference);
+                count += 1;
+            }
+            let nearby = h.terrain(p[0] + 0.02, p[1], raw_height(w.seed, p[0] + 0.02, p[1]));
+            let here = h.terrain(p[0] - 0.02, p[1], raw_height(w.seed, p[0] - 0.02, p[1]));
+            max_step = max_step.max((nearby.height - here.height).abs());
+        }
+        incision.sort_by(|a, b| a.total_cmp(b));
+        println!(
+            "incision p50{} p95{} p99{} max{}; bank undercut {}of{} max{}; max4cmstep{}",
+            incision[incision.len() / 2],
+            incision[incision.len() * 95 / 100],
+            incision[incision.len() * 99 / 100],
+            incision[incision.len() - 1],
+            unbanked,
+            count,
+            worst_bank,
+            max_step
+        );
+    }
+    #[test]
+    fn water_beds_and_shorelines_remain_coherent() {
+        for seed in [1337, 42, 2026] {
+            let w = World::new(seed);
+            let h = &w.hydrology;
+            let mut crossings = 0;
+            let mut wet_count = 0;
+            let mut max_edge = 0.0f32;
+            let mut max_uphill = 0.0f32;
+            let mut max_step = 0.0f32;
+            for segment in h.segments.iter().step_by(53) {
+                let p = [
+                    (segment.a[0] + segment.b[0]) * 0.5,
+                    (segment.a[1] + segment.b[1]) * 0.5,
+                ];
+                let dx = segment.b[0] - segment.a[0];
+                let dz = segment.b[1] - segment.a[1];
+                let length = (dx * dx + dz * dz).sqrt();
+                let width = (segment.width_a + segment.width_b) * 0.5;
+                let a = h.terrain(
+                    segment.a[0],
+                    segment.a[1],
+                    raw_height(seed, segment.a[0], segment.a[1]),
+                );
+                let b = h.terrain(
+                    segment.b[0],
+                    segment.b[1],
+                    raw_height(seed, segment.b[0], segment.b[1]),
+                );
+                max_uphill = max_uphill.max(b.water - a.water);
+                for side in [-1.0, 1.0] {
+                    let mut previous = p;
+                    let mut previous_sample = h.terrain(p[0], p[1], raw_height(seed, p[0], p[1]));
+                    for n in 1..=28 {
+                        let d = width * 2.6 * n as f32 / 28.0;
+                        let q = [p[0] + dz / length * d * side, p[1] - dx / length * d * side];
+                        let sample = h.terrain(q[0], q[1], raw_height(seed, q[0], q[1]));
+                        if sample.water > sample.height {
+                            assert!(
+                                sample.water - sample.height <= 9.002,
+                                "excessive depth seed{} {:?}:{}",
+                                seed,
+                                q,
+                                sample.water - sample.height
+                            );
+                            wet_count += 1;
+                        }
+                        if previous_sample.water > previous_sample.height
+                            && sample.water <= sample.height
+                        {
+                            let mut inside = previous;
+                            let mut outside = q;
+                            for _ in 0..12 {
+                                let middle = [
+                                    (inside[0] + outside[0]) * 0.5,
+                                    (inside[1] + outside[1]) * 0.5,
+                                ];
+                                let m = h.terrain(
+                                    middle[0],
+                                    middle[1],
+                                    raw_height(seed, middle[0], middle[1]),
+                                );
+                                if m.water > m.height {
+                                    inside = middle;
+                                } else {
+                                    outside = middle;
+                                }
+                            }
+                            let wet = h.terrain(
+                                inside[0],
+                                inside[1],
+                                raw_height(seed, inside[0], inside[1]),
+                            );
+                            let dry = h.terrain(
+                                outside[0],
+                                outside[1],
+                                raw_height(seed, outside[0], outside[1]),
+                            );
+                            let gap = (wet.water - dry.height).max(0.0);
+                            max_edge = max_edge.max(gap);
+                            assert!(
+                                gap < 0.20,
+                                "exposed water edge seed{} {:?} gap{}",
+                                seed,
+                                inside,
+                                gap
+                            );
+                            crossings += 1;
+                        }
+                        let near =
+                            h.terrain(q[0] + 0.03, q[1], raw_height(seed, q[0] + 0.03, q[1]));
+                        max_step = max_step.max((sample.height - near.height).abs());
+                        previous = q;
+                        previous_sample = sample;
+                    }
+                }
+            }
+            println!(
+                "seed{} shoreline checks{} wet beds{} maxedge{} max3cmstep{} maxqueryuphill{}",
+                seed, crossings, wet_count, max_edge, max_step, max_uphill
+            );
+            assert!(crossings > 5000 && wet_count > 50000);
+            assert!(
+                max_uphill < 0.05,
+                "interpolated surface deviates from downhill graph"
+            );
+        }
     }
 }

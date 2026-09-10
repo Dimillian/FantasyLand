@@ -14,7 +14,17 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "output/verification".into());
     fs::create_dir_all(&dir).unwrap();
-    let world = World::new(1337);
+    let seed = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1337);
+    let generation_time = Instant::now();
+    let world = World::new(seed);
+    println!(
+        "Hydrology generation {:?}: {:?}",
+        generation_time.elapsed(),
+        world.hydrology_stats()
+    );
     let (spawn, yaw) = world.spawn_view();
     println!(
         "World: {} x {} km, seed {}, spawn {:?}",
@@ -92,7 +102,7 @@ fn main() {
         720,
         &renderer.capture_rgba().unwrap(),
     );
-    let metadata = serde_json::json!({"seed":world.seed,"sizeMeters":WORLD_SIZE,"spawn":spawn,"sites":world.sites_near(spawn[0],spawn[1],6000.),"landmarks":world.landmarks_near(spawn[0],spawn[1],3000.),"chunkCount":renderer.chunk_count(),"triangleCount":renderer.triangle_count()});
+    let metadata = serde_json::json!({"hydrology":world.hydrology_stats(),"seed":world.seed,"sizeMeters":WORLD_SIZE,"spawn":spawn,"sites":world.sites_near(spawn[0],spawn[1],6000.),"landmarks":world.landmarks_near(spawn[0],spawn[1],3000.),"chunkCount":renderer.chunk_count(),"triangleCount":renderer.triangle_count()});
     fs::write(
         format!("{dir}/world.json"),
         serde_json::to_string_pretty(&metadata).unwrap(),

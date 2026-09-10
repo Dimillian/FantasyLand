@@ -6,6 +6,9 @@ const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
 assert.deepEqual(a, b, 'the compiled WASM reproduces its seed');
 assert.ok(Number.isFinite(a.height));
+assert.ok(a.hydrology.confluences > 100, 'the compiled drainage network joins tributaries');
+assert.ok(a.hydrology.outlets > 0 && a.hydrology.outlets < a.hydrology.headwaters, 'catchments merge toward outlets');
+assert.ok(a.vegetation_density >= 0 && a.vegetation_density <= 1, 'ecology provides bounded tree occupancy');
 assert.notEqual(a.height, inspect_world(42, 0, 0).height, 'seeds change the world');
 assert.ok(a.sites.length > 0);
 const spawn = inspect_world(1337, ...a.spawn);
@@ -18,4 +21,4 @@ for (const span of [6000, 256000, 512000]) {
   assert.ok(map.every((v, i) => i % 4 !== 3 || v === 255));
   console.log(`${span / 1000} km map from compiled WASM: ${(performance.now() - start).toFixed(1)} ms`);
 }
-console.log('WASM checks passed: deterministic world, seed changes, dry road spawn, local and world maps.');
+console.log('WASM checks passed: deterministic drainage, seed changes, ecology, dry road spawn, atlas scales.');

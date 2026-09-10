@@ -590,8 +590,10 @@ impl Renderer {
     pub fn pending_count(&self) -> usize {
         self.pending.len() + self.horizon_pending.len()
     }
+    pub fn advance_time(&mut self, dt: f32) {
+        self.elapsed = (self.elapsed + dt.clamp(0.0, 0.1)).rem_euclid(86400.0);
+    }
     pub fn render(&mut self, eye: Vec3, yaw: f32, pitch: f32, hour: f32) -> Result<(), String> {
-        self.elapsed += 1.0 / 60.0;
         let dir = Vec3::new(
             yaw.sin() * pitch.cos(),
             pitch.sin(),
@@ -605,10 +607,10 @@ impl Renderer {
             36000.0,
         );
         let daylight = ((hour - 6.0) / 12.0 * std::f32::consts::PI).sin().max(0.0);
-        let brightness = 0.40 + daylight * 0.70;
+        let brightness = 0.44 + daylight * 0.76;
         let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
         let sun = Vec3::new(sun_angle.cos(), sun_angle.sin(), -0.25).normalize();
-        let fog_color = [0.57 * brightness, 0.65 * brightness, 0.68 * brightness];
+        let fog_color = [0.48 * brightness, 0.64 * brightness, 0.76 * brightness];
         let globals = Globals {
             view_projection: (projection * view).to_cols_array_2d(),
             camera: [eye.x, eye.y, eye.z, self.width as f32 / self.height as f32],

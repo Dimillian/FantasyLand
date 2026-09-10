@@ -2,24 +2,36 @@
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
 const $ = (id) => document.getElementById(id);
 const canvas = $('world');
-const STORAGE_KEY = 'wayfarer.exploration.v3';
+const STORAGE_KEY = 'wayfarer.exploration.v4';
+const PREVIOUS_STORAGE_KEY = 'wayfarer.exploration.v3';
 const DEFAULT_SEED = 1337;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const fmtDistance = (m) => m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`;
 const niceName = (s = '') => String(s).replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const wrapAngle = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
 let saved = {};
-try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch (_) { /* Storage is optional. */ }
+try {
+  const current = localStorage.getItem(STORAGE_KEY);
+  if (current) saved = JSON.parse(current);
+  else {
+    // Terrain/hydrology changed in v4. Keep preferences, never old coordinates.
+    const previous = JSON.parse(localStorage.getItem(PREVIOUS_STORAGE_KEY) || '{}');
+    saved = { seed: previous.seed, quality: previous.quality, sensitivity: previous.sensitivity };
+  }
+} catch (_) { /* Storage is optional. */ }
 const urlSeed = new URL(location.href).searchParams.get('seed');
 const seed = clamp(Math.floor(Number(urlSeed || saved.seed) || DEFAULT_SEED), 1, 4294967295);
 let game, state = {}, started = false, locked = false, modal = null;
+let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
+let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 256000;
-const map = { mode: 'local', x: 0, z: 0, span: 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [] }, visibleFeatures: [], dragging: null, dirty: true };
+const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.atlas.span) ? saved.atlas : null;
+const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [] }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
 const mapContext = mapCanvas.getContext('2d');
 document.body.classList.add('intro-open');
@@ -38,7 +50,7 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -57,60 +69,105 @@ function clearMovement() {
   document.querySelectorAll('[data-move]').forEach((button) => button.classList.remove('active'));
 }
 
-async function captureMouse() {
-  if (!started || modal || matchMedia('(pointer: coarse)').matches) return;
+// Keep requestPointerLock on the original click/Enter user-gesture stack. No
+// promise await, animation-frame callback, or pointer-capture competes with it.
+function updateFocusHint() {
+  const show = started && !modal && !locked && !fatal && !matchMedia('(pointer: coarse)').matches;
+  $('focus-hint').classList.toggle('hidden', !show);
+  document.body.classList.toggle('mouse-focused', focusedLook && !modal);
+  $('focus-hint-text').textContent = focusedLook ? 'Mouse look active · Esc releases' : 'Click the world to look around';
+  $('focus-hint').querySelector('small').textContent = focusedLook && pointerLockFallback
+    ? 'Window edges limit turning. Click to try full capture.'
+    : focusedLook ? 'WASD move · Shift run · Space jump' : 'WASD move · Shift run · Space jump';
+}
+
+function lockFailed(epoch = lockEpoch) {
+  if (epoch !== lockEpoch || !lockPending || !focusedLook) return;
+  clearTimeout(lockTimer);
+  lockPending = false;
+  if (!started || modal || fatal || document.pointerLockElement === canvas) return;
+  // Browsers that block true pointer lock still provide click-to-focus look.
+  // It uses ordinary mouse coordinates and necessarily stops at window edges.
+  pointerLockFallback = true;
+  focusedLook = true;
+  updateFocusHint();
+}
+
+function captureMouse(event) {
+  if (!started || modal || fatal || matchMedia('(pointer: coarse)').matches) return;
+  canvas.focus({ preventScroll: true });
+  focusedLook = true;
+  lastMouse = event && Number.isFinite(event.clientX) ? { x: event.clientX, y: event.clientY } : null;
+  updateFocusHint();
+  if (document.pointerLockElement === canvas || lockPending) return;
+  lockPending = true;
+  const epoch = ++lockEpoch;
+  if (typeof canvas.requestPointerLock !== 'function') { lockFailed(); return; }
   try {
-    const pending = canvas.requestPointerLock?.();
-    if (pending?.catch) await pending;
-    if (!canvas.requestPointerLock) toast('Click and drag the view to look around.');
-  } catch (_) {
-    toast('Click and drag to look around. WASD still moves you.');
-  }
+    const result = canvas.requestPointerLock();
+    // Older implementations return void; newer implementations return a promise.
+    if (result && typeof result.catch === 'function') result.catch(() => lockFailed(epoch));
+    lockTimer = setTimeout(() => {
+      if (document.pointerLockElement !== canvas) lockFailed(epoch);
+    }, 1200);
+  } catch (_) { lockFailed(epoch); }
+}
+
+function releaseMouse() {
+  lockEpoch++;
+  focusedLook = false; lockPending = false; lastMouse = null;
+  clearTimeout(lockTimer);
+  clearMovement();
+  if (document.pointerLockElement) document.exitPointerLock();
+  updateFocusHint();
 }
 
 function openModal(type) {
-  clearMovement();
-  if (document.pointerLockElement) document.exitPointerLock();
+  if (!game || !initialReady) return;
   modal = type;
-  $('map-modal').classList.toggle('hidden', type !== 'map');
-  $('settings-modal').classList.toggle('hidden', type !== 'settings');
+  releaseMouse();
+  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.toggle('hidden', name !== type);
+  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', String(name === type));
   document.body.classList.add('modal-open');
-  if (type === 'settings') $('close-settings').focus();
+  if (type === 'settings') {
+    $('time-setting').value = Number(state.dayTime ?? 9);
+    $('time-setting-label').textContent = formatTime(state.dayTime);
+  }
+  if (type === 'character') updateCharacter();
+  $(type + '-modal').querySelector('[data-close]').focus({ preventScroll: true });
 }
 
 function closeModal() {
   modal = null;
-  $('map-modal').classList.add('hidden');
-  $('settings-modal').classList.add('hidden');
+  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.add('hidden');
+  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', 'false');
   document.body.classList.remove('modal-open');
   clearMovement();
-  canvas.focus();
+  canvas.focus({ preventScroll: true });
+  updateFocusHint();
+  saveProgress();
 }
 
-function openMap(mode) {
+function openMap() {
   if (!game || !initialReady) return;
-  const changeMode = modal !== 'map' || map.mode !== mode;
   openModal('map');
-  map.mode = mode;
-  if (changeMode) {
-    map.x = mode === 'local' ? state.x : 0;
-    map.z = mode === 'local' ? state.z : 0;
-    map.span = mode === 'local' ? 6000 : worldSize * 1.08;
-    map.selected = waypoint ? { ...waypoint } : null;
+  // One atlas: opening it or pressing M/Tab never resets the zoom or location.
+  if (!map.initialized) {
+    map.x = state.x; map.z = state.z; map.span = 6000;
+    map.initialized = true;
   }
-  $('map-title').textContent = mode === 'local' ? 'Local map' : 'World map';
-  $('map-view-label').textContent = mode === 'local' ? 'LOCAL SURVEY' : 'THE ENDLESS MARCHES';
-  $('local-tab').setAttribute('aria-selected', String(mode === 'local'));
-  $('world-tab').setAttribute('aria-selected', String(mode === 'world'));
+  if (!map.selected && waypoint) map.selected = { ...waypoint };
   $('map-seed').textContent = `SEED ${seed} · ${Math.round(worldSize / 1000)} × ${Math.round(worldSize / 1000)} KM`;
   resizeMap();
-  if (changeMode && mode === 'world') {
-    const w = mapCanvas.clientWidth, h = mapCanvas.clientHeight;
-    map.span = worldSize * Math.max(w, h) / Math.min(w, h) * 1.04;
-  }
   updateSelection();
   scheduleMapData(0);
-  $('close-map').focus();
+}
+
+function fitWorld() {
+  const { w, h } = mapGeometry();
+  map.x = 0; map.z = 0;
+  map.span = worldSize * Math.max(w, h) / Math.max(Math.min(w, h), 1) * 1.04;
+  scheduleMapData(0);
 }
 
 function resizeMap() {
@@ -147,7 +204,7 @@ function scheduleMapData(delay = 100) {
   mapTimer = setTimeout(() => {
     if (modal !== 'map' || !game) return;
     try {
-      const res = map.mode === 'world' ? 384 : 320;
+      const res = map.span > 25000 ? 384 : 320;
       // The engine returns RGBA for a north-up square of the requested span.
       const pixels = game.map_data(map.x, map.z, map.span, res);
       const image = document.createElement('canvas');
@@ -195,7 +252,7 @@ function drawMap(now) {
   for (let x = Math.ceil(left.x / gridStep) * gridStep; x < right.x; x += gridStep) { const p = worldToScreen(x, 0); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, h); }
   for (let z = Math.ceil(left.z / gridStep) * gridStep; z < right.z; z += gridStep) { const p = worldToScreen(0, z); ctx.moveTo(0, p.y); ctx.lineTo(w, p.y); }
   ctx.stroke();
-  ctx.strokeStyle = '#d9c99177'; ctx.lineWidth = map.mode === 'local' ? 1.8 : .75;
+  ctx.strokeStyle = '#d9c99177'; ctx.lineWidth = map.span < 15000 ? 1.8 : .8;
   ctx.beginPath();
   for (const road of map.features.roads) {
     const points = road.points || road;
@@ -257,14 +314,14 @@ function drawMap(now) {
   const scale = scaleOptions.reduce((best, n) => Math.abs(n * ppm - 90) < Math.abs(best * ppm - 90) ? n : best, 1000);
   $('map-scale-line').style.width = `${scale * ppm}px`;
   $('map-scale-text').textContent = fmtDistance(scale);
+  $('map-view-label').textContent = map.span < 12000 ? 'THE SURROUNDING WILDS' : map.span < 90000 ? 'THE MARCHES' : 'THE KNOWN WORLD';
   $('map-coordinates').textContent = `${fmtDistance(Math.abs(map.x))} ${map.x >= 0 ? 'E' : 'W'} · ${fmtDistance(Math.abs(map.z))} ${map.z >= 0 ? 'S' : 'N'}`;
 }
 
 function updateSelection() {
   const selected = map.selected;
   $('selection-name').textContent = selected?.name || 'The open road';
-  $('selection-symbol').textContent = selected ? selected.kind === 'point' ? '⌖' : selected.isSite || ['city', 'town', 'village', 'settlement'].includes(String(selected.kind).toLowerCase()) ? '♜' : '◇' : '⌖';
-  $('selection-detail').textContent = selected ? `${niceName(selected.kind || 'landmark')} · ${fmtDistance(Math.abs(selected.x))} ${selected.x >= 0 ? 'E' : 'W'}, ${fmtDistance(Math.abs(selected.z))} ${selected.z >= 0 ? 'S' : 'N'}` : 'Select a settlement, landmark, or point on the map to plan your journey.';
+    $('selection-detail').textContent = selected ? `${niceName(selected.kind || 'landmark')} · ${fmtDistance(Math.abs(selected.x))} ${selected.x >= 0 ? 'E' : 'W'}, ${fmtDistance(Math.abs(selected.z))} ${selected.z >= 0 ? 'S' : 'N'}` : 'Select a settlement, landmark, or point on the map to plan your journey.';
   if (selected) {
     const dist = Math.hypot(selected.x - state.x, selected.z - state.z);
     const minutes = Math.max(1, Math.round(dist / (5.5 * 60)));
@@ -272,18 +329,38 @@ function updateSelection() {
   } else $('selection-distance').textContent = '';
   $('set-waypoint').disabled = !selected;
   $('fast-travel').disabled = !selected;
-  $('fast-travel').innerHTML = selected?.kind === 'point' ? 'TRAVEL HERE <span>→</span>' : 'FAST TRAVEL <span>→</span>';
+  $('fast-travel').innerHTML = selected?.kind === 'point' ? 'Travel here <span>→</span>' : 'Fast travel <span>→</span>';
   $('clear-waypoint').classList.toggle('hidden', !waypoint);
   map.dirty = true;
 }
 
 function zoomMap(factor, px = mapCanvas.clientWidth / 2, py = mapCanvas.clientHeight / 2) {
   const before = screenToWorld(px, py);
-  map.span = clamp(map.span * factor, 500, worldSize * 2.5);
+  map.span = clamp(map.span * factor, 300, worldSize * 3.5);
   const after = screenToWorld(px, py);
   map.x = clamp(map.x + before.x - after.x, -worldSize / 2, worldSize / 2);
   map.z = clamp(map.z + before.z - after.z, -worldSize / 2, worldSize / 2);
   scheduleMapData(140);
+}
+
+function formatTime(value = 9) {
+  const time = (Number(value) % 24 + 24) % 24;
+  return `${String(Math.floor(time)).padStart(2, '0')}:${String(Math.floor(time % 1 * 60)).padStart(2, '0')}`;
+}
+
+function resource(name) { return clamp(Number(state[name] ?? 100), 0, 100); }
+
+function updateCharacter() {
+  $('character-health').textContent = `${Math.round(resource('health'))} / 100`;
+  $('character-mana').textContent = `${Math.round(resource('mana'))} / 100`;
+  $('character-stamina').textContent = `${Math.round(resource('stamina'))} / 100`;
+  $('character-place').textContent = state.siteName || 'The Wilds';
+  $('character-biome').textContent = niceName(state.landscape || state.biome || 'Wilderness');
+  $('character-position').textContent = `${Math.round(Math.abs(state.x || 0))} ${state.x >= 0 ? 'E' : 'W'} · ${Math.round(Math.abs(state.z || 0))} ${state.z >= 0 ? 'S' : 'N'}`;
+  $('character-altitude').textContent = `${Math.round(state.altitude ?? state.y ?? 0)} m`;
+  $('character-walked').textContent = fmtDistance(Number(state.walked || 0));
+  $('character-time').textContent = formatTime(state.dayTime);
+  $('character-seed').textContent = seed;
 }
 
 function updateHUD(now) {
@@ -294,23 +371,25 @@ function updateHUD(now) {
   const compassWidth = $('compass-track').parentElement.clientWidth;
   $('compass-track').innerHTML = Array.from({ length: 24 }, (_, i) => {
     const angle = i * 15;
-    let diff = (angle - degrees + 540) % 360 - 180;
+    const diff = (angle - degrees + 540) % 360 - 180;
     if (Math.abs(diff) > 80) return '';
     const major = i % 3 === 0;
     return `<span class="${major ? '' : 'minor'}" style="left:${diff * compassWidth / 120}px">${major ? headings[i / 3] : '·'}</span>`;
   }).join('');
-  const biome = niceName(state.biome || 'Wilderness');
+  const biome = niceName(state.landscape || state.biome || 'Wilderness');
   $('biome-label').textContent = biome;
-  $('place-name').textContent = state.siteName || 'The open wilderness';
-  const time = Number(state.dayTime ?? 9);
-  $('clock').textContent = `${String(Math.floor(time) % 24).padStart(2, '0')}:${String(Math.floor(time % 1 * 60)).padStart(2, '0')}`;
-  const stamina = Number(state.stamina ?? 100);
-  $('stamina-fill').style.width = `${clamp(stamina, 0, 100)}%`;
+  $('place-name').textContent = state.siteName || 'The Wilds';
+  $('clock').textContent = formatTime(state.dayTime);
+  for (const name of ['health', 'mana', 'stamina']) {
+    const amount = Math.round(resource(name));
+    $(name + '-fill').style.width = `${amount}%`;
+    $(name + '-value').textContent = amount;
+    $(name + '-meter').setAttribute('aria-valuenow', amount);
+  }
   if (waypoint) {
     const distance = Math.hypot(waypoint.x - state.x, waypoint.z - state.z);
-    $('journey-target').textContent = waypoint.name;
-    $('journey-distance').textContent = distance < 40 ? 'You have reached your destination.' : `${fmtDistance(distance)} away · ${Math.max(1, Math.round(distance / 330))} min on foot`;
-    $('target-icon').textContent = '◇';
+    $('journey-target').textContent = `◇ ${waypoint.name}`;
+    $('journey-distance').textContent = distance < 40 ? 'Destination reached.' : `${fmtDistance(distance)} · ~${Math.max(1, Math.round(distance / 330))} min on foot`;
     const bearing = Math.atan2(waypoint.x - state.x, -(waypoint.z - state.z));
     const angle = wrapAngle(bearing - radians);
     const markerVisible = Math.abs(angle) < .8 && distance >= 40 && !modal;
@@ -320,13 +399,13 @@ function updateHUD(now) {
       $('marker-distance').textContent = fmtDistance(distance);
     }
   } else {
-    $('journey-target').textContent = 'Follow your own path';
-    $('journey-distance').textContent = `${fmtDistance(Number(state.walked || 0))} explored · Every horizon is within reach.`;
-    $('target-icon').textContent = '↟';
+    $('journey-target').textContent = 'A road of your own';
+    $('journey-distance').textContent = `${fmtDistance(Number(state.walked || 0))} explored`;
     $('destination-marker').classList.add('hidden');
   }
+  if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} triangles\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : 'Drag to look'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} triangles\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -380,6 +459,7 @@ async function boot() {
     const { default: init, Game } = await import('./pkg/fantasy_land.js');
     await init();
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
     worldSize = Number(game.world_size());
     game.set_quality(quality);
@@ -387,30 +467,39 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, version: 'wilderness-3' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'wilderness-4' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
 
-$('start-button').addEventListener('click', () => {
+function startExploring(event) {
+  if (!game || !initialReady || fatal) return;
   started = true;
   $('intro').classList.add('hidden');
   document.body.classList.remove('intro-open');
-  canvas.focus();
-  captureMouse();
-  setTimeout(() => $('explore-hint').style.opacity = '.45', 15000);
-});
+  canvas.focus({ preventScroll: true });
+  captureMouse(event);
+  updateFocusHint();
+}
+
+$('start-button').addEventListener('click', startExploring);
+$('focus-hint').addEventListener('click', captureMouse);
 $('retry-button').addEventListener('click', () => location.reload());
-$('local-map-button').addEventListener('click', () => openMap('local'));
-$('world-map-button').addEventListener('click', () => openMap('world'));
-$('local-tab').addEventListener('click', () => openMap('local'));
-$('world-tab').addEventListener('click', () => openMap('world'));
-$('close-map').addEventListener('click', closeModal);
-$('settings-button').addEventListener('click', () => { if (game && initialReady) openModal('settings'); });
-$('close-settings').addEventListener('click', closeModal);
-$('zoom-in').addEventListener('click', () => zoomMap(.65));
-$('zoom-out').addEventListener('click', () => zoomMap(1.5));
+for (const type of ['map', 'bag', 'character', 'skills', 'settings']) {
+  $(type + '-button').setAttribute('aria-expanded', 'false');
+  $(type + '-button').addEventListener('click', () => {
+    if (!started) return;
+    if (modal === type) closeModal(); else if (type === 'map') openMap(); else openModal(type);
+  });
+}
+for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', closeModal);
+for (const overlay of document.querySelectorAll('.overlay')) overlay.addEventListener('click', (event) => { if (event.target === overlay) closeModal(); });
+$('bag-open-map').addEventListener('click', openMap);
+$('skills-open-map').addEventListener('click', openMap);
+$('zoom-in').addEventListener('click', () => zoomMap(.70));
+$('zoom-out').addEventListener('click', () => zoomMap(1.43));
 $('center-map').addEventListener('click', () => { map.x = state.x; map.z = state.z; scheduleMapData(0); });
+$('fit-map').addEventListener('click', fitWorld);
 $('set-waypoint').addEventListener('click', () => {
   if (!map.selected) return;
   waypoint = { ...map.selected };
@@ -422,15 +511,14 @@ $('fast-travel').addEventListener('click', () => {
   if (!map.selected) return;
   const destination = { ...map.selected };
   game.teleport(destination.x, destination.z);
-  state = game.state();
-  waypoint = destination;
+  state = game.state(); waypoint = destination;
   saveProgress(); closeModal();
-  toast(`Arrived at ${destination.name}. Your journey continues.`);
+  toast(`Arrived at ${destination.name}.`);
 });
 $('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
 $('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); saveProgress(); });
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });
-$('time-setting').addEventListener('input', (event) => game?.set_time(Number(event.target.value)));
+$('time-setting').addEventListener('input', (event) => { game?.set_time(Number(event.target.value)); $('time-setting-label').textContent = formatTime(Number(event.target.value)); });
 $('seed-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const nextSeed = clamp(Math.floor(Number($('seed-input').value) || DEFAULT_SEED), 1, 4294967295);
@@ -441,43 +529,98 @@ $('return-to-spawn').addEventListener('click', () => {
   game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');
 });
 
+const menuKeys = { KeyM: 'map', Tab: 'map', KeyI: 'bag', KeyC: 'character', KeyK: 'skills', KeyO: 'settings' };
 document.addEventListener('keydown', (event) => {
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) {
-    if (event.code === 'Escape') { closeModal(); event.preventDefault(); }
+  const editing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName);
+  if (event.code === 'Escape') {
+    event.preventDefault();
+    if (modal) closeModal();
+    releaseMouse();
     return;
   }
+  if (editing) return;
   if (event.code === 'F3') { event.preventDefault(); $('diagnostics').classList.toggle('hidden'); return; }
-  if (!started) return;
-  if (event.code === 'Tab' || event.code === 'KeyM') {
+  if (!started) {
+    if (event.code === 'Enter' && initialReady) { event.preventDefault(); startExploring(event); }
+    return;
+  }
+  // Within a modal, Tab keeps normal keyboard focus navigation; M is the atlas
+  // toggle. From the game canvas, M and Tab open the exact same retained view.
+  if (event.code === 'Tab' && modal) return;
+  const menu = menuKeys[event.code];
+  if (menu && !event.altKey && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (event.repeat) return;
-    const mode = event.code === 'Tab' ? 'world' : 'local';
-    if (modal === 'map' && map.mode === mode) closeModal(); else openMap(mode);
+    if (modal === menu) closeModal(); else if (menu === 'map') openMap(); else openModal(menu);
     return;
   }
-  if (event.code === 'Escape') { if (modal) closeModal(); clearMovement(); return; }
-  if (modal) return;
+  if (modal) {
+    if (modal === 'map' && event.target === mapCanvas) {
+      const pan = map.span * .08;
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.code)) {
+        event.preventDefault();
+        if (event.code === 'ArrowLeft') map.x -= pan;
+        if (event.code === 'ArrowRight') map.x += pan;
+        if (event.code === 'ArrowUp') map.z -= pan;
+        if (event.code === 'ArrowDown') map.z += pan;
+        map.x = clamp(map.x, -worldSize / 2, worldSize / 2); map.z = clamp(map.z, -worldSize / 2, worldSize / 2);
+        scheduleMapData();
+      }
+      if (event.code === 'Equal' || event.code === 'NumpadAdd') { event.preventDefault(); zoomMap(.7); }
+      if (event.code === 'Minus' || event.code === 'NumpadSubtract') { event.preventDefault(); zoomMap(1.43); }
+    }
+    return;
+  }
   if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight'].includes(event.code)) {
     event.preventDefault(); keys.add(event.code);
     if (event.code === 'Space' && !event.repeat) jumpQueued = true;
   }
 });
 document.addEventListener('keyup', (event) => keys.delete(event.code));
-document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === canvas; if (!locked) clearMovement(); });
-document.addEventListener('pointerlockerror', () => { if (started && !modal) toast('Click and drag to look around. WASD moves you.'); });
-document.addEventListener('mousemove', (event) => { if (locked && started && !modal && game) game.look(event.movementX * sensitivity, event.movementY * sensitivity); });
-canvas.addEventListener('pointerdown', (event) => {
-  if (!started || modal || !game) return;
-  if (event.pointerType === 'mouse') captureMouse();
-  if (!locked) { dragLook = { id: event.pointerId, x: event.clientX, y: event.clientY }; canvas.setPointerCapture(event.pointerId); }
+document.addEventListener('pointerlockchange', () => {
+  const hasLock = document.pointerLockElement === canvas;
+  if (hasLock && (!focusedLook || modal || fatal)) {
+    document.exitPointerLock();
+    return;
+  }
+  locked = hasLock;
+  clearTimeout(lockTimer); lockPending = false;
+  if (locked) { focusedLook = true; pointerLockFallback = false; dragLook = null; }
+  else { focusedLook = false; lastMouse = null; clearMovement(); }
+  updateFocusHint();
 });
-canvas.addEventListener('pointermove', (event) => {
-  if (dragLook?.id !== event.pointerId || locked || modal || !started) return;
+document.addEventListener('pointerlockerror', () => lockFailed());
+document.addEventListener('mousemove', (event) => {
+  if (!started || modal || !game) return;
+  if (locked) {
+    game.look(event.movementX * sensitivity, event.movementY * sensitivity);
+  } else if (focusedLook && !matchMedia('(pointer: coarse)').matches) {
+    if (lastMouse) {
+      const dx = event.clientX - lastMouse.x, dy = event.clientY - lastMouse.y;
+      if (Math.abs(dx) < 200 && Math.abs(dy) < 200) game.look(dx * sensitivity, dy * sensitivity);
+    }
+    lastMouse = { x: event.clientX, y: event.clientY };
+  }
+});
+canvas.addEventListener('click', (event) => {
+  if (!started) startExploring(event);
+  else if (!modal && !locked) captureMouse(event);
+});
+canvas.addEventListener('pointerdown', (event) => {
+  if (!started || modal || !game || locked) return;
+  canvas.focus({ preventScroll: true });
+  // Desktop lock uses click; mouse drag fallback is document-level, so there is
+  // no setPointerCapture call racing requestPointerLock. Touch keeps capture.
+  dragLook = { id: event.pointerId, x: event.clientX, y: event.clientY, touch: event.pointerType !== 'mouse' };
+  if (dragLook.touch) canvas.setPointerCapture(event.pointerId);
+});
+document.addEventListener('pointermove', (event) => {
+  if (dragLook?.id !== event.pointerId || locked || modal || !started || (focusedLook && !dragLook.touch)) return;
   game.look((event.clientX - dragLook.x) * sensitivity, (event.clientY - dragLook.y) * sensitivity);
   dragLook.x = event.clientX; dragLook.y = event.clientY;
 });
-canvas.addEventListener('pointerup', () => dragLook = null);
-canvas.addEventListener('pointercancel', () => dragLook = null);
+document.addEventListener('pointerup', (event) => { if (dragLook?.id === event.pointerId) dragLook = null; });
+document.addEventListener('pointercancel', (event) => { if (dragLook?.id === event.pointerId) dragLook = null; });
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 for (const button of document.querySelectorAll('[data-move]')) {
   const move = button.dataset.move;
@@ -485,6 +628,7 @@ for (const button of document.querySelectorAll('[data-move]')) {
   const release = () => { touchMoves.delete(move); button.classList.remove('active'); };
   button.addEventListener('pointerup', release); button.addEventListener('pointercancel', release); button.addEventListener('lostpointercapture', release);
 }
+$('touch-jump').addEventListener('pointerdown', (event) => { event.preventDefault(); if (started && !modal) jumpQueued = true; });
 mapCanvas.addEventListener('pointerdown', (event) => {
   mapCanvas.setPointerCapture(event.pointerId);
   map.dragging = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
@@ -523,7 +667,7 @@ mapCanvas.addEventListener('wheel', (event) => {
   zoomMap(Math.exp(clamp(event.deltaY, -150, 150) * .002), event.clientX - rect.left, event.clientY - rect.top);
 }, { passive: false });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { resize(); if (modal === 'map') scheduleMapData(); }, 100); });
-window.addEventListener('blur', clearMovement);
-document.addEventListener('visibilitychange', () => { if (document.hidden) { clearMovement(); saveProgress(); } lastFrame = 0; });
+window.addEventListener('blur', releaseMouse);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseMouse(); saveProgress(); } lastFrame = 0; });
 window.addEventListener('pagehide', saveProgress);
 boot();

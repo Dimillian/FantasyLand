@@ -5,10 +5,10 @@ A first-person procedural fantasy exploration slice, built with Rust, WebAssembl
 ## Play
 
 - WASD / arrow keys: walk. Mouse: look. Shift: sprint. Space: jump.
-- Click to capture the mouse. If pointer lock is unavailable, drag the view to look.
-- M: local map. Tab: world map. Escape: close a map or release the mouse.
-- Drag maps to pan, scroll to zoom, select a location to set a waypoint or fast travel.
-- Settings: seed, quality, mouse sensitivity, daylight and return to spawn. F3: diagnostics.
+- Click the world to focus and capture the mouse. Escape releases it. When a browser blocks capture, click-focused mouse look still works within the window; touch uses drag look.
+- M or Tab: open the unified atlas. M or Escape closes it; Tab navigates controls inside menus.
+- Drag the atlas to pan, scroll to zoom from the local landscape to the whole continent, select a location to set a waypoint or fast travel. Zoom and position persist between openings.
+- I: bag. C: character. K: skills. O: settings (seed, quality, sensitivity, daylight, return to spawn). F3: diagnostics.
 - Progress and preferences are stored on this device. Add `?seed=42` to explore another deterministic seed.
 
 ## World
@@ -19,7 +19,9 @@ Rolling foothills, larger mountain ridges, continuous river corridors and a clim
 
 Walking is 5.5 m/s; sprinting reaches 9 m/s and consumes stamina. Settlement spacing targets roughly 5–10 minutes between neighboring sites on foot, excluding stops; mountain detours can take longer. Map estimates show straight-line walking time; terrain and routes can make the actual journey longer.
 
-Six procedural tree silhouettes mix with biome-specific grass, ferns, flowers, heather, reeds, stones, stumps and fallen logs. Short wooden crossings meet river banks with ramps. Clouds, sunlight, night stars and flowing water are shader-generated, with no imported models or texture assets.
+A shared ecological cover field creates open wildland, sparse woodland, and dense overlapping forest stands within the climate regions. Warped regional fields blend 1.1 km woodland areas, 380 m stands, and 190 m clearings. The same cover drives tree occupancy, terrain and atlas colors, grass height, ferns, and flower patches. Six procedural tree silhouettes mix with reeds, stones, stumps and fallen logs. Short wooden crossings meet river banks with ramps. Clouds, sunlight, night stars and flowing water are shader-generated, with no imported models or texture assets.
+
+Rivers come from catchments: Priority-Flood conditions a coarse elevation grid, downhill receivers route rainfall, and accumulated runoff determines channel formation and width. Tributaries share junctions with their downstream river. Smoothed channel paths carve the detailed terrain, and their directions drive the animated water. The atlas uses the same drainage network. This adapts the drainage-conditioning approach described by [Barnes, Lehman and Mulla](https://rbarnes.org/sci/2014_depressions.pdf); it is a terrain generator, not a fluid simulation.
 
 ## Build locally
 
@@ -38,15 +40,16 @@ The build script also recognizes the isolated toolchain installed under `.tools/
 cargo test --release --lib
 cargo run --release --bin verify
 node scripts/verify-wasm.mjs
+node scripts/verify-ui.cjs
 ```
 
-The native verifier runs the same wgpu shaders on a real GPU, checks the rendered output, and writes terrain/map images under `output/verification`. The Node check loads the actual compiled WASM and verifies world/map generation independently of the graphics backend.
+The native verifier runs the same wgpu shaders on a real GPU, checks the rendered output, and writes terrain/map images under `output/verification`. The WASM check loads the actual compiled module and verifies drainage, ecology and atlas generation independently of the graphics backend. The UI harness checks input and atlas behavior with DOM/pointer-lock mocks, including rejected capture and late responses after Escape; it is not a browser end-to-end test.
 
 ## Current limits
 
-- This is an exploration prototype: no combat, quests, living NPCs, town interiors or economy yet.
+- This is an exploration prototype: no combat, quests, living NPCs, town interiors or economy yet. Health and mana are visible resources reserved for those systems; stamina is active. Bag and skills panels state which systems are still unavailable.
 - All map destinations are available for fast travel while testing.
-- Hydrology and geography are analytic approximations, not erosion simulation. River corridors mostly share a northward drainage direction.
+- Hydrology uses a 500 m drainage grid with refined channel curves and carved valleys. It does not yet simulate long-term erosion, seasonal floods, or persistent lakes.
 - Roads connect sites and follow/level local terrain; distant mountain roads can be too steep and still need pass/switchback routing.
 - Trunks and boulders block movement. Landmark structures are currently primarily visual, with limited structural collision.
 - Terrain and props generate incrementally on the browser's main thread. Worker scheduling and instancing are future optimizations.
@@ -54,4 +57,4 @@ The native verifier runs the same wgpu shaders on a real GPU, checks the rendere
 
 ## Code
 
-`world.rs` defines world identity, climate, terrain, routes, features and maps. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.
+`world.rs` defines world identity, climate, terrain, routes, features and maps. `hydrology.rs` builds the drainage graph and channel profiles. `ecology.rs` supplies shared forest and ground-cover fields. `geometry.rs` builds mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu, chunk streaming and presentation; `horizon.rs` generates distant terrain. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.

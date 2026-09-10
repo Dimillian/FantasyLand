@@ -1,7 +1,8 @@
 //! Coarse, streamed terrain continues the actual world beyond the detailed chunks.
 use crate::{
+    ecology,
     geometry::{MeshData, Vertex},
-    world::{Biome, World, WORLD_SIZE},
+    world::{World, WORLD_SIZE},
 };
 use glam::Vec3;
 
@@ -15,17 +16,9 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
             let wx = cx as f32 * PATCH_SIZE + x as f32 * PATCH_SIZE / N as f32;
             let wz = cz as f32 * PATCH_SIZE + z as f32 * PATCH_SIZE / N as f32;
             let sample = world.sample(wx, wz);
-            let mut color = match sample.biome {
-                Biome::Grassland => [0.39, 0.43, 0.20],
-                Biome::Forest => [0.28, 0.35, 0.17],
-                Biome::PineForest => [0.29, 0.36, 0.26],
-                Biome::Moor => [0.40, 0.39, 0.28],
-                Biome::Alpine => [0.49, 0.51, 0.48],
-                Biome::Desert => [0.63, 0.51, 0.32],
-                Biome::Wetland => [0.31, 0.37, 0.25],
-            };
+            let mut color = ecology::ground_color(world.seed, wx, wz, &sample);
             if sample.height < sample.water_height {
-                color = [0.20, 0.35, 0.40];
+                color = [0.12, 0.36, 0.44];
             }
             grid.push((
                 Vec3::new(wx, sample.height.max(sample.water_height), wz),

@@ -1,11 +1,12 @@
 //! Asset-free, deterministic low-poly geometry for the streamed world.
 //! World positions are retained here; the renderer performs the camera-relative transform.
+use crate::ecology;
 use crate::world::{hash, rand01, Biome, World};
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::{PI, TAU};
 
 pub const CHUNK_SIZE: f32 = 192.0;
-const PROP_GRID: f32 = 16.0;
+const PROP_GRID: f32 = 12.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -79,18 +80,6 @@ fn random(seed: u32, salt: u32) -> f32 {
     ))
 }
 
-fn ground_color(biome: Biome) -> [f32; 3] {
-    match biome {
-        Biome::Grassland => [0.39, 0.43, 0.20],
-        Biome::Forest => [0.28, 0.35, 0.17],
-        Biome::PineForest => [0.29, 0.36, 0.26],
-        Biome::Moor => [0.40, 0.39, 0.28],
-        Biome::Alpine => [0.49, 0.51, 0.48],
-        Biome::Desert => [0.63, 0.51, 0.32],
-        Biome::Wetland => [0.31, 0.37, 0.25],
-    }
-}
-
 #[derive(Clone, Copy)]
 struct GroundVertex {
     position: [f32; 3],
@@ -99,7 +88,7 @@ struct GroundVertex {
 }
 fn ground_vertex(world: &World, x: f32, z: f32) -> GroundVertex {
     let s = world.sample(x, z);
-    let color = ground_color(s.biome);
+    let color = ecology::ground_color(world.seed, x, z, &s);
     let wet = mix(color, [0.34, 0.34, 0.25], (s.river * 0.7).clamp(0.0, 0.7));
     let color = mix(wet, [0.55, 0.43, 0.28], (s.road * 0.93).clamp(0.0, 0.93));
     GroundVertex {
@@ -242,6 +231,16 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
                 water_triangle(&mut mesh, [corners[0], corners[1], corners[2]], water);
                 water_triangle(&mut mesh, [corners[0], corners[2], corners[3]], water);
             }
+        }
+    }
+    // Material4's otherwise-unused color carries the local downstream tangent.
+    // Keep world-space wave phases continuous; only advection follows the river.
+    for triangle in mesh.vertices.chunks_exact_mut(3) {
+        let x = triangle.iter().map(|v| v.position[0]).sum::<f32>() / 3.0;
+        let z = triangle.iter().map(|v| v.position[2]).sum::<f32>() / 3.0;
+        let flow = world.water_flow(x, z);
+        for v in triangle {
+            v.color = [flow[0], flow[1], 0.0];
         }
     }
     mesh
@@ -417,7 +416,7 @@ fn terrain_surface_height(world: &World, x: f32, z: f32) -> f32 {
 pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
     let sample = world.sample(x, z);
     let mut height = terrain_surface_height(world, x, z);
-    if sample.water_height < -999.0 || sample.road < 0.8 {
+    if sample.road < 0.8 {
         return height;
     }
     for road in world.roads_near(x, z, 6.0) {
@@ -479,6 +478,7 @@ enum PropKind {
 struct Prop {
     position: [f32; 3],
     scale: f32,
+    canopy: f32,
     seed: u32,
     kind: PropKind,
     biome: Biome,
@@ -486,18 +486,16 @@ struct Prop {
 
 fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     let seed = hash(world.seed ^ 0x54455252, gx, gz);
-    let x = gx as f32 * PROP_GRID + 3.0 + random(seed, 1) * (PROP_GRID - 6.0);
-    let z = gz as f32 * PROP_GRID + 3.0 + random(seed, 2) * (PROP_GRID - 6.0);
+    let x = gx as f32 * PROP_GRID + 2.0 + random(seed, 1) * (PROP_GRID - 4.0);
+    let z = gz as f32 * PROP_GRID + 2.0 + random(seed, 2) * (PROP_GRID - 4.0);
     let pick = random(seed, 3);
     let sample = world.sample(x, z);
     if sample.road > 0.07 || sample.water_height > sample.height + 0.8 {
         return None;
     }
-    let patch = random(
-        hash(world.seed ^ 9137, gx.div_euclid(5), gz.div_euclid(5)),
-        7,
-    );
+    let density = ecology::tree_density(world.seed, x, z, &sample);
     let species = random(seed, 6);
+    let detail = random(seed, 8);
     let kind = if sample.river > 0.28 || sample.water_height > sample.height - 0.8 {
         if pick < 0.64 {
             PropKind::Reed
@@ -506,53 +504,44 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         } else {
             return None;
         }
-    } else {
+    } else if pick < density {
         match sample.biome {
-            Biome::Forest if pick < 0.59 + patch * 0.20 => {
-                if species < 0.39 {
+            Biome::Forest => {
+                if species < 0.43 {
                     PropKind::Broadleaf
-                } else if species < 0.68 {
+                } else if species < 0.67 {
                     PropKind::Birch
                 } else if species < 0.83 {
                     PropKind::Fir
-                } else if species < 0.95 {
+                } else if species < 0.96 {
                     PropKind::Pine
                 } else {
                     PropKind::DeadTree
                 }
             }
-            Biome::PineForest if pick < 0.57 + patch * 0.24 => {
+            Biome::PineForest => {
                 if species < 0.46 {
                     PropKind::Fir
                 } else if species < 0.82 {
                     PropKind::Pine
-                } else if species < 0.94 {
+                } else if species < 0.96 {
                     PropKind::Birch
                 } else {
                     PropKind::DeadTree
                 }
             }
-            Biome::Grassland if pick < 0.055 + patch.powi(4) * 0.30 => {
-                if species < 0.52 {
+            Biome::Grassland => {
+                if species < 0.60 {
                     PropKind::Broadleaf
-                } else if species < 0.83 {
+                } else if species < 0.88 {
                     PropKind::Birch
-                } else if species < 0.94 {
+                } else if species < 0.97 {
                     PropKind::Pine
                 } else {
                     PropKind::DeadTree
                 }
             }
-            Biome::Moor if pick < 0.10 => {
-                if species < 0.5 {
-                    PropKind::DeadTree
-                } else if species < 0.78 {
-                    PropKind::Birch
-                } else {
-                    PropKind::Pine
-                }
-            }
-            Biome::Wetland if pick < 0.24 => {
+            Biome::Wetland => {
                 if species < 0.61 {
                     PropKind::Willow
                 } else if species < 0.87 {
@@ -561,25 +550,59 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
                     PropKind::Broadleaf
                 }
             }
-            Biome::Wetland if pick < 0.57 => PropKind::Reed,
-            Biome::Desert if pick < 0.14 => PropKind::Boulder,
-            Biome::Alpine if pick < 0.29 => PropKind::Boulder,
-            Biome::Forest | Biome::PineForest if pick > 0.90 => {
-                if species < 0.64 {
-                    PropKind::FallenLog
+            Biome::Moor => {
+                if species < 0.52 {
+                    PropKind::DeadTree
+                } else if species < 0.80 {
+                    PropKind::Birch
                 } else {
-                    PropKind::Stump
+                    PropKind::Pine
                 }
             }
-            _ if pick > 0.96 => PropKind::Boulder,
-            Biome::Grassland | Biome::Forest | Biome::Moor if pick > 0.81 => PropKind::Shrub,
             _ => return None,
         }
+    } else if detail < density * 0.075 {
+        if species < 0.64 {
+            PropKind::FallenLog
+        } else {
+            PropKind::Stump
+        }
+    } else if matches!(sample.biome, Biome::Alpine | Biome::Desert) && detail < 0.18 {
+        PropKind::Boulder
+    } else if detail > 0.964 {
+        PropKind::Boulder
+    } else if sample.biome == Biome::Wetland && detail < 0.28 {
+        PropKind::Reed
+    } else if detail < 0.045 + density * (1.0 - density) * 0.25
+        && !matches!(sample.biome, Biome::Alpine | Biome::Desert)
+    {
+        PropKind::Shrub
+    } else {
+        return None;
     };
-    let y = terrain_surface_height(world, x, z) - 0.08;
+    // The same larger crowns and coordinates are used by near meshes, distant
+    // silhouettes and trunk collision. Dense stands can close their canopy.
+    let grove_scale = if matches!(
+        kind,
+        PropKind::Pine
+            | PropKind::Fir
+            | PropKind::Broadleaf
+            | PropKind::Birch
+            | PropKind::Willow
+            | PropKind::DeadTree
+    ) {
+        1.0 + density * 0.32
+    } else {
+        1.0
+    };
     Some(Prop {
-        position: [x, y, z],
-        scale: 0.65 + random(seed, 4) * 0.87,
+        position: [x, terrain_surface_height(world, x, z) - 0.08, z],
+        scale: (0.65 + random(seed, 4) * 0.87) * grove_scale,
+        canopy: if matches!(kind, PropKind::Pine | PropKind::Fir) {
+            1.0 + density * 0.30
+        } else {
+            1.0
+        },
         seed,
         kind,
         biome: sample.biome,
@@ -680,8 +703,9 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
     );
     let gx = (ox / PROP_GRID).round() as i32;
     let gz = (oz / PROP_GRID).round() as i32;
-    for z in gz..gz + 12 {
-        for x in gx..gx + 12 {
+    let count = (CHUNK_SIZE / PROP_GRID) as i32;
+    for z in gz..gz + count {
+        for x in gx..gx + count {
             if hash(world.seed ^ 0x54455252, x, z) & 1 != 0 {
                 continue;
             }
@@ -702,7 +726,7 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
             match p.kind {
                 PropKind::Pine => {
                     let h = (10.0 + random(p.seed, 9) * 7.0) * p.scale;
-                    let radius = h * (0.22 + random(p.seed, 10) * 0.055);
+                    let radius = h * (0.22 + random(p.seed, 10) * 0.055) * p.canopy;
                     let color = mix([0.18, 0.28, 0.17], [0.29, 0.36, 0.19], random(p.seed, 12));
                     cone(
                         &mut mesh,
@@ -731,7 +755,7 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
                     cone(
                         &mut mesh,
                         [x, y + h * 0.13, z],
-                        h * 0.17,
+                        h * 0.17 * p.canopy,
                         h * 0.78,
                         5,
                         random(p.seed, 242) * TAU,
@@ -941,7 +965,7 @@ fn trunk(mesh: &mut MeshData, base: [f32; 3], radius: f32, height: f32, yaw: f32
 }
 fn pine(mesh: &mut MeshData, p: Prop) {
     let h = (10.0 + random(p.seed, 9) * 7.0) * p.scale;
-    let r = h * (0.22 + random(p.seed, 10) * 0.055);
+    let r = h * (0.22 + random(p.seed, 10) * 0.055) * p.canopy;
     let yaw = random(p.seed, 11) * TAU;
     let color = mix([0.18, 0.28, 0.17], [0.29, 0.36, 0.19], random(p.seed, 12));
     trunk(
@@ -1025,7 +1049,7 @@ fn fir(mesh: &mut MeshData, p: Prop) {
     let [x, y, z] = p.position;
     for i in 0..5 {
         let f = i as f32;
-        let radius = h * (0.17 - f * 0.027) * (0.94 + random(p.seed, 245 + i) * 0.12);
+        let radius = h * (0.17 - f * 0.027) * (0.94 + random(p.seed, 245 + i) * 0.12) * p.canopy;
         cone(
             mesh,
             [x, y + h * (0.13 + f * 0.15), z],
@@ -1314,45 +1338,31 @@ fn ground_cover(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
             if sample.road > 0.10 || sample.water_height > sample.height + 0.15 {
                 continue;
             }
-            let patch = random(
-                hash(
-                    world.seed ^ 0x4d4f5353,
-                    gx.div_euclid(12),
-                    gz.div_euclid(12),
-                ),
-                303,
-            );
-            let base = match sample.biome {
-                Biome::Grassland => 0.67,
-                Biome::Forest => 0.57,
-                Biome::PineForest => 0.46,
-                Biome::Wetland => 0.71,
-                Biome::Moor => 0.63,
-                Biome::Alpine => 0.13,
-                Biome::Desert => 0.065,
-            };
-            if random(seed, 304) > base * (0.56 + patch * 0.79) {
+            let cover = ecology::sample(world.seed, x, z, &sample);
+            if random(seed, 304) > cover.grass_density {
                 continue;
             }
             let y = grid_height(world, ox, oz, 32, &grid, x, z) - 0.018;
-            let scale = 0.62 + random(seed, 305) * 0.80;
+            let scale = (0.62 + random(seed, 305) * 0.80) * cover.grass_height;
             let kind = random(seed, 306);
+            let open = 1.0 - cover.tree_density;
             let color = match sample.biome {
-                Biome::Grassland => mix([0.35, 0.40, 0.16], [0.49, 0.47, 0.24], patch),
-                Biome::Forest => [0.25, 0.36, 0.17],
-                Biome::PineForest => [0.29, 0.36, 0.23],
-                Biome::Wetland => [0.38, 0.43, 0.23],
-                Biome::Moor => [0.42, 0.39, 0.24],
-                Biome::Alpine => [0.45, 0.44, 0.32],
-                Biome::Desert => [0.55, 0.45, 0.28],
+                Biome::Grassland | Biome::Forest => {
+                    mix([0.25, 0.41, 0.17], [0.38, 0.52, 0.19], open)
+                }
+                Biome::PineForest => mix([0.25, 0.36, 0.23], [0.39, 0.48, 0.23], open),
+                Biome::Wetland => [0.37, 0.49, 0.23],
+                Biome::Moor => [0.46, 0.46, 0.25],
+                Biome::Alpine => [0.49, 0.50, 0.34],
+                Biome::Desert => [0.70, 0.55, 0.29],
             };
             let first_vertex = mesh.vertices.len();
-            if (sample.biome == Biome::Forest || sample.biome == Biome::PineForest) && kind < 0.23 {
+            if kind < cover.ferns {
                 fern(mesh, [x, y, z], scale, seed, color);
-            } else if sample.biome == Biome::Moor && kind < 0.38 {
-                heather(mesh, [x, y, z], scale, seed);
-            } else if sample.biome == Biome::Grassland && kind > 0.92 && patch > 0.40 {
+            } else if kind < cover.ferns + cover.flowers {
                 flowers(mesh, [x, y, z], scale, seed, color);
+            } else if kind < cover.ferns + cover.flowers + cover.heather {
+                heather(mesh, [x, y, z], scale, seed);
             } else {
                 grass_clump(
                     mesh,
@@ -1489,10 +1499,13 @@ fn heather(mesh: &mut MeshData, base: [f32; 3], scale: f32, seed: u32) {
 }
 fn flowers(mesh: &mut MeshData, base: [f32; 3], scale: f32, seed: u32, color: [f32; 3]) {
     grass_clump(mesh, base, scale * 0.64, seed, color, false);
-    let petals = if random(seed, 383) < 0.55 {
-        [0.72, 0.65, 0.32]
+    let tint = random(seed, 383);
+    let petals = if tint < 0.50 {
+        [0.86, 0.65, 0.22]
+    } else if tint < 0.88 {
+        [0.85, 0.79, 0.51]
     } else {
-        [0.70, 0.68, 0.56]
+        [0.77, 0.42, 0.29]
     };
     for i in 0..2 {
         let a = random(seed, 385 + i) * TAU;
@@ -1981,46 +1994,64 @@ fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
 
 // Each deck endpoint meets the higher of the bank or the river clearance.
 // Adjacent spans share endpoints, so bank ramps and walking height are continuous.
-fn bridge_heights(world: &World, start: [f32; 2], end: [f32; 2]) -> Option<(f32, f32)> {
-    let s0 = world.sample(start[0], start[1]);
-    let s1 = world.sample(end[0], end[1]);
-    let sm = world.sample((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0);
-    let valid = [s0.water_height, s1.water_height, sm.water_height];
-    let mut water = 0.0;
-    let mut n = 0;
-    for w in valid {
-        if w > -999.0 {
-            water += w;
-            n += 1;
+std::thread_local! {
+    // Bridge nodes repeat in adjacent spans, streamed meshes, and every physics
+    // frame. Cache only the immutable water envelope, with a bounded footprint.
+    static BRIDGE_WATER_NODES: std::cell::RefCell<std::collections::HashMap<(u32,i32,i32),f32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+fn bridge_water_envelope(world: &World, p: [f32; 2]) -> f32 {
+    let key = (
+        world.seed,
+        (p[0] * 4.0).round() as i32,
+        (p[1] * 4.0).round() as i32,
+    );
+    if let Some(height) = BRIDGE_WATER_NODES.with(|cache| cache.borrow().get(&key).copied()) {
+        return height;
+    }
+    let center = [key.1 as f32 * 0.25, key.2 as f32 * 0.25];
+    let mut water = -10000.0_f32;
+    // The orientation-independent 7.5m neighborhood contains the entire next
+    // five-meter span and its seven-meter deck width, including upstream edges.
+    // Both endpoints inspect the span interior as well as its upstream deck edge.
+    for z in -4..=4 {
+        for x in -4..=4 {
+            let dx = x as f32 * 1.5;
+            let dz = z as f32 * 1.5;
+            if dx * dx + dz * dz > 7.5 * 7.5 {
+                continue;
+            }
+            water = water.max(world.sample(center[0] + dx, center[1] + dz).water_height);
         }
     }
-    if n == 0 {
-        return None;
-    }
-    water /= n as f32;
-    let w0 = if s0.water_height > -999.0 {
-        s0.water_height
-    } else {
-        water
-    };
-    let w1 = if s1.water_height > -999.0 {
-        s1.water_height
-    } else {
-        water
-    };
-    let wm = if sm.water_height > -999.0 {
-        sm.water_height
-    } else {
-        water
-    };
-    if s0.height >= w0 + 1.3 && s1.height >= w1 + 1.3 && sm.height >= wm + 1.3 {
-        return None;
-    }
-    Some((
-        terrain_surface_height(world, start[0], start[1]).max(w0 + 1.3) + 0.015,
-        terrain_surface_height(world, end[0], end[1]).max(w1 + 1.3) + 0.015,
-    ))
+    BRIDGE_WATER_NODES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(key, water);
+    });
+    water
 }
+fn bridge_heights(world: &World, start: [f32; 2], end: [f32; 2]) -> Option<(f32, f32)> {
+    let water0 = bridge_water_envelope(world, start);
+    let water1 = bridge_water_envelope(world, end);
+    if water0 < -999.0 && water1 < -999.0 {
+        return None;
+    }
+    let ground0 = terrain_surface_height(world, start[0], start[1]);
+    let ground1 = terrain_surface_height(world, end[0], end[1]);
+    // A small reserve covers sub-grid water gradients. Heights depend only on a
+    // shared endpoint, never its neighboring span, preserving continuous ramps.
+    let floor0 = ground0.max(water0 + 1.55);
+    let floor1 = ground1.max(water1 + 1.55);
+    let middle = world.sample((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0);
+    if floor0 <= ground0 && floor1 <= ground1 && middle.water_height + 1.3 <= middle.height {
+        return None;
+    }
+    Some((floor0 + 0.015, floor1 + 0.015))
+}
+
 fn sloped_box(
     mesh: &mut MeshData,
     start: [f32; 2],
@@ -2153,6 +2184,17 @@ fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crossing_keeps_its_upstream_deck_edge_above_water() {
+        // Regression: center-only water samples submerged this edge of a
+        // seven-meter crossing, even though its center appeared to be clear.
+        let world = World::new(1337);
+        let (x, z) = (-7614.833, 2457.720);
+        let sample = world.sample(x, z);
+        assert!(sample.road > 0.8 && sample.water_height > sample.height);
+        assert!(walk_height(&world, x, z) > sample.water_height + 1.3);
+    }
     fn assert_mesh(mesh: &MeshData) {
         assert_eq!(mesh.indices.len() % 3, 0);
         assert!(mesh
@@ -2263,6 +2305,7 @@ mod tests {
             let p = Prop {
                 position: [0., 5., 0.],
                 scale: 1.1,
+                canopy: 1.2,
                 seed: 7123,
                 kind,
                 biome: Biome::Forest,
@@ -2300,11 +2343,11 @@ mod tests {
             let grass = near.vertices.iter().filter(|v| v.material == 6.0).count() / 3;
             assert!(grass <= 8 * 4096, "ground-cover budget exceeded: {}", grass);
             assert!(
-                far.indices.len() / 3 <= 1440,
+                far.indices.len() / 3 <= 2560,
                 "distant trees exceeded budget"
             );
             assert!(
-                near.indices.len() / 3 < 42000,
+                near.indices.len() / 3 < 56000,
                 "near geometry exceeded budget"
             );
             assert!(far.vertices.iter().all(|v| v.material == 1.0));

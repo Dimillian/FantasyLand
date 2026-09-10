@@ -88,7 +88,7 @@ fn horizon_color(direction: vec3<f32>) -> vec3<f32> {
 
 fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     let day = daylight();
-    let zenith = mix(vec3<f32>(0.025, 0.040, 0.078), vec3<f32>(0.275, 0.410, 0.575), day);
+    let zenith = mix(vec3<f32>(0.025, 0.040, 0.078), vec3<f32>(0.235, 0.445, 0.685), day);
     let height = max(direction.y, 0.0);
     var color = mix(horizon_color(direction), zenith, pow(clamp(height, 0.0, 1.0), 0.52));
     // A wide atmospheric glow locates the sun without washing out the sky.
@@ -120,14 +120,16 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     return o;
 }
 
-fn water_color(world: vec3<f32>, distance: f32) -> vec3<f32> {
+fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>) -> vec3<f32> {
     let t = u.params.x;
     let p = world.xz;
+    let flow = normalize(channel.xy + vec2<f32>(0.00001));
+    let velocity = flow * 1.4;
     let near_detail = 1.0 - smoothstep(70.0, 350.0, distance);
-    let warp = noise(p * 0.035 + vec2<f32>(t * 0.008, -t * 0.005));
-    let phase_a = dot(p, vec2<f32>(0.31, 0.17)) - t * 1.15 + warp * 3.5;
-    let phase_b = dot(p, vec2<f32>(-0.19, 0.43)) - t * 0.72;
-    let phase_c = dot(p, vec2<f32>(1.41, 0.63)) - t * 2.2 + warp * 5.0;
+    let warp = noise((p - velocity * t) * 0.035);
+    let phase_a = dot(p, vec2<f32>(0.31, 0.17)) - t * dot(velocity, vec2<f32>(0.31, 0.17)) + warp * 3.5;
+    let phase_b = dot(p, vec2<f32>(-0.19, 0.43)) - t * dot(velocity, vec2<f32>(-0.19, 0.43));
+    let phase_c = dot(p, vec2<f32>(1.41, 0.63)) - t * dot(velocity, vec2<f32>(1.41, 0.63)) + warp * 5.0;
     let a = sin(phase_a);
     let b = sin(phase_b);
     let c = sin(phase_c) * near_detail;
@@ -139,10 +141,10 @@ fn water_color(world: vec3<f32>, distance: f32) -> vec3<f32> {
     let reflection = reflect(-view, normal);
     let fresnel = 0.08 + 0.55 * pow(1.0 - max(dot(normal, view), 0.0), 4.0);
 
-    // Ignore the mesh's random per-quad tone: all variation is continuous over
-    // world coordinates, so neither triangles nor water chunk cells show up.
-    let broad_current = noise(p * 0.012 + vec2<f32>(t * 0.006, -t * 0.003));
-    var color = mix(vec3<f32>(0.135, 0.275, 0.290), vec3<f32>(0.225, 0.380, 0.385), broad_current);
+    // The vertex color carries flow direction; the material palette comes from
+    // continuous world-space noise so water chunk cells do not set its tone.
+    let broad_current = noise((p - velocity * t) * 0.012);
+    var color = mix(vec3<f32>(0.075, 0.285, 0.335), vec3<f32>(0.160, 0.435, 0.475), broad_current);
     color *= u.light.w * (0.94 + wave * 0.12);
     var reflected_sky = sky_gradient(reflection);
     // Broad reflected weather is enough to suggest a real sky without tracing
@@ -152,7 +154,7 @@ fn water_color(world: vec3<f32>, distance: f32) -> vec3<f32> {
     color = mix(color, reflected_sky, fresnel);
 
     // Interrupted flowing strokes, with fewer fine marks at grazing distance.
-    let breaks = smoothstep(0.30, 0.65, noise(p * vec2<f32>(0.12, 0.35) + vec2<f32>(-t * 0.04, t * 0.01)));
+    let breaks = smoothstep(0.30, 0.65, noise((p - velocity * t) * vec2<f32>(0.12, 0.35)));
     let crest = smoothstep(0.69, 0.91, a * 0.65 + c * 0.35) * breaks * near_detail;
     color += vec3<f32>(0.12, 0.15, 0.135) * crest * u.light.w;
     let half_vector = normalize(normalize(u.light.xyz) + view);
@@ -181,7 +183,7 @@ fn water_color(world: vec3<f32>, distance: f32) -> vec3<f32> {
 
     let normal = normalize(v.normal);
     let diffuse = max(dot(normal, normalize(u.light.xyz)), 0.0);
-    let illumination = (0.62 + floor(diffuse * 5.0 + 0.5) / 5.0 * 0.46) * u.light.w;
+    let illumination = (0.76 + floor(diffuse * 5.0 + 0.5) / 5.0 * 0.38) * u.light.w;
     var color = v.color * illumination;
     var grain = hash21(floor(v.world.xz * 1.4)) - 0.5;
     if v.material > 1.5 && v.material < 3.5 {
@@ -192,15 +194,19 @@ fn water_color(world: vec3<f32>, distance: f32) -> vec3<f32> {
     color *= 1.0 + grain * grain_strength;
     if v.material > 5.5 && v.material < 6.5 {
         // Backlit blades stay legible beside the darker opaque tree canopies.
-        color = v.color * (0.78 + diffuse * 0.32) * u.light.w;
+        color = v.color * (0.85 + diffuse * 0.30) * u.light.w;
     }
     if v.material > 3.5 && v.material < 4.5 {
-        color = water_color(v.world, distance);
+        color = water_color(v.world, distance, v.color);
     }
 
+    // Retain the low-poly palette while restoring rich midtones in daylight.
+    let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    color = mix(vec3<f32>(luma), color, 1.12);
+    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(0.94));
     let direction = normalize(v.world - u.camera.xyz);
     let fog_distance = max(u.fog.w, 100.0);
-    let fog_amount = 1.0 - exp(-pow(distance / fog_distance, 1.20));
+    let fog_amount = 1.0 - exp(-pow(distance / fog_distance, 1.34));
     color = mix(color, horizon_color(direction), clamp(fog_amount, 0.0, 0.97));
     let dither = bayer(v.clip.xy) * 0.55;
     color = floor(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)) * 64.0 + dither) / 64.0;
