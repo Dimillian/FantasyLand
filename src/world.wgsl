@@ -103,14 +103,15 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     var o: VertexOut;
     var p = v.position;
     if v.material > 0.5 && v.material < 1.5 {
-        p.x += sin(u.params.x * 0.85 + p.x * 0.13 + p.z * 0.17) * 0.06;
+        let weight = clamp((1.4 - v.material) / 0.4, 0.0, 1.0);
+        p.x += sin(u.params.x * 0.85 + p.x * 0.13 + p.z * 0.17) * 0.06 * weight;
     }
     if v.material > 5.5 && v.material < 6.5 {
-        // Small lateral motion keeps roots on the terrain. No per-blade UV or
-        // extra vertex attribute is needed by the procedural grass mesh.
+        // Fractional material encodes bend weight; roots remain fixed.
         let gust = sin(u.params.x * 1.7 + p.x * 0.7 + p.z * 0.4);
-        p.x += gust * 0.065;
-        p.z += sin(u.params.x * 1.3 + p.z * 0.8) * 0.035;
+        let weight = clamp((v.material - 6.0) / 0.4, 0.0, 1.0);
+        p.x += gust * 0.065 * weight;
+        p.z += sin(u.params.x * 1.3 + p.z * 0.8) * 0.035 * weight;
     }
     o.clip = u.view_projection * vec4<f32>(p - u.camera.xyz, 1.0);
     o.world = p;

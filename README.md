@@ -27,6 +27,8 @@ Walking is 5.5 m/s; sprinting reaches 9 m/s and consumes stamina. Settlement spa
 
 A shared ecological cover field creates open wildland, sparse woodland, and dense overlapping forest stands within the climate regions. Warped regional fields blend 1.1 km woodland areas, 380 m stands, and 190 m clearings. The same cover drives tree occupancy, terrain and atlas colors, grass height, ferns, and flower patches. Six procedural tree silhouettes mix with reeds, stones, stumps and fallen logs. Short wooden crossings meet river banks with ramps. Clouds, sunlight, night stars and flowing water are shader-generated, with no imported models or texture assets.
 
+Structures sample their own footprints on the rendered terrain: tents and hearths have level retaining foundations, while tower legs, signs and bridge piers extend into the ground. Vegetation anchors use the matching terrain detail level, distant trees retain trunks, and grass/reed roots stay fixed in the wind. Road surfaces are clipped to terrain triangles to follow slopes and dips without suspended strips.
+
 Rivers come from catchments: Priority-Flood conditions a coarse elevation grid, downhill receivers route rainfall, and accumulated runoff determines channel formation and width. Tributaries share junctions with their downstream river. Smoothed channel paths carve the detailed terrain, and their directions drive the animated water. The atlas uses the same drainage network. This adapts the drainage-conditioning approach described by [Barnes, Lehman and Mulla](https://rbarnes.org/sci/2014_depressions.pdf); it is a terrain generator, not a fluid simulation.
 
 ## Build locally
@@ -47,6 +49,7 @@ cargo test --release --lib
 cargo run --release --bin verify
 cargo run --release --bin verify output/filters 1337 filters
 cargo run --release --bin verify output/ascii-verification 1337 ascii
+cargo run --release --bin verify output/grounding 1337 grounding
 node scripts/verify-wasm.mjs
 node scripts/verify-ui.cjs
 ```

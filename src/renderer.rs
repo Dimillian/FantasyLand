@@ -546,9 +546,9 @@ impl Renderer {
             let terrain = self.upload(geometry::terrain_chunk(world, x, z, lod));
             let water = self.upload(geometry::water_chunk(world, x, z, lod));
             let props_mesh = if detail > 0 {
-                self.upload(geometry::props_chunk_with_cover(world, x, z, detail == 2))
+                self.upload(geometry::props_chunk_at_lod(world, x, z, detail == 2, lod))
             } else if lod <= 2 {
-                self.upload(geometry::distant_props_chunk(world, x, z))
+                self.upload(geometry::distant_props_chunk_at_lod(world, x, z, lod))
             } else {
                 None
             };

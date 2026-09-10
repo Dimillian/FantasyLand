@@ -21,6 +21,7 @@ fn main() {
     let check = std::env::args().nth(3);
     let filters_only = check.as_deref() == Some("filters");
     let ascii_only = check.as_deref() == Some("ascii");
+    let grounding_only = check.as_deref() == Some("grounding");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -36,7 +37,7 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only && !ascii_only {
+    if !filters_only && !ascii_only && !grounding_only {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
         save_png(&format!("{dir}/world-map.png"), 512, 512, &map);
@@ -46,6 +47,10 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if grounding_only {
+        verify_grounding(&world, &mut renderer, &dir);
+        return;
+    }
     let floor = geometry::walk_height(&world, spawn[0], spawn[1]);
     let eye = glam::Vec3::new(spawn[0], floor + 1.72, spawn[1]);
     let start = Instant::now();
@@ -121,6 +126,106 @@ fn main() {
         serde_json::to_string_pretty(&metadata).unwrap(),
     )
     .unwrap();
+    fn verify_grounding(world: &World, renderer: &mut Renderer, dir: &str) {
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 720;
+        // Seed1337 regression: Mistfield is173m from the procedural spawn. Its
+        // offset tent used to reuse the tower height, floating up to5.165m.
+        let site = [-16545.926, -12303.939];
+        let tent = [-16555.926, -12295.939];
+        let ground_eye = |x, z| glam::Vec3::new(x, geometry::walk_height(world, x, z) + 1.72, z);
+        let primary = ground_eye(-16570.0, -12278.0);
+        let tent_target = glam::Vec3::new(
+            tent[0],
+            geometry::walk_height(world, tent[0], tent[1]) + 1.0,
+            tent[1],
+        );
+        let site_target = glam::Vec3::new(
+            site[0],
+            geometry::walk_height(world, site[0], site[1]) + 3.0,
+            site[1],
+        );
+        renderer.set_quality(1);
+        renderer.resize(WIDTH, HEIGHT);
+        renderer.set_render_resolution(1);
+        renderer.set_filter(0, 1.0);
+        // Teleport before streaming. All views remain in this same192m chunk,
+        // so warm the world once and reuse identical terrain/props thereafter.
+        let start = Instant::now();
+        renderer.update_chunks(world, primary, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(world, primary, false);
+        }
+        println!(
+            "Grounding warmup: {} chunks, {} triangles, {:?}",
+            renderer.chunk_count(),
+            renderer.triangle_count(),
+            start.elapsed()
+        );
+        let scenes = [
+            ("mistfield-repro", primary, tent_target, Some(0.665_f32)),
+            (
+                "mistfield-downslope",
+                ground_eye(-16571.0, -12274.0),
+                tent_target,
+                None,
+            ),
+            (
+                "mistfield-side",
+                ground_eye(-16530.0, -12280.0),
+                tent_target,
+                None,
+            ),
+            (
+                "mistfield-foundations",
+                primary + glam::Vec3::Y * 32.0,
+                site_target,
+                None,
+            ),
+        ];
+        let chunk = |p: glam::Vec3| {
+            [
+                (p.x / geometry::CHUNK_SIZE).floor() as i32,
+                (p.z / geometry::CHUNK_SIZE).floor() as i32,
+            ]
+        };
+        let mut views = Vec::new();
+        for (name, eye, target, fixed_yaw) in scenes {
+            assert_eq!(
+                chunk(eye),
+                chunk(primary),
+                "grounding view left its warmed chunk"
+            );
+            let direction = target - eye;
+            let yaw = fixed_yaw.unwrap_or_else(|| direction.x.atan2(-direction.z));
+            let pitch = direction.y.atan2(direction.x.hypot(direction.z));
+            renderer
+                .render(eye, yaw, pitch, 11.0)
+                .expect("render grounding scene");
+            let pixels = renderer.capture_rgba().expect("read grounding capture");
+            assert_image(&pixels, WIDTH, HEIGHT, name);
+            let file = format!("{dir}/grounding-{name}.png");
+            save_png(&file, WIDTH, HEIGHT, &pixels);
+            println!("Grounding {name}: eye{eye:?} yaw{yaw:.4} pitch{pitch:.4} -> {file}");
+            views.push(serde_json::json!({
+                "name":name,"file":file,"eye":eye.to_array(),"yaw":yaw,
+                "pitch":pitch,"hour":11.0,"opaqueAndNonempty":true,
+            }));
+        }
+        fs::write(
+            format!("{dir}/grounding-verification.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "seed":world.seed,"regressionSeed":1337,"site":"Mistfield",
+                "sitePosition":site,"tentPosition":tent,"views":views,
+                "captureDimensions":[WIDTH,HEIGHT],"sceneResolution":"native",
+                "filter":"clean","warmupCount":1,
+                "chunkCount":renderer.chunk_count(),"triangleCount":renderer.triangle_count(),
+                "appearanceNote":"Inspect tent hems, campfire stones, bench feet, tower foundations, signpost and banner bases. Opaque/nonempty GPU checks do not prove ground contact; geometry tests validate support vertices and LOD equality."
+            })).unwrap(),
+        ).unwrap();
+        println!("Grounding capture passed:4 Mistfield views, native1280x720,11:00, one warmup");
+    }
+
     fn verify_filters(
         world: &World,
         renderer: &mut Renderer,

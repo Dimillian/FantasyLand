@@ -327,6 +327,7 @@ fn road_ribbons(
     divisions: usize,
     grid: &[GroundVertex],
 ) {
+    let step = CHUNK_SIZE / divisions as f32;
     for road in world.roads_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE) {
         for segment in road.windows(2) {
             let a = segment[0];
@@ -343,7 +344,13 @@ fn road_ribbons(
                 let t1 = (i + 1) as f32 / pieces as f32;
                 let mx = a[0] + dx * (t0 + t1) / 2.0;
                 let mz = a[1] + dz * (t0 + t1) / 2.0;
-                if !owns(ox, oz, mx, mz) {
+                // Include strips whose center is outside but whose shoulders
+                // reach this chunk. Actual ownership comes from triangle clipping.
+                if mx < ox - 7.0
+                    || mx > ox + CHUNK_SIZE + 7.0
+                    || mz < oz - 7.0
+                    || mz > oz + CHUNK_SIZE + 7.0
+                {
                     continue;
                 }
                 let sample = world.sample(mx, mz);
@@ -361,33 +368,156 @@ fn road_ribbons(
                     (-2.6, 2.6, path_color),
                     (2.6, 4.0, mix([0.40, 0.40, 0.24], path_color, 0.6)),
                 ] {
-                    let points = [(start, left), (end, left), (end, right), (start, right)].map(
-                        |(p, side)| {
-                            let x = p[0] + dz / len * side;
-                            let z = p[1] - dx / len * side;
-                            let y = if x >= ox
-                                && x <= ox + CHUNK_SIZE
-                                && z >= oz
-                                && z <= oz + CHUNK_SIZE
-                            {
-                                grid_height(world, ox, oz, divisions, grid, x, z)
-                            } else {
-                                world.height(x, z)
-                            };
-                            [x, y + 0.075, z]
-                        },
+                    // Work in chunk-local XZ so clipping stays accurate far
+                    // from the origin. A road quad may cross multiple planes.
+                    let footprint = [(start, left), (end, left), (end, right), (start, right)].map(
+                        |(p, side)| [p[0] + dz / len * side - ox, p[1] - dx / len * side - oz],
                     );
-                    mesh.quad(points[0], points[1], points[2], points[3], color, 0.0);
+                    let min_x = footprint.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+                    let max_x = footprint
+                        .iter()
+                        .map(|p| p[0])
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    let min_z = footprint.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+                    let max_z = footprint
+                        .iter()
+                        .map(|p| p[1])
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    if max_x <= 0.0 || min_x >= CHUNK_SIZE || max_z <= 0.0 || min_z >= CHUNK_SIZE {
+                        continue;
+                    }
+                    let cell = |v: f32| {
+                        ((v / step).floor() as i32).clamp(0, divisions as i32 - 1) as usize
+                    };
+                    for iz in cell(min_z)..=cell(max_z) {
+                        for ix in cell(min_x)..=cell(max_x) {
+                            let at = |x: usize, z: usize| {
+                                let p = grid[z * (divisions + 1) + x].position;
+                                [p[0] - ox, p[1], p[2] - oz]
+                            };
+                            let a = at(ix, iz);
+                            let b = at(ix, iz + 1);
+                            let c = at(ix + 1, iz + 1);
+                            let d = at(ix + 1, iz);
+                            let diagonal = hash(
+                                world.seed,
+                                (ox / step) as i32 + ix as i32,
+                                (oz / step) as i32 + iz as i32,
+                            );
+                            let triangles = if diagonal & 1 == 0 {
+                                [[a, b, d], [b, c, d]]
+                            } else {
+                                [[a, b, c], [a, c, d]]
+                            };
+                            for triangle in triangles {
+                                road_on_triangle(mesh, footprint, triangle, ox, oz, color);
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+// Sutherland-Hodgman intersection of a convex road quad with one clockwise
+// terrain triangle. Four vertices clipped by three edges produce at most seven
+// vertices; fixed buffers avoid per-piece heap allocation.
+fn road_clip_triangle(quad: [[f32; 2]; 4], triangle: [[f32; 3]; 3]) -> ([[f32; 2]; 8], usize) {
+    let mut polygon = [[0.0; 2]; 8];
+    polygon[..4].copy_from_slice(&quad);
+    let mut count = 4;
+    for edge in 0..3 {
+        if count < 3 {
+            break;
+        }
+        let a = triangle[edge];
+        let b = triangle[(edge + 1) % 3];
+        let signed_distance =
+            |p: [f32; 2]| (b[0] - a[0]) * (p[1] - a[2]) - (b[2] - a[2]) * (p[0] - a[0]);
+        let mut output = [[0.0; 2]; 8];
+        let mut output_count = 0;
+        let push = |output: &mut [[f32; 2]; 8], count: &mut usize, p: [f32; 2]| {
+            if *count == 0
+                || (output[*count - 1][0] - p[0]).abs() + (output[*count - 1][1] - p[1]).abs()
+                    > 0.000001
+            {
+                output[*count] = p;
+                *count += 1;
+            }
+        };
+        let mut previous = polygon[count - 1];
+        let mut previous_distance = signed_distance(previous);
+        for current in polygon[..count].iter().copied() {
+            let current_distance = signed_distance(current);
+            if (current_distance <= 0.0) != (previous_distance <= 0.0) {
+                let t =
+                    (previous_distance / (previous_distance - current_distance)).clamp(0.0, 1.0);
+                push(
+                    &mut output,
+                    &mut output_count,
+                    [
+                        previous[0] + (current[0] - previous[0]) * t,
+                        previous[1] + (current[1] - previous[1]) * t,
+                    ],
+                );
+            }
+            if current_distance <= 0.0 {
+                push(&mut output, &mut output_count, current);
+            }
+            previous = current;
+            previous_distance = current_distance;
+        }
+        if output_count > 1
+            && (output[0][0] - output[output_count - 1][0]).abs()
+                + (output[0][1] - output[output_count - 1][1]).abs()
+                < 0.000001
+        {
+            output_count -= 1;
+        }
+        polygon = output;
+        count = output_count;
+    }
+    (polygon, count)
+}
+
+fn road_on_triangle(
+    mesh: &mut MeshData,
+    quad: [[f32; 2]; 4],
+    triangle: [[f32; 3]; 3],
+    ox: f32,
+    oz: f32,
+    color: [f32; 3],
+) {
+    let (polygon, count) = road_clip_triangle(quad, triangle);
+    if count < 3 {
+        return;
+    }
+    let [a, b, c] = triangle;
+    let determinant = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+    let drape = |p: [f32; 2]| {
+        let u = ((p[0] - a[0]) * (c[2] - a[2]) - (p[1] - a[2]) * (c[0] - a[0])) / determinant;
+        let v = ((b[0] - a[0]) * (p[1] - a[2]) - (b[2] - a[2]) * (p[0] - a[0])) / determinant;
+        [
+            ox + p[0],
+            a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + 0.025,
+            oz + p[1],
+        ]
+    };
+    let first = drape(polygon[0]);
+    for i in 1..count - 1 {
+        mesh.triangle(first, drape(polygon[i]), drape(polygon[i + 1]), color, 0.0);
+    }
+}
+
 // Physics uses the same six-meter triangles as the finest streamed terrain.
 // Sampling the analytic generator directly would let feet sink into a curved ridge.
 fn terrain_surface_height(world: &World, x: f32, z: f32) -> f32 {
-    let step = 6.0;
+    terrain_surface_height_lod(world, x, z, 0)
+}
+/// Exact triangle interpolation used by the terrain mesh at this detail level.
+pub fn terrain_surface_height_lod(world: &World, x: f32, z: f32, lod: u32) -> f32 {
+    let step = 6.0 * (1u32 << lod.min(4)) as f32;
     let ix = (x / step).floor() as i32;
     let iz = (z / step).floor() as i32;
     let ox = ix as f32 * step;
@@ -615,6 +745,9 @@ pub fn props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
 
 /// The streaming renderer requests ground cover only in its closest prop ring.
 pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> MeshData {
+    props_chunk_at_lod(world, cx, cz, cover, 0)
+}
+pub fn props_chunk_at_lod(world: &World, cx: i32, cz: i32, cover: bool, lod: u32) -> MeshData {
     let mut mesh = MeshData::default();
     let ox = cx as f32 * CHUNK_SIZE;
     let oz = cz as f32 * CHUNK_SIZE;
@@ -627,7 +760,7 @@ pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> M
     let count = (CHUNK_SIZE / PROP_GRID) as i32;
     for z in start_z..start_z + count {
         for x in start_x..start_x + count {
-            if let Some(p) = prop_at(world, x, z) {
+            if let Some(mut p) = prop_at(world, x, z) {
                 if sites.iter().any(|s| {
                     (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 45.0_f32.powi(2)
                 }) {
@@ -638,6 +771,9 @@ pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> M
                 }) {
                     continue;
                 }
+                p.position[1] =
+                    terrain_surface_height_lod(world, p.position[0], p.position[2], lod) - 0.08;
+                let first = mesh.vertices.len();
                 match p.kind {
                     PropKind::Pine => pine(&mut mesh, p),
                     PropKind::Fir => fir(&mut mesh, p),
@@ -645,7 +781,7 @@ pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> M
                     PropKind::Birch => birch(&mut mesh, p),
                     PropKind::Willow => willow(&mut mesh, p),
                     PropKind::DeadTree => dead_tree(&mut mesh, p),
-                    PropKind::FallenLog => fallen_log(&mut mesh, p, world),
+                    PropKind::FallenLog => fallen_log_lod(&mut mesh, p, world, lod),
                     PropKind::Stump => stump(&mut mesh, p),
                     PropKind::Boulder => rock(&mut mesh, p.position, p.scale, p.seed),
                     PropKind::Shrub => {
@@ -661,33 +797,49 @@ pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> M
                     }
                     PropKind::Reed => reeds(&mut mesh, p),
                 }
+                anchor_prop(world, &mut mesh, first, p, lod);
             }
         }
     }
     for site in sites {
         if owns(ox, oz, site.x, site.z) {
-            let y = world.height(site.x, site.z);
             let seed = hash(world.seed, site.x as i32, site.z as i32);
-            settlement_marker(&mut mesh, [site.x, y, site.z], seed, &site.kind);
+            settlement_marker(
+                world,
+                &mut mesh,
+                [site.x, 0.0, site.z],
+                seed,
+                &site.kind,
+                lod,
+            );
         }
     }
     for landmark in landmarks {
         if owns(ox, oz, landmark.x, landmark.z) {
-            let y = world.height(landmark.x, landmark.z);
             let seed = hash(world.seed ^ 7123, landmark.x as i32, landmark.z as i32);
-            landmark_mesh(&mut mesh, [landmark.x, y, landmark.z], seed, &landmark.kind);
+            landmark_mesh(
+                world,
+                &mut mesh,
+                [landmark.x, 0.0, landmark.z],
+                seed,
+                &landmark.kind,
+                lod,
+            );
         }
     }
     if cover {
-        ground_cover(world, &mut mesh, ox, oz);
+        ground_cover_lod(world, &mut mesh, ox, oz, lod);
     }
-    bridges(world, &mut mesh, ox, oz);
+    bridges(world, &mut mesh, ox, oz, lod);
     mesh
 }
 /// Cheap tree-only silhouettes for the outer streaming ring. Candidate positions,
 /// species and clearing exclusions match nearby geometry; every second tree is
 /// retained to keep distant forests within the rendering budget.
 pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
+    distant_props_chunk_at_lod(world, cx, cz, 0)
+}
+pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
     let mut mesh = MeshData::default();
     let ox = cx as f32 * CHUNK_SIZE;
     let oz = cz as f32 * CHUNK_SIZE;
@@ -709,7 +861,7 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
             if hash(world.seed ^ 0x54455252, x, z) & 1 != 0 {
                 continue;
             }
-            let Some(p) = prop_at(world, x, z) else {
+            let Some(mut p) = prop_at(world, x, z) else {
                 continue;
             };
             if sites.iter().any(|s| {
@@ -722,7 +874,28 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
             }) {
                 continue;
             }
+            p.position[1] =
+                terrain_surface_height_lod(world, p.position[0], p.position[2], lod) - 0.08;
             let [x, y, z] = p.position;
+            let first = mesh.vertices.len();
+            let (height, radius) = match p.kind {
+                PropKind::Pine => ((10.0 + random(p.seed, 9) * 7.0) * 0.7, 0.38),
+                PropKind::Fir => ((15.0 + random(p.seed, 241) * 9.0) * 0.9, 0.37),
+                PropKind::Broadleaf => ((6.5 + random(p.seed, 15) * 4.0) * 0.86, 0.64),
+                PropKind::Birch => ((12.0 + random(p.seed, 261) * 7.0) * 0.73, 0.25),
+                PropKind::Willow => ((8.0 + random(p.seed, 271) * 4.0) * 0.75, 0.65),
+                _ => (0.0, 0.0),
+            };
+            if height > 0.0 {
+                trunk(
+                    &mut mesh,
+                    p.position,
+                    radius * p.scale,
+                    height * p.scale,
+                    0.0,
+                    [0.31, 0.25, 0.18],
+                );
+            }
             match p.kind {
                 PropKind::Pine => {
                     let h = (10.0 + random(p.seed, 9) * 7.0) * p.scale;
@@ -801,9 +974,78 @@ pub fn distant_props_chunk(world: &World, cx: i32, cz: i32) -> MeshData {
                 }
                 _ => {}
             }
+            anchor_prop(world, &mut mesh, first, p, lod);
         }
     }
     mesh
+}
+
+fn anchor_prop(world: &World, mesh: &mut MeshData, first: usize, p: Prop, lod: u32) {
+    let drape = matches!(p.kind, PropKind::Boulder | PropKind::Shrub | PropKind::Reed);
+    if matches!(p.kind, PropKind::FallenLog) {
+        return;
+    }
+    let origin = terrain_surface_height_lod(world, p.position[0], p.position[2], lod);
+    let mut heights = std::collections::HashMap::new();
+    for vertex in &mut mesh.vertices[first..] {
+        let relative = vertex.position[1] - p.position[1];
+        let root_height = if matches!(p.kind, PropKind::DeadTree | PropKind::Birch) {
+            p.scale * 0.20
+        } else {
+            0.01
+        };
+        let root = relative <= root_height;
+        if drape || root {
+            let x = vertex.position[0];
+            let z = vertex.position[2];
+            let ground = *heights
+                .entry((x.to_bits(), z.to_bits(), root))
+                .or_insert_with(|| {
+                    let surface = terrain_surface_height_lod(world, x, z, lod);
+                    // At chunk boundaries the neighboring terrain can be another LOD.
+                    // Buried root extensions cover that transition without moving crowns.
+                    if root
+                        && ((x / CHUNK_SIZE).floor() != (p.position[0] / CHUNK_SIZE).floor()
+                            || (z / CHUNK_SIZE).floor() != (p.position[2] / CHUNK_SIZE).floor()
+                            || x.rem_euclid(CHUNK_SIZE)
+                                .min(CHUNK_SIZE - x.rem_euclid(CHUNK_SIZE))
+                                < 2.0
+                            || z.rem_euclid(CHUNK_SIZE)
+                                .min(CHUNK_SIZE - z.rem_euclid(CHUNK_SIZE))
+                                < 2.0)
+                    {
+                        (0..=3)
+                            .map(|level| terrain_surface_height_lod(world, x, z, level))
+                            .fold(surface, f32::min)
+                    } else {
+                        surface
+                    }
+                });
+            if drape {
+                vertex.position[1] += ground - origin;
+            } else {
+                vertex.position[1] = vertex.position[1].min(ground - 0.15);
+            }
+            if matches!(p.kind, PropKind::Reed) {
+                vertex.material = 1.4 - (relative / (p.scale * 1.5)).clamp(0.0, 1.0) * 0.4;
+            }
+        }
+    }
+    for triangle in mesh.vertices[first..].chunks_exact_mut(3) {
+        let u = sub(triangle[1].position, triangle[0].position);
+        let v = sub(triangle[2].position, triangle[0].position);
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let length = n.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if length > 0.00001 {
+            for vertex in triangle {
+                vertex.normal = n.map(|v| v / length);
+            }
+        }
+    }
 }
 
 fn owns(ox: f32, oz: f32, x: f32, z: f32) -> bool {
@@ -1251,7 +1493,11 @@ fn dead_tree(mesh: &mut MeshData, p: Prop) {
         }
     }
 }
+#[cfg(test)]
 fn fallen_log(mesh: &mut MeshData, p: Prop, world: &World) {
+    fallen_log_lod(mesh, p, world, 0)
+}
+fn fallen_log_lod(mesh: &mut MeshData, p: Prop, world: &World, lod: u32) {
     let yaw = random(p.seed, 291) * TAU;
     let len = (3.0 + random(p.seed, 292) * 3.0) * p.scale;
     let r = 0.36 * p.scale;
@@ -1260,18 +1506,90 @@ fn fallen_log(mesh: &mut MeshData, p: Prop, world: &World) {
     let ez = z + yaw.cos() * len;
     let end = [
         ex,
-        terrain_surface_height(world, ex, ez) + r * 0.82 - 0.08,
+        terrain_surface_height_lod(world, ex, ez, lod) + r * 0.70 - 0.10,
         ez,
     ];
-    branch(mesh, [x, y + r, z], end, r, r * 0.82, [0.31, 0.25, 0.17]);
+    let first = mesh.vertices.len();
+    let start = [x, y + r * 0.85, z];
+    branch(mesh, start, end, r, r * 0.82, [0.31, 0.25, 0.17]);
+    let body_end = mesh.vertices.len();
+    let cap_center = [x, y + r, z];
     polyhedron(
         mesh,
-        [x, y + r, z],
+        cap_center,
         [r * 1.12, r * 1.12, r * 1.12],
         p.seed,
         [0.47, 0.37, 0.23],
         3.0,
     );
+    // A tilted circular end has less vertical radius than a horizontal one.
+    // Anchor its actual lower ring, preserving the upper ring and central axis.
+    // The split/cut end follows the same rule so it cannot detach on a slope.
+    let owner = [
+        (x / CHUNK_SIZE).floor() as i32,
+        (z / CHUNK_SIZE).floor() as i32,
+    ];
+    let axis = sub(end, start);
+    let half_length_squared = axis.iter().map(|v| v * v).sum::<f32>() * 0.5;
+    let mut heights = std::collections::HashMap::new();
+    for (index, vertex) in mesh.vertices[first..].iter_mut().enumerate() {
+        let relative = sub(vertex.position, start);
+        let along = relative
+            .iter()
+            .zip(axis.iter())
+            .map(|(a, b)| a * b)
+            .sum::<f32>();
+        let center = if first + index >= body_end {
+            cap_center
+        } else if along < half_length_squared {
+            start
+        } else {
+            end
+        };
+        if vertex.position[1] > center[1] + 0.0001 {
+            continue;
+        }
+        let vx = vertex.position[0];
+        let vz = vertex.position[2];
+        let ground = *heights
+            .entry((vx.to_bits(), vz.to_bits()))
+            .or_insert_with(|| {
+                let mut ground = terrain_surface_height_lod(world, vx, vz, lod);
+                let cell = [
+                    (vx / CHUNK_SIZE).floor() as i32,
+                    (vz / CHUNK_SIZE).floor() as i32,
+                ];
+                let edge_x = vx.rem_euclid(CHUNK_SIZE);
+                let edge_z = vz.rem_euclid(CHUNK_SIZE);
+                // A long log may extend several meters into its neighboring chunk,
+                // beyond the narrow edge margin used for upright tree roots.
+                if cell != owner
+                    || edge_x.min(CHUNK_SIZE - edge_x) < 2.0
+                    || edge_z.min(CHUNK_SIZE - edge_z) < 2.0
+                {
+                    for level in 0..=3 {
+                        ground = ground.min(terrain_surface_height_lod(world, vx, vz, level));
+                    }
+                }
+                ground
+            });
+        vertex.position[1] = vertex.position[1].min(ground - 0.15);
+    }
+    for triangle in mesh.vertices[first..].chunks_exact_mut(3) {
+        let a = sub(triangle[1].position, triangle[0].position);
+        let b = sub(triangle[2].position, triangle[0].position);
+        let n = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let length = n.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if length > 0.00001 {
+            for vertex in triangle {
+                vertex.normal = n.map(|v| v / length);
+            }
+        }
+    }
     let middle_y = (y + r) + (end[1] - (y + r)) * 0.55;
     branch(
         mesh,
@@ -1290,6 +1608,7 @@ fn fallen_log(mesh: &mut MeshData, p: Prop, world: &World) {
         [0.31, 0.25, 0.17],
     );
 }
+
 fn stump(mesh: &mut MeshData, p: Prop) {
     let height = (0.5 + random(p.seed, 296) * 0.6) * p.scale;
     trunk(
@@ -1314,16 +1633,18 @@ fn stump(mesh: &mut MeshData, p: Prop) {
 
 // Small ground cover is one deliberately bounded layer: at most 4,096 candidate
 // clumps per chunk and 4–8 triangles per clump. Material6 can fade independently.
-fn ground_cover(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
+fn ground_cover_lod(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
     let divisions = 64;
     let spacing = 3.0;
-    let mut grid = Vec::with_capacity(33 * 33);
-    for z in 0..=32 {
-        for x in 0..=32 {
+    let terrain_divisions = (32u32 >> lod.min(4)).max(2) as usize;
+    let terrain_step = CHUNK_SIZE / terrain_divisions as f32;
+    let mut grid = Vec::with_capacity((terrain_divisions + 1).pow(2));
+    for z in 0..=terrain_divisions {
+        for x in 0..=terrain_divisions {
             grid.push(ground_vertex(
                 world,
-                ox + x as f32 * 6.0,
-                oz + z as f32 * 6.0,
+                ox + x as f32 * terrain_step,
+                oz + z as f32 * terrain_step,
             ));
         }
     }
@@ -1342,7 +1663,7 @@ fn ground_cover(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
             if random(seed, 304) > cover.grass_density {
                 continue;
             }
-            let y = grid_height(world, ox, oz, 32, &grid, x, z) - 0.018;
+            let y = grid_height(world, ox, oz, terrain_divisions, &grid, x, z) - 0.018;
             let scale = (0.62 + random(seed, 305) * 0.80) * cover.grass_height;
             let kind = random(seed, 306);
             let open = 1.0 - cover.tree_density;
@@ -1373,13 +1694,14 @@ fn ground_cover(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
                     sample.biome == Biome::Wetland,
                 );
             }
-            drape_cover(world, mesh, first_vertex, ox, oz, &grid, y + 0.018);
+            drape_cover_lod(world, mesh, first_vertex, ox, oz, &grid, y + 0.018, lod);
             // Infrequent palm-sized stones interrupt the vegetation without adding a
             // second dense field or collision obstacles around the player's feet.
             if kind > 0.974 {
                 let rx = x + 0.55;
                 let rz = z - 0.25;
-                let ry = terrain_surface_height(world, rx, rz);
+                let ry = terrain_surface_height_lod(world, rx, rz, lod);
+                let first_stone = mesh.vertices.len();
                 polyhedron(
                     mesh,
                     [rx, ry + 0.07, rz],
@@ -1388,12 +1710,27 @@ fn ground_cover(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
                     [0.44, 0.43, 0.35],
                     2.0,
                 );
+                anchor_prop(
+                    world,
+                    mesh,
+                    first_stone,
+                    Prop {
+                        position: [rx, ry, rz],
+                        scale: 1.0,
+                        canopy: 1.0,
+                        seed,
+                        kind: PropKind::Boulder,
+                        biome: sample.biome,
+                    },
+                    lod,
+                );
             }
         }
     }
 }
 // Each blade endpoint roots to its own position on the rendered triangle. Using
 // one shared height for a whole clump caused floating blades on steep slopes.
+#[cfg(test)]
 fn drape_cover(
     world: &World,
     mesh: &mut MeshData,
@@ -1403,16 +1740,44 @@ fn drape_cover(
     grid: &[GroundVertex],
     center_height: f32,
 ) {
+    drape_cover_lod(world, mesh, first, ox, oz, grid, center_height, 0)
+}
+fn drape_cover_lod(
+    world: &World,
+    mesh: &mut MeshData,
+    first: usize,
+    ox: f32,
+    oz: f32,
+    grid: &[GroundVertex],
+    center_height: f32,
+    lod: u32,
+) {
     for triangle in mesh.vertices[first..].chunks_exact_mut(3) {
         for v in triangle.iter_mut() {
             let x = v.position[0];
             let z = v.position[2];
-            let h = if x >= ox && x <= ox + CHUNK_SIZE && z >= oz && z <= oz + CHUNK_SIZE {
-                grid_height(world, ox, oz, 32, grid, x, z)
+            let mut h = if x >= ox && x <= ox + CHUNK_SIZE && z >= oz && z <= oz + CHUNK_SIZE {
+                grid_height(
+                    world,
+                    ox,
+                    oz,
+                    (32u32 >> lod.min(4)).max(2) as usize,
+                    grid,
+                    x,
+                    z,
+                )
             } else {
-                terrain_surface_height(world, x, z)
+                terrain_surface_height_lod(world, x, z, lod)
             };
+            let height_above_ground = v.position[1] - center_height;
+            if height_above_ground <= 0.0 && !owns(ox, oz, x, z) {
+                for level in 0..=3 {
+                    h = h.min(terrain_surface_height_lod(world, x, z, level));
+                }
+            }
             v.position[1] += h - center_height;
+            // Material6 fraction carries wind weight; roots are exactly zero.
+            v.material = 6.0 + (height_above_ground / 0.65).clamp(0.0, 1.0) * 0.4;
         }
         let a = sub(triangle[1].position, triangle[0].position);
         let b = sub(triangle[2].position, triangle[0].position);
@@ -1643,31 +2008,151 @@ fn banner(mesh: &mut MeshData, base: [f32; 3], height: f32, seed: u32) {
         5.0,
     );
 }
-fn settlement_marker(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
-    let [x, y, z] = base;
-    // A survey/watch platform makes future settlement sites recognizable from a distance.
+// Structural heights follow the displayed terrain. Footings extend through all
+// nearby terrain LODs so a structure straddling a chunk boundary cannot float.
+fn structural_ground_range(
+    world: &World,
+    center: [f32; 2],
+    size: [f32; 2],
+    yaw: f32,
+    lod: u32,
+) -> (f32, f32) {
+    let mut low = f32::INFINITY;
+    let mut high = f32::NEG_INFINITY;
+    let nx = (size[0] / 0.5).ceil().max(1.0) as u32;
+    let nz = (size[1] / 0.5).ceil().max(1.0) as u32;
+    for iz in 0..=nz {
+        for ix in 0..=nx {
+            let dx = (ix as f32 / nx as f32 - 0.5) * size[0];
+            let dz = (iz as f32 / nz as f32 - 0.5) * size[1];
+            let x = center[0] + dx * yaw.cos() + dz * yaw.sin();
+            let z = center[1] - dx * yaw.sin() + dz * yaw.cos();
+            let ground = terrain_surface_height_lod(world, x, z, lod);
+            low = low.min(ground);
+            high = high.max(ground);
+        }
+    }
+    (low, high)
+}
+fn structural_footing_bottom(
+    world: &World,
+    center: [f32; 2],
+    size: [f32; 2],
+    yaw: f32,
+    lod: u32,
+) -> f32 {
+    let mut bottom = structural_ground_range(world, center, size, yaw, lod).0;
+    for level in 0..=3 {
+        bottom = bottom.min(structural_ground_range(world, center, size, yaw, level).0);
+    }
+    bottom - 0.25
+}
+fn structural_support(
+    world: &World,
+    mesh: &mut MeshData,
+    center: [f32; 2],
+    size: [f32; 2],
+    yaw: f32,
+    top: f32,
+    color: [f32; 3],
+    material: f32,
+    lod: u32,
+) {
+    let bottom = structural_footing_bottom(world, center, size, yaw, lod);
+    box_mesh(
+        mesh,
+        [center[0], (bottom + top) * 0.5, center[1]],
+        [size[0], (top - bottom).max(0.02), size[1]],
+        yaw,
+        color,
+        material,
+    );
+}
+fn structural_foundation(
+    world: &World,
+    mesh: &mut MeshData,
+    center: [f32; 2],
+    size: [f32; 2],
+    yaw: f32,
+    rise: f32,
+    color: [f32; 3],
+    lod: u32,
+) -> f32 {
+    let top = structural_ground_range(world, center, size, yaw, lod).1 + rise;
+    structural_support(world, mesh, center, size, yaw, top, color, 2.0, lod);
+    top
+}
+fn grounded_banner(
+    world: &World,
+    mesh: &mut MeshData,
+    center: [f32; 2],
+    height: f32,
+    seed: u32,
+    lod: u32,
+) {
+    let ground = structural_ground_range(world, center, [0.34, 0.34], 0.0, lod).1;
+    let bottom = structural_footing_bottom(world, center, [0.34, 0.34], 0.0, lod);
+    banner(
+        mesh,
+        [center[0], bottom, center[1]],
+        ground + height - bottom,
+        seed,
+    );
+}
+fn structural_stone(
+    world: &World,
+    mesh: &mut MeshData,
+    center: [f32; 2],
+    scale: f32,
+    seed: u32,
+    lod: u32,
+) {
+    let size = scale * (1.2 + random(seed, 90) * 1.4);
+    let y = structural_ground_range(world, center, [size * 2.4, size * 2.1], 0.0, lod).1;
+    // The short buried core supports the faceted lower shell at steep or mixed
+    // LOD edges; the visible silhouette stays the ordinary generated stone.
+    structural_support(
+        world,
+        mesh,
+        center,
+        [size * 0.85, size * 0.7],
+        0.0,
+        y + size * 0.43,
+        [0.43, 0.44, 0.40],
+        2.0,
+        lod,
+    );
+    rock(mesh, [center[0], y - size * 0.10, center[1]], scale, seed);
+}
+fn settlement_marker(
+    world: &World,
+    mesh: &mut MeshData,
+    base: [f32; 3],
+    seed: u32,
+    kind: &str,
+    lod: u32,
+) {
+    let [x, _, z] = base;
+    let y = structural_ground_range(world, [x, z], [7.1, 7.1], 0.0, lod).1 + 0.12;
     let height = if kind == "town" { 12.0 } else { 8.0 };
     let wood = [0.35, 0.27, 0.18];
     for dx in [-2.8, 2.8] {
         for dz in [-2.8, 2.8] {
-            box_mesh(
+            structural_support(
+                world,
                 mesh,
-                [x + dx, y + height * 0.5, z + dz],
-                [0.6, height, 0.6],
+                [x + dx, z + dz],
+                [0.6, 0.6],
                 0.0,
+                y + height + 0.2,
                 wood,
                 3.0,
+                lod,
             );
         }
     }
-    box_mesh(
-        mesh,
-        [x, y + height - 2.0, z],
-        [7.1, 0.45, 7.1],
-        0.0,
-        wood,
-        3.0,
-    );
+    let deck = y + height - 2.0;
+    box_mesh(mesh, [x, deck, z], [7.1, 0.45, 7.1], 0.0, wood, 3.0);
     cone(
         mesh,
         [x, y + height + 0.2, z],
@@ -1678,46 +2163,50 @@ fn settlement_marker(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str)
         [0.36, 0.23, 0.17],
         3.0,
     );
-    banner(mesh, [x + 3.4, y, z + 3.4], height + 5.0, seed);
-    for j in 0..8 {
+    grounded_banner(world, mesh, [x + 3.4, z + 3.4], height + 5.0, seed, lod);
+    let ladder_ground = structural_ground_range(world, [x - 2.65, z + 3.5], [1.2, 0.3], 0.0, lod).1;
+    for dx in [-3.17, -2.12] {
+        structural_support(
+            world,
+            mesh,
+            [x + dx, z + 3.5],
+            [0.15, 0.15],
+            0.0,
+            deck + 0.8,
+            wood,
+            3.0,
+            lod,
+        );
+    }
+    let rungs = ((deck - ladder_ground) / 0.7).ceil().max(1.0) as u32;
+    for j in 0..rungs {
+        let h = ladder_ground + (deck - ladder_ground) * (j + 1) as f32 / rungs as f32;
         box_mesh(
             mesh,
-            [x - 2.65, y + 0.8 + j as f32 * 0.7, z + 3.5],
-            [1.0, 0.12, 0.28],
+            [x - 2.65, h, z + 3.5],
+            [1.15, 0.12, 0.28],
             0.0,
             wood,
             3.0,
         );
     }
-    box_mesh(
-        mesh,
-        [x - 3.17, y + 3.3, z + 3.5],
-        [0.15, 6.6, 0.15],
-        0.0,
-        wood,
-        3.0,
-    );
-    box_mesh(
-        mesh,
-        [x - 2.12, y + 3.3, z + 3.5],
-        [0.15, 6.6, 0.15],
-        0.0,
-        wood,
-        3.0,
-    );
-    signpost(mesh, [x + 8.0, y, z + 5.0], seed);
-    camp(mesh, [x - 10.0, y, z + 8.0], seed ^ 31);
+    signpost(world, mesh, [x + 8.0, 0.0, z + 5.0], seed, lod);
+    camp(world, mesh, [x - 10.0, 0.0, z + 8.0], seed ^ 31, lod);
 }
-fn signpost(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
-    let [x, y, z] = base;
+fn signpost(world: &World, mesh: &mut MeshData, base: [f32; 3], seed: u32, lod: u32) {
+    let [x, _, z] = base;
     let yaw = random(seed, 141) * 0.5;
-    box_mesh(
+    let y = structural_ground_range(world, [x, z], [0.34, 0.34], yaw, lod).1;
+    structural_support(
+        world,
         mesh,
-        [x, y + 2.6, z],
-        [0.34, 5.2, 0.34],
+        [x, z],
+        [0.34, 0.34],
         yaw,
+        y + 5.2,
         [0.35, 0.25, 0.15],
         3.0,
+        lod,
     );
     box_mesh(
         mesh,
@@ -1735,58 +2224,54 @@ fn signpost(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
         [0.43, 0.31, 0.18],
         3.0,
     );
-    // Small inset route marks stay legible as simple high-contrast shapes at distance.
     box_mesh(
         mesh,
-        [x + 0.92, y + 4.25, z + 0.13],
+        [
+            x + 0.92 * yaw.cos() + 0.13 * yaw.sin(),
+            y + 4.25,
+            z - 0.92 * yaw.sin() + 0.13 * yaw.cos(),
+        ],
         [0.75, 0.12, 0.06],
         yaw,
         [0.18, 0.17, 0.12],
         3.0,
     );
 }
-fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
-    let [x, y, z] = base;
+fn landmark_mesh(
+    world: &World,
+    mesh: &mut MeshData,
+    base: [f32; 3],
+    seed: u32,
+    kind: &str,
+    lod: u32,
+) {
+    let [x, _, z] = base;
     match kind {
         "watchtower" => {
             let stone = [0.47, 0.46, 0.39];
-            // Open doorway and open observation level, all assembled from rectangular piers.
+            let y = structural_ground_range(world, [x, z], [7.3, 7.3], 0.0, lod).1 + 0.12;
             for dx in [-2.7, 2.7] {
                 for dz in [-2.7, 2.7] {
-                    box_mesh(
+                    structural_support(
+                        world,
                         mesh,
-                        [x + dx, y + 8.0, z + dz],
-                        [1.5, 16.0, 1.5],
+                        [x + dx, z + dz],
+                        [1.5, 1.5],
                         0.0,
+                        y + 18.0,
                         stone,
                         2.0,
+                        lod,
                     );
                 }
             }
-            box_mesh(
-                mesh,
-                [x, y + 7.0, z - 2.7],
-                [4.0, 14.0, 1.5],
-                0.0,
-                stone,
-                2.0,
-            );
-            box_mesh(
-                mesh,
-                [x - 2.7, y + 7.0, z],
-                [1.5, 14.0, 4.0],
-                0.0,
-                stone,
-                2.0,
-            );
-            box_mesh(
-                mesh,
-                [x + 2.7, y + 7.0, z],
-                [1.5, 14.0, 4.0],
-                0.0,
-                stone,
-                2.0,
-            );
+            for (center, size) in [
+                ([x, z - 2.7], [4.0, 1.5]),
+                ([x - 2.7, z], [1.5, 4.0]),
+                ([x + 2.7, z], [1.5, 4.0]),
+            ] {
+                structural_support(world, mesh, center, size, 0.0, y + 14.0, stone, 2.0, lod);
+            }
             box_mesh(
                 mesh,
                 [x, y + 9.5, z + 2.7],
@@ -1813,25 +2298,34 @@ fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
                 [0.36, 0.23, 0.18],
                 3.0,
             );
-            banner(mesh, [x + 4.0, y, z + 4.0], 9.0, seed);
+            grounded_banner(world, mesh, [x + 4.0, z + 4.0], 9.0, seed, lod);
         }
         "ruin" => {
             let stone = [0.48, 0.46, 0.39];
-            for i in 0..7 {
+            for i in 1..7 {
                 let a = i as f32 * TAU / 8.0;
+                let center = [x + a.sin() * 6.5, z + a.cos() * 6.5];
                 let h = 3.0 + random(seed, 150 + i) * 7.0;
-                box_mesh(
+                let y = structural_ground_range(world, center, [2.5, 1.6], a, lod).1;
+                structural_support(world, mesh, center, [2.5, 1.6], a, y + h, stone, 2.0, lod);
+            }
+            let arch = structural_ground_range(world, [x, z + 6.5], [7.0, 1.6], 0.0, lod).1 + 6.0;
+            for dx in [-2.6, 2.6] {
+                structural_support(
+                    world,
                     mesh,
-                    [x + a.sin() * 6.5, y + h / 2.0, z + a.cos() * 6.5],
-                    [2.5, h, 1.6],
-                    a,
+                    [x + dx, z + 6.5],
+                    [1.6, 1.6],
+                    0.0,
+                    arch,
                     stone,
                     2.0,
+                    lod,
                 );
             }
             box_mesh(
                 mesh,
-                [x, y + 6.7, z + 6.5],
+                [x, arch + 0.7, z + 6.5],
                 [7.0, 1.4, 1.6],
                 0.0,
                 stone,
@@ -1839,11 +2333,13 @@ fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
             );
             for i in 0..5 {
                 let a = random(seed, 165 + i) * TAU;
-                rock(
+                structural_stone(
+                    world,
                     mesh,
-                    [x + a.sin() * 9.0, y, z + a.cos() * 9.0],
+                    [x + a.sin() * 9.0, z + a.cos() * 9.0],
                     0.8,
                     seed ^ i,
+                    lod,
                 );
             }
         }
@@ -1851,34 +2347,49 @@ fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
             for i in 0..7 {
                 let a = i as f32 * TAU / 7.0;
                 let h = 4.0 + random(seed, 180 + i) * 3.5;
+                let center = [x + a.sin() * 7.2, z + a.cos() * 7.2];
+                let y = structural_ground_range(world, center, [3.2, 2.4], 0.0, lod).1;
+                structural_support(
+                    world,
+                    mesh,
+                    center,
+                    [1.3, 1.0],
+                    0.0,
+                    y + h * 0.3,
+                    [0.43, 0.45, 0.43],
+                    2.0,
+                    lod,
+                );
                 polyhedron(
                     mesh,
-                    [x + a.sin() * 7.2, y + h * 0.43, z + a.cos() * 7.2],
+                    [center[0], y + h * 0.43, center[1]],
                     [1.6, h * 0.85, 1.2],
                     seed ^ i,
                     [0.43, 0.45, 0.43],
                     2.0,
                 );
             }
-            box_mesh(
+            structural_foundation(
+                world,
                 mesh,
-                [x, y + 0.5, z],
-                [3.5, 1.0, 2.3],
+                [x, z],
+                [3.5, 2.3],
                 random(seed, 188),
+                1.0,
                 [0.46, 0.45, 0.41],
-                2.0,
+                lod,
             );
         }
-        "camp" => camp(mesh, base, seed),
+        "camp" => camp(world, mesh, base, seed, lod),
         "shrine" => {
             let stone = [0.53, 0.51, 0.43];
-            box_mesh(mesh, [x, y + 0.35, z], [6.0, 0.7, 6.0], 0.0, stone, 2.0);
-            box_mesh(mesh, [x, y + 0.95, z], [4.5, 0.5, 4.5], 0.0, stone, 2.0);
+            let slab = structural_foundation(world, mesh, [x, z], [6.0, 6.0], 0.0, 0.7, stone, lod);
+            box_mesh(mesh, [x, slab + 0.25, z], [4.5, 0.5, 4.5], 0.0, stone, 2.0);
             for dx in [-1.8, 1.8] {
                 for dz in [-1.8, 1.8] {
                     box_mesh(
                         mesh,
-                        [x + dx, y + 3.1, z + dz],
+                        [x + dx, slab + 2.4, z + dz],
                         [0.5, 4.0, 0.5],
                         0.0,
                         stone,
@@ -1888,7 +2399,7 @@ fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
             }
             cone(
                 mesh,
-                [x, y + 5.2, z],
+                [x, slab + 4.4, z],
                 3.8,
                 2.1,
                 4,
@@ -1898,32 +2409,52 @@ fn landmark_mesh(mesh: &mut MeshData, base: [f32; 3], seed: u32, kind: &str) {
             );
             polyhedron(
                 mesh,
-                [x, y + 2.4, z],
+                [x, slab + 1.6, z],
                 [0.9, 1.35, 0.8],
                 seed,
                 [0.61, 0.56, 0.37],
                 2.0,
             );
-            banner(mesh, [x + 5.0, y, z], 6.2, seed);
+            grounded_banner(world, mesh, [x + 5.0, z], 6.2, seed, lod);
         }
         _ => {
+            let y = structural_foundation(
+                world,
+                mesh,
+                [x, z],
+                [2.7, 2.2],
+                0.0,
+                0.15,
+                [0.45, 0.44, 0.39],
+                lod,
+            );
             for i in 0..4 {
                 let f = i as f32;
                 polyhedron(
                     mesh,
-                    [x, y + 0.6 + f * 1.0, z],
+                    [x, y + 0.6 + f, z],
                     [2.0 - f * 0.34, 1.0, 1.6 - f * 0.28],
                     seed ^ i,
                     [0.45, 0.44, 0.39],
                     2.0,
                 );
             }
-            signpost(mesh, [x + 3.0, y, z], seed);
+            signpost(world, mesh, [x + 3.0, 0.0, z], seed, lod);
         }
     }
 }
-fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
-    let [x, y, z] = base;
+fn camp(world: &World, mesh: &mut MeshData, base: [f32; 3], seed: u32, lod: u32) {
+    let [x, _, z] = base;
+    let y = structural_foundation(
+        world,
+        mesh,
+        [x, z],
+        [6.25, 6.25],
+        0.0,
+        0.10,
+        [0.39, 0.35, 0.27],
+        lod,
+    );
     let cloth = mix([0.57, 0.46, 0.30], [0.44, 0.35, 0.23], random(seed, 200));
     let a = [x - 3.0, y, z - 3.0];
     let b = [x + 3.0, y, z - 3.0];
@@ -1934,31 +2465,55 @@ fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
     mesh.quad(a, d, f, c, cloth, 5.0);
     mesh.quad(c, f, e, b, mul(cloth, 0.91), 5.0);
     mesh.triangle(a, c, b, mul(cloth, 0.8), 5.0);
-    // Entrance remains visibly dark and open.
     mesh.triangle(d, [x - 0.8, y, z + 3.0], f, mul(cloth, 0.85), 5.0);
     mesh.triangle(f, [x + 0.8, y, z + 3.0], e, mul(cloth, 0.85), 5.0);
-    for dx in [-3.15, 3.15] {
-        box_mesh(
+    for dz in [-3.0, 3.0] {
+        trunk(
             mesh,
-            [x + dx, y + 0.65, z + 3.2],
-            [0.16, 1.3, 0.16],
+            [x, y - 0.04, z + dz],
+            0.09,
+            3.85,
             0.0,
             [0.34, 0.25, 0.16],
-            3.0,
         );
     }
+    for dx in [-3.15, 3.15] {
+        let center = [x + dx, z + 3.2];
+        let ground = structural_ground_range(world, center, [0.16, 0.16], 0.0, lod).1;
+        structural_support(
+            world,
+            mesh,
+            center,
+            [0.16, 0.16],
+            0.0,
+            ground + 1.3,
+            [0.34, 0.25, 0.16],
+            3.0,
+            lod,
+        );
+    }
+    let fire = structural_foundation(
+        world,
+        mesh,
+        [x + 6.0, z],
+        [4.0, 4.0],
+        0.0,
+        0.04,
+        [0.33, 0.31, 0.25],
+        lod,
+    );
     for i in 0..7 {
         let a = i as f32 * TAU / 7.0;
         rock(
             mesh,
-            [x + 6.0 + a.sin() * 1.2, y, z + a.cos() * 1.2],
+            [x + 6.0 + a.sin() * 1.2, fire, z + a.cos() * 1.2],
             0.24,
             seed ^ i,
         );
     }
     box_mesh(
         mesh,
-        [x + 6.0, y + 0.25, z],
+        [x + 6.0, fire + 0.18, z],
         [1.8, 0.4, 0.38],
         0.8,
         [0.24, 0.18, 0.12],
@@ -1966,7 +2521,7 @@ fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
     );
     box_mesh(
         mesh,
-        [x + 6.0, y + 0.35, z],
+        [x + 6.0, fire + 0.34, z],
         [1.8, 0.4, 0.38],
         -0.8,
         [0.28, 0.20, 0.13],
@@ -1974,7 +2529,7 @@ fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
     );
     cone(
         mesh,
-        [x + 6.0, y + 0.40, z],
+        [x + 6.0, fire + 0.40, z],
         0.35,
         0.75,
         5,
@@ -1982,14 +2537,26 @@ fn camp(mesh: &mut MeshData, base: [f32; 3], seed: u32) {
         [0.76, 0.35, 0.08],
         5.0,
     );
-    box_mesh(
-        mesh,
-        [x + 4.0, y + 0.35, z + 3.0],
-        [3.0, 0.55, 0.6],
-        0.1,
-        [0.35, 0.26, 0.17],
-        3.0,
-    );
+    // A fallen seat/log follows its own local slope. Its lower endpoints are
+    // embedded, and small support feet also reach the adjacent terrain LODs.
+    let a = [x + 4.0 - 1.5 * 0.1_f32.cos(), z + 3.0 + 1.5 * 0.1_f32.sin()];
+    let b = [x + 4.0 + 1.5 * 0.1_f32.cos(), z + 3.0 - 1.5 * 0.1_f32.sin()];
+    let ya = structural_ground_range(world, a, [0.6, 0.6], 0.0, lod).0 + 0.50;
+    let yb = structural_ground_range(world, b, [0.6, 0.6], 0.0, lod).0 + 0.50;
+    sloped_box(mesh, a, b, ya, yb, 0.6, 0.55, [0.35, 0.26, 0.17], 3.0);
+    for (center, top) in [(a, ya), (b, yb)] {
+        structural_support(
+            world,
+            mesh,
+            center,
+            [0.42, 0.45],
+            0.1,
+            top - 0.1,
+            [0.35, 0.26, 0.17],
+            3.0,
+            lod,
+        );
+    }
 }
 
 // Each deck endpoint meets the higher of the bank or the river clearance.
@@ -2099,7 +2666,7 @@ fn sloped_box(
         );
     }
 }
-fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
+fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u32) {
     let roads = world.roads_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE);
     for road in roads {
         for segment in road.windows(2) {
@@ -2163,6 +2730,18 @@ fn bridges(world: &World, mesh: &mut MeshData, ox: f32, oz: f32) {
                         [0.34, 0.26, 0.17],
                         3.0,
                     );
+                    // Railing uprights are joined to real piers reaching the bed.
+                    let floor = structural_footing_bottom(world, [px, pz], [0.38, 0.38], yaw, lod);
+                    if floor < y - 0.36 {
+                        box_mesh(
+                            mesh,
+                            [px, (floor + y - 0.30) * 0.5, pz],
+                            [0.38, y - 0.30 - floor, 0.38],
+                            yaw,
+                            [0.28, 0.22, 0.16],
+                            3.0,
+                        );
+                    }
                     let offset = [dz / len * 3.35 * side, -dx / len * 3.35 * side];
                     sloped_box(
                         mesh,
@@ -2340,17 +2919,25 @@ mod tests {
             let far = distant_props_chunk(&w, cx, cz);
             assert_mesh(&near);
             assert_mesh(&far);
-            let grass = near.vertices.iter().filter(|v| v.material == 6.0).count() / 3;
+            let grass = near
+                .vertices
+                .iter()
+                .filter(|v| (6.0..=6.4).contains(&v.material))
+                .count()
+                / 3;
             assert!(grass <= 8 * 4096, "ground-cover budget exceeded: {}", grass);
             assert!(
-                far.indices.len() / 3 <= 2560,
+                far.indices.len() / 3 <= 5120,
                 "distant trees exceeded budget"
             );
             assert!(
                 near.indices.len() / 3 < 56000,
                 "near geometry exceeded budget"
             );
-            assert!(far.vertices.iter().all(|v| v.material == 1.0));
+            assert!(far
+                .vertices
+                .iter()
+                .all(|v| v.material == 1.0 || v.material == 3.0));
         }
     }
     #[test]
@@ -2382,6 +2969,7 @@ mod tests {
                         v.position,
                         ground
                     );
+                    assert_eq!(v.material, 6.0, "wind must leave each blade root fixed");
                 }
             }
         }
@@ -2402,8 +2990,551 @@ mod tests {
             "waystone",
         ] {
             let mut m = MeshData::default();
-            landmark_mesh(&mut m, [0., 5., 0.], 412, kind);
+            landmark_mesh(&World::new(1337), &mut m, [0., 5., 0.], 412, kind, 0);
             assert_mesh(&m);
         }
+    }
+}
+
+#[cfg(test)]
+mod grounding_tests {
+    use super::*;
+
+    fn finite(mesh: &MeshData) {
+        assert!(!mesh.indices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < mesh.vertices.len()));
+        for v in &mesh.vertices {
+            assert!(v
+                .position
+                .iter()
+                .chain(v.normal.iter())
+                .all(|n| n.is_finite()));
+            assert!((v.normal.iter().map(|n| n * n).sum::<f32>() - 1.0).abs() < 0.001);
+        }
+    }
+    fn assert_foundation(world: &World, vertices: &[Vertex], lod: u32) {
+        let min = (0..3)
+            .map(|axis| {
+                vertices
+                    .iter()
+                    .map(|v| v.position[axis])
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .collect::<Vec<_>>();
+        let max = (0..3)
+            .map(|axis| {
+                vertices
+                    .iter()
+                    .map(|v| v.position[axis])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
+            .collect::<Vec<_>>();
+        for ix in 0..=12 {
+            for iz in 0..=12 {
+                let x = min[0] + (max[0] - min[0]) * ix as f32 / 12.0;
+                let z = min[2] + (max[2] - min[2]) * iz as f32 / 12.0;
+                assert!(
+                    max[1] >= terrain_surface_height_lod(world, x, z, lod) - 0.025,
+                    "foundation top buried at {x},{z}, lod {lod}"
+                );
+                for level in 0..=3 {
+                    assert!(
+                        min[1] < terrain_surface_height_lod(world, x, z, level) - 0.15,
+                        "foundation underside floats at {x},{z}, lod {level}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn grounding_camp_floors_cover_reported_sloping_sites() {
+        let world = World::new(1337);
+        for [sx, sz] in [
+            [-16545.926, -12303.939], // Mistfield: original downhill tent corner +5.165m.
+            [-16750.584, -14133.446], // Cinderhaven: original tent +6.844m.
+            [-14646.897, -12129.922], // Greyholt: original tent +7.61m.
+        ] {
+            for lod in 0..=3 {
+                let mut mesh = MeshData::default();
+                let center = [sx - 10.0, f32::NAN, sz + 8.0];
+                camp(&world, &mut mesh, center, 214, lod);
+                finite(&mesh);
+                assert_foundation(&world, &mesh.vertices[..36], lod);
+                let hearth: Vec<_> = mesh
+                    .vertices
+                    .iter()
+                    .copied()
+                    .filter(|v| v.material == 2.0 && v.color == [0.33, 0.31, 0.25])
+                    .collect();
+                assert_eq!(hearth.len(), 36);
+                assert_foundation(&world, &hearth, lod);
+                let floor = mesh.vertices[..36]
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                for v in mesh
+                    .vertices
+                    .iter()
+                    .filter(|v| v.material == 5.0 && (v.position[0] - center[0]).abs() <= 3.01)
+                {
+                    assert!(
+                        v.position[1] >= floor - 0.005,
+                        "tent cloth dropped below its supporting floor"
+                    );
+                }
+                let fire_floor = hearth
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let firewood = mesh
+                    .vertices
+                    .iter()
+                    .filter(|v| v.color == [0.24, 0.18, 0.12])
+                    .map(|v| v.position[1])
+                    .fold(f32::INFINITY, f32::min);
+                assert!(
+                    (firewood - fire_floor + 0.02).abs() < 0.003,
+                    "firewood must rest on its local hearth"
+                );
+                println!("camp ({sx},{sz}) lod{lod}: tent floor {floor:.3}, local hearth {fire_floor:.3}, {} triangles", mesh.indices.len()/3);
+            }
+        }
+    }
+    #[test]
+    fn grounding_every_landmark_and_settlement_ignores_parent_center_height() {
+        let world = World::new(1337);
+        let mut max_triangles = 0;
+        for lod in 0..=3 {
+            for kind in [
+                "watchtower",
+                "ruin",
+                "standing_stones",
+                "camp",
+                "shrine",
+                "waystone",
+            ] {
+                let mut first = MeshData::default();
+                let mut second = MeshData::default();
+                landmark_mesh(
+                    &world,
+                    &mut first,
+                    [-16555.926, f32::NAN, -12295.939],
+                    214,
+                    kind,
+                    lod,
+                );
+                landmark_mesh(
+                    &world,
+                    &mut second,
+                    [-16555.926, 99999.0, -12295.939],
+                    214,
+                    kind,
+                    lod,
+                );
+                finite(&first);
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&first.vertices),
+                    bytemuck::cast_slice::<_, u8>(&second.vertices),
+                    "{kind}: an independent piece still inherits parent y"
+                );
+                max_triangles = max_triangles.max(first.indices.len() / 3);
+            }
+            for kind in ["town", "village", "hamlet"] {
+                let mut mesh = MeshData::default();
+                settlement_marker(
+                    &world,
+                    &mut mesh,
+                    [-16545.926, f32::NAN, -12303.939],
+                    214,
+                    kind,
+                    lod,
+                );
+                finite(&mesh);
+                // First four cuboids are the four separately grounded platform legs.
+                for leg in mesh.vertices[..144].chunks_exact(36) {
+                    assert_foundation(&world, leg, lod);
+                }
+                max_triangles = max_triangles.max(mesh.indices.len() / 3);
+            }
+        }
+        assert!(
+            max_triangles < 800,
+            "structural recipe budget exceeded: {max_triangles}"
+        );
+        println!("All landmark/site recipes finite and bounded: maximum {max_triangles} triangles");
+    }
+    #[test]
+    fn grounding_rotated_footings_embed_entire_footprint_across_lods() {
+        let world = World::new(1337);
+        for lod in 0..=3 {
+            for (center, size, yaw) in [
+                ([-16558.9, -12292.9], [0.34, 0.34], 0.4),
+                ([-16545.9, -12303.9], [2.5, 1.6], 1.3),
+                ([-16750.6, -14133.4], [6.25, 6.25], 0.0),
+            ] {
+                let bottom = structural_footing_bottom(&world, center, size, yaw, lod);
+                for ix in 0..=10 {
+                    for iz in 0..=10 {
+                        let dx = (ix as f32 / 10.0 - 0.5) * size[0];
+                        let dz = (iz as f32 / 10.0 - 0.5) * size[1];
+                        let x = center[0] + dx * yaw.cos() + dz * yaw.sin();
+                        let z = center[1] - dx * yaw.sin() + dz * yaw.cos();
+                        for level in 0..=3 {
+                            assert!(
+                                bottom < terrain_surface_height_lod(&world, x, z, level) - 0.15
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod vegetation_grounding_tests {
+    use super::*;
+
+    #[test]
+    fn rendered_height_matches_each_terrain_lod() {
+        let world = World::new(1337);
+        let (ox, oz) = (-16704.0, -12480.0);
+        for lod in 0..=4 {
+            let divisions = (32 >> lod).max(2);
+            let step = CHUNK_SIZE / divisions as f32;
+            let mut grid = Vec::new();
+            for z in 0..=divisions {
+                for x in 0..=divisions {
+                    grid.push(ground_vertex(
+                        &world,
+                        ox + x as f32 * step,
+                        oz + z as f32 * step,
+                    ));
+                }
+            }
+            for i in 0..128 {
+                let x = ox + random(i, 801) * (CHUNK_SIZE - 0.1);
+                let z = oz + random(i, 802) * (CHUNK_SIZE - 0.1);
+                assert!(
+                    (terrain_surface_height_lod(&world, x, z, lod as u32)
+                        - grid_height(&world, ox, oz, divisions, &grid, x, z))
+                    .abs()
+                        < 0.001
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tree_roots_embed_on_slopes_without_collapsing_stumps() {
+        let world = World::new(1337);
+        for lod in 0..=3 {
+            for (x, z) in [(-16558.9, -12292.9), (-16704.1, -12288.1)] {
+                for kind in [
+                    PropKind::Pine,
+                    PropKind::Fir,
+                    PropKind::Broadleaf,
+                    PropKind::Birch,
+                    PropKind::Willow,
+                    PropKind::DeadTree,
+                    PropKind::Stump,
+                ] {
+                    let p = Prop {
+                        position: [x, terrain_surface_height_lod(&world, x, z, lod) - 0.08, z],
+                        scale: 1.1,
+                        canopy: 1.2,
+                        seed: 7123,
+                        kind,
+                        biome: Biome::Forest,
+                    };
+                    let mut mesh = MeshData::default();
+                    match kind {
+                        PropKind::Pine => pine(&mut mesh, p),
+                        PropKind::Fir => fir(&mut mesh, p),
+                        PropKind::Broadleaf => broadleaf(&mut mesh, p),
+                        PropKind::Birch => birch(&mut mesh, p),
+                        PropKind::Willow => willow(&mut mesh, p),
+                        PropKind::DeadTree => dead_tree(&mut mesh, p),
+                        PropKind::Stump => stump(&mut mesh, p),
+                        _ => unreachable!(),
+                    }
+                    let before = mesh.vertices.clone();
+                    anchor_prop(&world, &mut mesh, 0, p, lod);
+                    let mut roots = 0;
+                    for (old, new) in before.iter().zip(&mesh.vertices) {
+                        if old.position[1] - p.position[1] < 0.22 {
+                            roots += 1;
+                            let surface = terrain_surface_height_lod(
+                                &world,
+                                new.position[0],
+                                new.position[2],
+                                lod,
+                            );
+                            assert!(
+                                new.position[1] <= surface - 0.14,
+                                "floating {:?} root at LOD {lod}",
+                                kind
+                            );
+                        } else {
+                            assert_eq!(
+                                old.position, new.position,
+                                "grounding changed the crown or stump top"
+                            );
+                        }
+                    }
+                    assert!(roots >= 5);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod log_grounding_tests {
+    use super::*;
+    fn unanchored_log(mesh: &mut MeshData, p: Prop, world: &World, lod: u32) {
+        let yaw = random(p.seed, 291) * TAU;
+        let len = (3.0 + random(p.seed, 292) * 3.0) * p.scale;
+        let r = 0.36 * p.scale;
+        let [x, y, z] = p.position;
+        let ex = x + yaw.sin() * len;
+        let ez = z + yaw.cos() * len;
+        let end = [
+            ex,
+            terrain_surface_height_lod(world, ex, ez, lod) + r * 0.70 - 0.10,
+            ez,
+        ];
+        branch(
+            mesh,
+            [x, y + r * 0.85, z],
+            end,
+            r,
+            r * 0.82,
+            [0.31, 0.25, 0.17],
+        );
+        polyhedron(
+            mesh,
+            [x, y + r, z],
+            [r * 1.12, r * 1.12, r * 1.12],
+            p.seed,
+            [0.47, 0.37, 0.23],
+            3.0,
+        );
+        let middle_y = (y + r) + (end[1] - (y + r)) * 0.55;
+        branch(
+            mesh,
+            [
+                x + yaw.sin() * len * 0.55,
+                middle_y,
+                z + yaw.cos() * len * 0.55,
+            ],
+            [
+                x + yaw.sin() * len * 0.55 + 0.7,
+                middle_y + 0.8,
+                z + yaw.cos() * len * 0.55,
+            ],
+            0.12 * p.scale,
+            0.04 * p.scale,
+            [0.31, 0.25, 0.17],
+        );
+    }
+    #[test]
+    fn tilted_fallen_log_anchors_lower_rings_across_lod_seam() {
+        let world = World::new(1337);
+        let seed = (1..100u32)
+            .find(|&seed| (random(seed, 291) * TAU).sin() > 0.9)
+            .unwrap();
+        let x = -16512.15;
+        let z = -12295.9;
+        let yaw = random(seed, 291) * TAU;
+        let scale = 1.4;
+        let length = (3.0 + random(seed, 292) * 3.0) * scale;
+        let r = 0.36 * scale;
+        let mut altered = 0;
+        let mut worst_old_gap = f32::NEG_INFINITY;
+        let mut minimum_embed = f32::INFINITY;
+        for lod in 0..=3 {
+            let y = terrain_surface_height_lod(&world, x, z, lod) - 0.08;
+            let p = Prop {
+                position: [x, y, z],
+                scale,
+                canopy: 1.0,
+                seed,
+                kind: PropKind::FallenLog,
+                biome: Biome::Forest,
+            };
+            let ex = x + yaw.sin() * length;
+            let ez = z + yaw.cos() * length;
+            assert_ne!(
+                (x / CHUNK_SIZE).floor(),
+                (ex / CHUNK_SIZE).floor(),
+                "fixture must cross a chunk boundary"
+            );
+            let start = [x, y + r * 0.85, z];
+            let end = [
+                ex,
+                terrain_surface_height_lod(&world, ex, ez, lod) + r * 0.70 - 0.10,
+                ez,
+            ];
+            assert!((end[1] - start[1]).abs() > 0.3, "fixture must be tilted");
+            let cap = [x, y + r, z];
+            let mut original = MeshData::default();
+            let mut fixed = MeshData::default();
+            unanchored_log(&mut original, p, &world, lod);
+            fallen_log_lod(&mut fixed, p, &world, lod);
+            assert_eq!(original.indices, fixed.indices);
+            assert_eq!(original.vertices.len(), fixed.vertices.len());
+            for (index, (a, b)) in original
+                .vertices
+                .iter()
+                .zip(fixed.vertices.iter())
+                .enumerate()
+            {
+                assert_eq!(a.position[0], b.position[0]);
+                assert_eq!(a.position[2], b.position[2]);
+                assert_eq!(a.color, b.color);
+                assert_eq!(a.material, b.material);
+                assert!(b
+                    .position
+                    .iter()
+                    .chain(b.normal.iter())
+                    .all(|v| v.is_finite()));
+                assert!((b.normal.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 0.001);
+                if index >= 90 {
+                    assert_eq!(
+                        a.position, b.position,
+                        "attached limb must keep its original placement"
+                    );
+                    continue;
+                }
+                let center = if index >= 30 {
+                    cap
+                } else {
+                    let ds = (a.position[0] - start[0]).powi(2)
+                        + (a.position[1] - start[1]).powi(2)
+                        + (a.position[2] - start[2]).powi(2);
+                    let de = (a.position[0] - end[0]).powi(2)
+                        + (a.position[1] - end[1]).powi(2)
+                        + (a.position[2] - end[2]).powi(2);
+                    if ds < de {
+                        start
+                    } else {
+                        end
+                    }
+                };
+                if a.position[1] > center[1] + 0.0001 {
+                    assert_eq!(
+                        a.position, b.position,
+                        "upper ring/cap must preserve its silhouette"
+                    );
+                } else {
+                    let ground = (0..=3)
+                        .map(|level| {
+                            terrain_surface_height_lod(&world, b.position[0], b.position[2], level)
+                        })
+                        .fold(f32::INFINITY, f32::min);
+                    worst_old_gap = worst_old_gap.max(a.position[1] - ground);
+                    minimum_embed = minimum_embed.min(ground - b.position[1]);
+                    assert!(
+                        b.position[1] <= ground - 0.145,
+                        "lower ring or cap floats: {:?}, ground{ground}",
+                        b.position
+                    );
+                    altered += usize::from(a.position != b.position);
+                }
+            }
+        }
+        assert!(altered > 0);
+        assert!(
+            worst_old_gap > 0.15,
+            "fixture must catch an exposed seam: {worst_old_gap}"
+        );
+        println!("tilted log seed{seed} x{x} z{z}: old lower-ring/cap gap {worst_old_gap:.3}m, new minimum embed{minimum_embed:.3}m; {altered} lower vertices changed, upper rings and attached limb preserved across LOD0–3");
+    }
+}
+
+#[cfg(test)]
+mod road_grounding_tests {
+    use super::*;
+    // Add inside geometry.rs's existing #[cfg(test)] mod tests.
+    #[test]
+    fn road_ribbons_follow_sloping_terrain_at_every_lod() {
+        let world = World::new(1337);
+        let mut checked_triangles = 0;
+        // Mistfield and its downhill neighbor reproduce the original floating road.
+        for (cx, cz) in [(-87, -65), (-87, -64)] {
+            for lod in 0..=4 {
+                let divisions = (32_usize >> lod).max(2);
+                let step = CHUNK_SIZE / divisions as f32;
+                let ox = cx as f32 * CHUNK_SIZE;
+                let oz = cz as f32 * CHUNK_SIZE;
+                let mut grid = Vec::new();
+                for z in 0..=divisions {
+                    for x in 0..=divisions {
+                        grid.push(ground_vertex(
+                            &world,
+                            ox + x as f32 * step,
+                            oz + z as f32 * step,
+                        ));
+                    }
+                }
+                let lowest = grid
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::INFINITY, f32::min);
+                let highest = grid
+                    .iter()
+                    .map(|v| v.position[1])
+                    .fold(f32::NEG_INFINITY, f32::max);
+                assert!(
+                    highest - lowest > 8.0,
+                    "fixture must contain real sloping terrain"
+                );
+                let mut roads = MeshData::default();
+                road_ribbons(&world, &mut roads, ox, oz, divisions, &grid);
+                assert!(
+                    !roads.vertices.is_empty(),
+                    "missing road in chunk {cx},{cz} LOD{lod}"
+                );
+                for triangle in roads.vertices.chunks_exact(3) {
+                    assert!(
+                        triangle.iter().all(|v| v.normal[1] > 0.0),
+                        "road winding faces down"
+                    );
+                    for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.2, 0.4), (0.6, 0.2)] {
+                        let a = triangle[0].position;
+                        let b = triangle[1].position;
+                        let c = triangle[2].position;
+                        let p: [f32; 3] =
+                            std::array::from_fn(|i| a[i] + u * (b[i] - a[i]) + v * (c[i] - a[i]));
+                        assert!(p.iter().all(|n| n.is_finite()));
+                        assert!(
+                            p[0] >= ox - 0.005
+                                && p[0] <= ox + CHUNK_SIZE + 0.005
+                                && p[2] >= oz - 0.005
+                                && p[2] <= oz + CHUNK_SIZE + 0.005,
+                            "road escapes chunk {cx},{cz} LOD{lod}: {p:?}"
+                        );
+                        let ground = grid_height(&world, ox, oz, divisions, &grid, p[0], p[2]);
+                        // Millimetre tolerance accounts for f32 positions 16km from
+                        // origin. Interior samples reject quads spanning two planes,
+                        // even when every original corner touched the terrain.
+                        assert!(
+                        (p[1] - ground - 0.025).abs() < 0.006,
+                        "road floats or sinks in chunk {cx},{cz} LOD{lod}: {p:?}, ground {ground}"
+                    );
+                    }
+                    checked_triangles += 1;
+                }
+            }
+        }
+        assert!(
+            checked_triangles > 200,
+            "fixture did not exercise enough road geometry"
+        );
     }
 }
