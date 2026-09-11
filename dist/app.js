@@ -33,12 +33,14 @@ let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution
 let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(saved.asciiScale ?? 2) : 2;
 let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
+let sunShadows = saved.sunShadows !== false;
 let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 4)) ? clamp(Number(saved.groundCoverDensity ?? 4), 0, 4) : 4;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 384000;
+let landscapeDestinations = null;
 const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.atlas.span) ? saved.atlas : null;
 const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [], routes: null }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
@@ -49,6 +51,7 @@ $('seed-input').value = seed;
 $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
 $('render-resolution').value = String(renderResolution);
+$('sun-shadows').value = sunShadows ? 'on' : 'off';
 updateGroundCoverControls();
 updateFilterControls();
 updateAsciiControls();
@@ -63,8 +66,35 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, sunShadows, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
+}
+
+function selectedLandscapeDestination() {
+  const value = $('landscape-destination').value;
+  const index = Number(value);
+  return value !== '' && Number.isInteger(index) && index >= 0 ? landscapeDestinations?.[index] || null : null;
+}
+
+function loadLandscapeDestinations() {
+  if (landscapeDestinations !== null || !game || !initialReady) return;
+  const select = $('landscape-destination');
+  try {
+    // Query lazily when this control is used, not during boot or every Settings visit.
+    const destinations = game.landscape_destinations();
+    if (!Array.isArray(destinations)) throw new Error('Invalid landscape destinations');
+    landscapeDestinations = destinations.filter((d) => d && typeof d.name === 'string' && d.name.trim() && Number.isFinite(d.x) && Number.isFinite(d.z) && Math.abs(d.x) < worldSize / 2 && Math.abs(d.z) < worldSize / 2).map((d) => ({ name: d.name.trim(), x: d.x, z: d.z, kind: 'landscape' }));
+    for (const [index, destination] of landscapeDestinations.entries()) {
+      const option = document.createElement('option');
+      option.value = String(index); option.textContent = destination.name;
+      select.append(option);
+    }
+    $('landscape-destination-help').textContent = landscapeDestinations.length ? 'Visit a generated location in this world.' : 'No landscape destinations found for this seed.';
+  } catch (error) {
+    console.error('Landscape destinations unavailable', error);
+    $('landscape-destination-help').textContent = 'Could not find landscapes. Focus this list to retry.';
+  }
+  $('travel-landscape').disabled = !selectedLandscapeDestination();
 }
 
 function updateGroundCoverControls() {
@@ -493,7 +523,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -555,6 +585,7 @@ async function boot() {
     applyAscii();
     applyFilter();
     applyGroundCoverDensity();
+    game.set_shadows(sunShadows);
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
@@ -616,6 +647,11 @@ $('ground-cover-density').addEventListener('input', (event) => {
   applyGroundCoverDensity();
   saveProgress();
 });
+$('sun-shadows').addEventListener('change', (event) => {
+  sunShadows = event.target.value !== 'off';
+  game?.set_shadows(sunShadows);
+  saveProgress();
+});
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
   filterMode = [0, 1, 2, 3].includes(selected) ? selected : 1;
@@ -656,6 +692,20 @@ $('seed-form').addEventListener('submit', (event) => {
   const nextSeed = clamp(Math.floor(Number($('seed-input').value) || DEFAULT_SEED), 1, 4294967295);
   const url = new URL(location.href); url.searchParams.set('seed', nextSeed);
   location.href = url.href;
+});
+$('landscape-destination').addEventListener('focus', loadLandscapeDestinations);
+$('landscape-destination').addEventListener('pointerdown', loadLandscapeDestinations);
+$('landscape-destination').addEventListener('change', () => {
+  $('travel-landscape').disabled = !selectedLandscapeDestination();
+});
+$('landscape-travel-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const destination = selectedLandscapeDestination();
+  if (!destination || !game || !initialReady) return;
+  game.teleport(destination.x, destination.z);
+  state = game.state(); waypoint = { ...destination };
+  saveProgress(); closeModal();
+  toast(`Arrived at ${destination.name}.`);
 });
 $('return-to-spawn').addEventListener('click', () => {
   game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');

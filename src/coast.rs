@@ -154,6 +154,7 @@ pub fn landmass_id(seed: u32, x: f32, z: f32) -> Option<u32> {
 pub fn cliff_strength(inland_height: f32) -> f32 {
     smooth(400., 800., inland_height)
 }
+#[allow(dead_code)] // Retained legacy profile helper for deterministic coast audits.
 pub fn shore(distance: f32, inland_height: f32) -> ShoreKind {
     let cliff = cliff_strength(inland_height);
     if distance >= -70. && distance < lerp(145., 270., cliff) {
@@ -337,4 +338,85 @@ mod tests {
         assert_eq!(shore(30., 1000.), ShoreKind::Cliff);
         assert_eq!(shore(1000., 1000.), ShoreKind::None);
     }
+}
+
+/// Wind-facing shores receive more wave energy; land upwind shelters bays and
+/// the lee of islands. Evaluated only inside the coastal strip.
+pub fn wave_exposure(seed: u32, x: f32, z: f32) -> f32 {
+    let near = info(seed, x - 1400., z + 620.).distance;
+    let far = info(seed, x - 4800., z + 2100.).distance;
+    (0.18 + (1. - smooth(-900., 600., near)) * 0.42 + (1. - smooth(-1600., 1400., far)) * 0.40)
+        .clamp(0., 1.)
+}
+fn coastal_profile(seed: u32, x: f32, z: f32, region: &crate::regions::Base) -> (f32, f32) {
+    let wave = wave_exposure(seed, x, z);
+    let resistance = region.weights[1] * 0.92
+        + region.weights[2] * 0.53
+        + region.weights[3] * 0.63
+        + region.weights[4] * 0.97
+        + region.weights[0] * 0.22;
+    let cliff = (cliff_strength(region.height) * (0.40 + resistance * 0.60)
+        + region.weights[3] * 0.58
+        + region.weights[4] * 0.13)
+        * (0.70 + wave * 0.30);
+    let sediment = ((1. - resistance) * 0.40
+        + (1. - wave) * 0.30
+        + (1. - smooth(150., 700., region.height)) * 0.34)
+        .clamp(0., 1.);
+    (cliff.clamp(0., 1.), sediment)
+}
+pub fn regional_shore(
+    seed: u32,
+    x: f32,
+    z: f32,
+    c: Info,
+    region: &crate::regions::Base,
+) -> ShoreKind {
+    if c.distance < -70. || c.distance > 300. {
+        return ShoreKind::None;
+    }
+    let (cliff, sediment) = coastal_profile(seed, x, z, region);
+    if c.distance > lerp(120., 280., sediment.max(cliff)) {
+        return ShoreKind::None;
+    }
+    if cliff > 0.47 {
+        ShoreKind::Cliff
+    } else {
+        ShoreKind::Beach
+    }
+}
+pub fn regional_elevation(
+    seed: u32,
+    x: f32,
+    z: f32,
+    c: Info,
+    region: &crate::regions::Base,
+) -> f32 {
+    if c.distance >= 5500. || c.distance <= -5500. {
+        return elevation(c, region.height);
+    }
+    let d = c.distance;
+    let (cliff, sediment) = coastal_profile(seed, x, z, region);
+    if d <= 0. {
+        let offshore = -d;
+        let regional = -(3. * smooth(0., lerp(90., 230., sediment), offshore)
+            + 42. * smooth(100., lerp(1400., 3200., sediment), offshore)
+            + 260. * smooth(2000., 12000., offshore)
+            + cliff * 80. * smooth(0., 250., offshore));
+        return lerp(
+            regional,
+            elevation(c, region.height),
+            smooth(3000., 5500., offshore),
+        );
+    }
+    let beach = 3. * smooth(0., lerp(70., 160., sediment), d)
+        + 12. * smooth(90., 650., d)
+        + (region.height - 15.) * smooth(500., 5500., d);
+    let dune = (noise(seed ^ 0x6691, (x + z * 0.3) / 180., z / 330.) * 4.0
+        + noise(seed ^ 0x6692, x / 75., z / 110.) * 1.2)
+        * smooth(40., 130., d)
+        * (1. - smooth(320., 750., d))
+        * sediment;
+    let rock = region.height * (0.22 * smooth(0., 65., d) + 0.78 * smooth(300., 4400., d));
+    lerp(beach + dune, rock, cliff)
 }

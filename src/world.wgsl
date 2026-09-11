@@ -1,6 +1,7 @@
-// Procedural low-poly materials and atmosphere. No sampled textures or skybox.
+// Procedural low-poly pigments and atmosphere. No authored surface textures.
 // params = elapsed seconds, camera yaw, camera pitch, hour of day.
 // camera.w = viewport aspect; settings = near chunk radius, grass fade metres, 0, 0.
+// distant = canopy start metres, canopy end metres, transition width metres, 0.
 struct Globals {
     view_projection: mat4x4<f32>,
     camera: vec4<f32>,
@@ -8,6 +9,10 @@ struct Globals {
     fog: vec4<f32>,
     params: vec4<f32>,
     settings: vec4<f32>,
+    shadow_matrix: mat4x4<f32>,
+    shadow_origin: vec4<f32>,
+    shadow_params: vec4<f32>,
+    distant: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
@@ -184,13 +189,148 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     return color;
 }
 
+// Sun visibility is supplied by lighting.wgsl; ambient stays lit.
+
+
+// Persistent land-scale pigment sits beneath the fine pixels and actual plants.
+// Rotated, softly warped fields have no relationship to terrain chunk/triangle
+// boundaries. Their sizes span grass colonies through whole hillside clearings.
+fn terrain_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, footprint: f32) -> vec3<f32> {
+    let rotation = mat2x2<f32>(vec2<f32>(0.80, 0.60), vec2<f32>(-0.60, 0.80));
+    let q = rotation * world.xz;
+    let broad = noise(q * 0.0027 + vec2<f32>(31.7, -19.4));
+    let drift = noise(q * 0.0039 + vec2<f32>(-8.3, 43.1));
+    let warped = q + (vec2<f32>(broad, drift) - vec2<f32>(0.5)) * 95.0;
+    let field = noise(warped * 0.013 + vec2<f32>(4.6, 17.8));
+    let broad_filter = 1.0 - smoothstep(65.0, 230.0, footprint);
+    let field_filter = 1.0 - smoothstep(12.0, 55.0, footprint);
+    // Multiplicative shades preserve sandstone, chalk, snow, and each biome's
+    // authored-in-code vertex palette instead of tinting all hills green.
+    var color = base * (1.0 + (broad - 0.5) * 0.20 * broad_filter
+                            + (field - 0.5) * 0.19 * field_filter);
+    let grass = smoothstep(0.018, 0.105, base.g - base.r);
+    let meadow = smoothstep(0.38, 0.72, field) * field_filter * grass;
+    color = mix(color, color * vec3<f32>(1.09, 1.035, 0.89), meadow * 0.55);
+
+    // Low colonies remain visible after individual grass blades disappear.
+    // Fade by projected pixel size, never by camera distance: there is no new
+    // circular transition to reveal the streamed ground-cover radius.
+    let colony_filter = 1.0 - smoothstep(2.2, 12.0, footprint);
+    if colony_filter > 0.001 {
+        let colony = noise(warped * 0.105 + vec2<f32>(11.2, -3.9));
+        let clustered = smoothstep(0.46, 0.75, colony + (field - 0.5) * 0.24);
+        let earth = 1.0 - grass;
+        color *= 1.0 - clustered * colony_filter * (0.15 * grass + 0.065 * earth);
+        color = mix(color, color * vec3<f32>(0.86, 1.035, 0.87), clustered * colony_filter * grass * 0.30);
+    }
+
+    // Elevation-stretched noise exposes broken strata on steep ground; its
+    // irregular ends avoid contour rings. Existing pale/dark stone stays local.
+    let exposure = smoothstep(0.075, 0.42, 1.0 - clamp(normal.y, 0.0, 1.0));
+    let strata_filter = 1.0 - smoothstep(5.0, 32.0, footprint);
+    if exposure * strata_filter > 0.001 {
+        let strata = noise(vec2<f32>(q.x * 0.010 + q.y * 0.005,
+                                    world.y * 0.052 + broad * 1.8));
+        let outcrop = smoothstep(0.44, 0.73, strata + (field - 0.5) * 0.30) * exposure * strata_filter;
+        let luminance = dot(base, vec3<f32>(0.30, 0.59, 0.11));
+        let stone = mix(base, vec3<f32>(luminance) * vec3<f32>(1.09, 1.055, 0.96), grass * 0.58);
+        color = mix(color, stone * (0.91 + strata * 0.18), outcrop * 0.54);
+    }
+    return color;
+}
+
+// Small world-anchored pigment blocks suggest authored pixel materials without
+// textures. Derivative fading removes subpixel detail rather than making it swim.
+fn surface_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, material: f32, footprint: f32, distance: f32) -> vec3<f32> {
+    var substrate = base;
+    if material < 0.5 || (material > 6.5 && material < 7.5) {
+        substrate = terrain_pigment(base, world, normal, footprint);
+    }
+    let detail = (1.0 - smoothstep(0.12, 0.65, footprint)) * (1.0 - smoothstep(90.0, 230.0, distance));
+    if detail <= 0.001 { return substrate; }
+    let p = floor(world * 8.0) / 8.0;
+    var color = substrate;
+    if material > 2.5 && material < 3.5 {
+        // Long broken fibers follow upright bark; short knots stop a striped look.
+        let face = select(p.zy, p.xy, abs(normal.z) > abs(normal.x));
+        let fibers = noise(vec2<f32>(face.x * 11.0, face.y * 0.48));
+        let breaks = noise(face * vec2<f32>(2.2, 1.5));
+        let fissure = smoothstep(0.54, 0.76, fibers) * (0.35 + breaks * 0.65);
+        let fleck = hash21(floor(face * vec2<f32>(5.0, 8.0))) - 0.5;
+        color *= 1.06 - fissure * 0.34 + fleck * 0.12;
+        let weathering = smoothstep(0.60, 0.82, noise(face * 0.75)) * max(normal.y, 0.0);
+        color = mix(color, vec3<f32>(0.48, 0.46, 0.36), weathering * 0.18);
+    } else if material > 1.5 && material < 2.5 {
+        let face = select(p.zy, p.xy, abs(normal.z) > abs(normal.x));
+        let mineral = hash21(floor(p.xz * 7.0) + vec2<f32>(floor(p.y * 8.0), 0.0));
+        let warm_stone = clamp((base.r - base.b) * 5.0, 0.0, 1.0);
+        let stratum = sin(p.y * 9.0 + noise(p.xz * 0.5) * 2.0);
+        color *= 0.95 + mineral * 0.10 + stratum * warm_stone * 0.045;
+        let lichen = smoothstep(0.58, 0.77, noise(face * 2.4)) * (0.25 + max(normal.y, 0.0) * 0.75);
+        color = mix(color, vec3<f32>(0.58, 0.59, 0.36), lichen * 0.14);
+        let moss = smoothstep(0.57, 0.77, noise(p.xz * 0.65 + vec2<f32>(9.1, 2.4))) * smoothstep(0.20, 0.80, normal.y);
+        // Darker silicate rock takes a little moss; pale chalk stays chalk.
+        color = mix(color, vec3<f32>(0.24, 0.34, 0.16), moss * (1.0 - smoothstep(0.55, 0.76, base.r)) * 0.20);
+    } else if material < 0.5 || (material > 6.5 && material < 7.5) {
+        let grain = hash21(floor(p.xz * 6.0));
+        let grass = smoothstep(0.015, 0.12, base.g - base.r);
+        let shade_floor = 1.0 - smoothstep(0.31, 0.45, base.g);
+        let soil = noise(p.xz * 1.7);
+        color *= 0.965 + grain * 0.07;
+        // Sandy gravel flecks and low-contrast needles/leaves share a restrained
+        // scale; the biome palette, not noisy triangles, carries the broad forms.
+        let gravel = step(0.90, grain) * (1.0 - grass);
+        color = mix(color, base * vec3<f32>(0.80, 0.83, 0.77), gravel * 0.35);
+        let litter = smoothstep(0.63, 0.79, soil) * grass * (0.10 + shade_floor * 0.36);
+        color = mix(color, vec3<f32>(0.28, 0.235, 0.13), litter);
+    }
+    return mix(substrate, color, detail);
+}
+
+fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32) -> vec3<f32> {
+    let sun = normalize(u.light.xyz);
+    let diffuse = max(dot(normal, sun), 0.0);
+    let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
+    let sunlight = vec3<f32>(1.0, 0.96, 0.84);
+    var ambient = mix(vec3<f32>(0.42, 0.43, 0.35), vec3<f32>(0.60, 0.65, 0.68), up);
+    var direct = floor(diffuse * 5.0 + 0.5) / 5.0 * 0.43;
+    if material < 0.5 || (material > 6.5 && material < 7.5) {
+        // Continuous terrain normals remain readable without hard light bands;
+        // rock and architecture retain the faceted quantized response above.
+        ambient = mix(vec3<f32>(0.49, 0.50, 0.42), vec3<f32>(0.66, 0.68, 0.60), up);
+        direct = diffuse * 0.32;
+    } else if (material > 0.5 && material < 1.5) || (material > 8.5 && material < 9.5) {
+        // Distant canopy keeps the same light response as its nearby trees.
+        ambient = mix(vec3<f32>(0.30, 0.38, 0.27), vec3<f32>(0.56, 0.62, 0.47), up);
+        direct = diffuse * 0.44 + max(dot(-normal, sun), 0.0) * 0.12;
+    } else if material > 5.5 && material < 6.5 {
+        ambient = vec3<f32>(0.63, 0.69, 0.55);
+        direct = abs(dot(normal, sun)) * 0.31;
+    }
+    return base * (ambient + sunlight * direct * visibility) * u.light.w;
+}
+
 @fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
     let distance = length(v.world - u.camera.xyz);
     let water_footprint = max(length(dpdx(v.world.xz)), length(dpdy(v.world.xz)));
-    if v.material > 6.5 && v.material < 8.5 {
+    let material_footprint = max(length(dpdx(v.world)), length(dpdy(v.world)));
+    if v.material > 6.5 && v.material < 9.5 {
         // Near terrain replaces far patches exactly on the streamed chunk mask.
         let tile_delta = floor(v.world.xz / 192.0) - floor(u.camera.xz / 192.0);
         if length(tile_delta) <= u.settings.x + 0.5 {
+            discard;
+        }
+    }
+    if v.material > 8.5 && v.material < 9.5 {
+        let ground_distance = length(v.world.xz - u.camera.xz);
+        let start = max(u.distant.x, 0.0);
+        let end = max(u.distant.y, start + 1.0);
+        let fade = max(u.distant.z, 1.0);
+        let keep = smoothstep(start, start + fade, ground_distance)
+                 * (1.0 - smoothstep(max(start, end - fade), end, ground_distance));
+        // A small screen-door fade remains band-limited at kilometre ranges;
+        // world-space high-frequency hashes would shimmer on tiny crowns.
+        if u.distant.y <= u.distant.x || keep <= bayer(v.clip.xy) + 0.5 {
             discard;
         }
     }
@@ -203,22 +343,13 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     }
 
     let normal = normalize(v.normal);
-    let diffuse = max(dot(normal, normalize(u.light.xyz)), 0.0);
-    let illumination = (0.76 + floor(diffuse * 5.0 + 0.5) / 5.0 * 0.38) * u.light.w;
-    var color = v.color * illumination;
-    var grain = hash21(floor(v.world.xz * 1.4)) - 0.5;
-    if v.material > 1.5 && v.material < 3.5 {
-        grain = hash21(floor(vec2<f32>(v.world.x + v.world.z, v.world.y) * 3.5)) - 0.5;
-    }
-    // Pixel grain fades before it can become a shimmering distant pattern.
-    let grain_strength = (1.0 - smoothstep(80.0, 500.0, distance)) * 0.09;
-    color *= 1.0 + grain * grain_strength;
-    if v.material > 5.5 && v.material < 6.5 {
-        // Backlit blades stay legible beside the darker opaque tree canopies.
-        color = v.color * (0.85 + diffuse * 0.30) * u.light.w;
-    }
+    var color: vec3<f32>;
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
         color = water_color(v.world, distance, v.color, water_footprint);
+    } else {
+        let pigment = surface_pigment(v.color, v.world, normal, v.material, material_footprint, distance);
+        let visibility = sun_visibility(v.world, normal);
+        color = surface_lighting(pigment, normal, v.material, visibility);
     }
 
     // Retain the low-poly palette while restoring rich midtones in daylight.

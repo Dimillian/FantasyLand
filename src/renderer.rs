@@ -3,6 +3,7 @@ use crate::{
     geometry::{self, MeshData, Vertex, CHUNK_SIZE},
     horizon::{self, PATCH_SIZE},
     postprocess::PostProcess,
+    shadow::{ShadowMap, SHADOW_RADIUS, SHADOW_SIZE},
     world::World,
 };
 use bytemuck::{Pod, Zeroable};
@@ -19,6 +20,10 @@ struct Globals {
     fog: [f32; 4],
     params: [f32; 4],
     settings: [f32; 4],
+    shadow_matrix: [[f32; 4]; 4],
+    shadow_origin: [f32; 4],
+    shadow_params: [f32; 4],
+    distant: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -43,6 +48,8 @@ pub struct Renderer {
     world_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     post: PostProcess,
+    shadow: ShadowMap,
+    shadows_enabled: bool,
     uniform: wgpu::Buffer,
     uniform_group: wgpu::BindGroup,
     scene: wgpu::Texture,
@@ -56,6 +63,9 @@ pub struct Renderer {
     center: Option<(i32, i32)>,
     horizon: HashMap<(i32, i32), GpuMesh>,
     horizon_pending: VecDeque<(i32, i32)>,
+    canopies: HashMap<(i32, i32), Option<GpuMesh>>,
+    canopy_pending: VecDeque<(i32, i32)>,
+    canopy_turn: bool,
     horizon_center: Option<(i32, i32)>,
     quality: u32,
     resolution: u32,
@@ -146,7 +156,14 @@ impl Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain, atmosphere and materials"),
             source: wgpu::ShaderSource::Wgsl(
-                concat!(include_str!("world.wgsl"), "\n", include_str!("cover.wgsl")).into(),
+                concat!(
+                    include_str!("world.wgsl"),
+                    "\n",
+                    include_str!("cover.wgsl"),
+                    "\n",
+                    include_str!("lighting.wgsl")
+                )
+                .into(),
             ),
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -154,26 +171,55 @@ impl Renderer {
             contents: bytemuck::bytes_of(&Globals::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let shadow = ShadowMap::new(&device);
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
         let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &uniform_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
@@ -274,6 +320,8 @@ impl Renderer {
             world_pipeline,
             sky_pipeline,
             post,
+            shadow,
+            shadows_enabled: true,
             uniform,
             uniform_group,
             scene,
@@ -287,6 +335,9 @@ impl Renderer {
             center: None,
             horizon: HashMap::new(),
             horizon_pending: VecDeque::new(),
+            canopies: HashMap::new(),
+            canopy_pending: VecDeque::new(),
+            canopy_turn: false,
             horizon_center: None,
             quality: 1,
             resolution: 0,
@@ -437,6 +488,12 @@ impl Renderer {
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.post.set_filter(mode, strength);
     }
+    pub fn set_shadows(&mut self, enabled: bool) {
+        self.shadows_enabled = enabled;
+    }
+    pub fn shadows_enabled(&self) -> bool {
+        self.shadows_enabled
+    }
     pub fn set_ground_cover_density(&mut self, density: f32) {
         // Resident instances are sorted by density threshold. Only each draw's
         // prefix length changes, preserving terrain, trees and all tile buffers.
@@ -461,6 +518,7 @@ impl Renderer {
             .flat_map(|c| [&c.terrain, &c.props, &c.water])
             .flatten()
             .chain(self.horizon.values())
+            .chain(self.canopies.values().flatten())
             .map(|m| m.bytes)
             .sum::<u64>()
             + self.cover.stats().buffer_bytes
@@ -478,6 +536,8 @@ impl Renderer {
         self.cover.clear();
         self.cover_drawn_instances = 0;
         self.horizon.clear();
+        self.canopies.clear();
+        self.canopy_pending.clear();
         self.horizon_pending.clear();
         self.horizon_center = None;
         self.chunks.clear();
@@ -538,7 +598,33 @@ impl Renderer {
             }
             requested.sort_by_key(|p| p.2);
             self.horizon_pending = requested.into_iter().map(|p| (p.0, p.1)).collect();
+            let canopy_radius = (self.canopy_distance() / PATCH_SIZE).ceil() as i32 + 1;
+            self.canopies.retain(|&(x, z), _| {
+                (x - cx).abs() <= canopy_radius + 1 && (z - cz).abs() <= canopy_radius + 1
+            });
+            let mut canopy_jobs = Vec::new();
+            for z in cz - canopy_radius..=cz + canopy_radius {
+                for x in cx - canopy_radius..=cx + canopy_radius {
+                    let d = (x - cx).pow(2) + (z - cz).pow(2);
+                    if d <= (canopy_radius + 1).pow(2) && !self.canopies.contains_key(&(x, z)) {
+                        canopy_jobs.push((x, z, d));
+                    }
+                }
+            }
+            canopy_jobs.sort_by_key(|p| p.2);
+            self.canopy_pending = canopy_jobs.into_iter().map(|p| (p.0, p.1)).collect();
         }
+    }
+    fn canopy_distance(&self) -> f32 {
+        [5000., 8500., 11000.][self.quality as usize]
+    }
+    fn build_canopy(&mut self, world: &World) -> bool {
+        let Some((x, z)) = self.canopy_pending.pop_front() else {
+            return false;
+        };
+        let mesh = self.upload(horizon::canopy(world, x, z));
+        self.canopies.insert((x, z), mesh);
+        true
     }
     fn build_horizon(&mut self, world: &World) -> bool {
         let Some((x, z)) = self.horizon_pending.pop_front() else {
@@ -557,7 +643,9 @@ impl Renderer {
         let cx = (position.x / CHUNK_SIZE).floor() as i32;
         let cz = (position.z / CHUNK_SIZE).floor() as i32;
         let radius = [8, 12, 16][self.quality as usize];
-        let prop_radius = [2.5, 3.7, 4.7][self.quality as usize];
+        // Branch-level detail is useful near the player; distant trees keep
+        // their rooted silhouettes without duplicating hundreds of vertices.
+        let prop_radius = [1.8, 2.7, 3.7][self.quality as usize];
         if self.center != Some((cx, cz)) {
             self.center = Some((cx, cz));
             self.chunks
@@ -569,15 +657,7 @@ impl Renderer {
                     if dist > radius as f32 + 0.5 {
                         continue;
                     }
-                    let lod = if dist < 2.8 {
-                        0
-                    } else if dist < 5.5 {
-                        1
-                    } else if dist < 8.5 {
-                        2
-                    } else {
-                        3
-                    };
+                    let lod = terrain_lod(dist);
                     let detail = if dist < prop_radius { 1 } else { 0 };
                     if self
                         .chunks
@@ -616,7 +696,7 @@ impl Renderer {
             };
             let props_mesh = if detail > 0 {
                 self.upload(geometry::props_chunk_at_lod(world, x, z, false, lod))
-            } else if lod <= 2 {
+            } else if lod <= 3 {
                 self.upload(geometry::distant_props_chunk_at_lod(world, x, z, lod))
             } else {
                 None
@@ -643,8 +723,16 @@ impl Renderer {
             if self.ground_cover_density > 0.0 {
                 progressed |= self.cover.build_next(world, &self.device);
             }
-            if clock.elapsed_ms() < limit_ms || self.horizon.is_empty() {
-                progressed |= self.build_horizon(world);
+            if clock.elapsed_ms() < limit_ms
+                || (self.horizon.is_empty() && self.canopies.is_empty())
+            {
+                // Neither distant terrain nor canopy may monopolize the budget.
+                progressed |= if self.canopy_turn {
+                    self.build_canopy(world) || self.build_horizon(world)
+                } else {
+                    self.build_horizon(world) || self.build_canopy(world)
+                };
+                self.canopy_turn = !self.canopy_turn;
             }
             if !progressed {
                 break;
@@ -669,11 +757,18 @@ impl Renderer {
                 .values()
                 .map(|m| m.count as usize / 3)
                 .sum::<usize>()
+            + self
+                .canopies
+                .values()
+                .flatten()
+                .map(|m| m.count as usize / 3)
+                .sum::<usize>()
             + self.cover.stats().loaded_instances as usize * 8
     }
     pub fn pending_count(&self) -> usize {
         self.pending.len()
             + self.horizon_pending.len()
+            + self.canopy_pending.len()
             + if self.ground_cover_density > 0.0 {
                 self.cover.pending_count()
             } else {
@@ -703,6 +798,8 @@ impl Renderer {
         let fog_color = [0.48 * brightness, 0.64 * brightness, 0.76 * brightness];
         let view_projection = projection * view;
         let frustum = frustum_planes(view_projection);
+        let shadow_matrix = self.shadow.update(&self.queue, eye, sun, self.elapsed);
+        let shadow_active = self.shadows_enabled && sun.y > 0.035;
         let globals = Globals {
             view_projection: view_projection.to_cols_array_2d(),
             camera: [eye.x, eye.y, eye.z, self.width as f32 / self.height as f32],
@@ -714,7 +811,26 @@ impl Renderer {
                 [10500., 16500., 22000.][self.quality as usize],
             ],
             params: [self.elapsed, yaw, pitch, hour],
-            settings: [[8., 12., 16.][self.quality as usize], 250., 0., 0.],
+            settings: [
+                [8., 12., 16.][self.quality as usize],
+                crate::cover::COVER_DISTANCE,
+                0.,
+                0.,
+            ],
+            shadow_matrix: shadow_matrix.to_cols_array_2d(),
+            shadow_origin: eye.extend(1.).to_array(),
+            shadow_params: [
+                1. / SHADOW_SIZE as f32,
+                SHADOW_RADIUS,
+                shadow_active as u32 as f32,
+                0.,
+            ],
+            distant: [
+                [8., 12., 16.][self.quality as usize] * CHUNK_SIZE - 300.,
+                self.canopy_distance(),
+                300.,
+                0.,
+            ],
         };
         self.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&globals));
@@ -740,6 +856,40 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("World frame"),
             });
+        // Shadows only submit nearby terrain and substantial props. Grass receives
+        // their shade without submitting tens of thousands of tiny shadow casters.
+        if shadow_active {
+            let planes = frustum_planes(shadow_matrix);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Nearby sun shadows"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.shadow.pipeline);
+            pass.set_bind_group(0, &self.shadow.group, &[]);
+            for chunk in self.chunks.values() {
+                for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
+                    let nearest = eye.clamp(mesh.bounds[0], mesh.bounds[1]);
+                    if (nearest - eye).length_squared() > 650.0 * 650.0
+                        || !bounds_visible(&planes, mesh.bounds, eye)
+                    {
+                        continue;
+                    }
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Wilderness"),
@@ -774,7 +924,16 @@ impl Renderer {
             pass.set_pipeline(&self.world_pipeline);
             // Reject whole mesh bounds before vertex work. This includes side,
             // vertical, near and far planes, rather than only the rear hemisphere.
-            for mesh in self.horizon.values() {
+            for (mesh, is_canopy) in self
+                .horizon
+                .values()
+                .map(|m| (m, false))
+                .chain(self.canopies.values().flatten().map(|m| (m, true)))
+            {
+                let nearest = eye.clamp(mesh.bounds[0], mesh.bounds[1]);
+                if is_canopy && (nearest - eye).length_squared() > self.canopy_distance().powi(2) {
+                    continue;
+                }
                 if !bounds_visible(&frustum, mesh.bounds, eye) {
                     continue;
                 }
@@ -1009,5 +1168,39 @@ mod frustum_tests {
             bounds(eye + Vec3::new(0., 0., -10.), Vec3::ONE),
             eye
         ));
+    }
+}
+
+fn terrain_lod(chunk_distance: f32) -> u32 {
+    if chunk_distance < 3.8 {
+        0
+    } else if chunk_distance < 5.5 {
+        1
+    } else if chunk_distance < 8.5 {
+        2
+    } else {
+        3
+    }
+}
+#[cfg(test)]
+mod cover_lod_tests {
+    use super::*;
+    #[test]
+    fn visible_cover_uses_the_same_six_metre_terrain_surface() {
+        for x in [0.0, 96.0, 191.999] {
+            for z in [0.0, 96.0, 191.999] {
+                let eye = Vec3::new(x, 0., z);
+                for cz in -5i32..=5 {
+                    for cx in -5i32..=5 {
+                        let min = Vec3::new(cx as f32 * CHUNK_SIZE, 0., cz as f32 * CHUNK_SIZE);
+                        let max = min + Vec3::new(CHUNK_SIZE, 0., CHUNK_SIZE);
+                        if (eye.clamp(min, max) - eye).length() < crate::cover::COVER_DISTANCE {
+                            assert_eq!(terrain_lod(((cx*cx+cz*cz)as f32).sqrt()),0,
+                        "cover would float on a coarser terrain chunk at {cx},{cz} from {eye:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

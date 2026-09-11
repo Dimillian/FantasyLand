@@ -1,7 +1,10 @@
 //! Shared ecological cover for meshes, distant terrain, and maps.
 //! Climate chooses the eligible vegetation; continuous regional fields determine
 //! forests, sparse woodland, and genuinely open country inside those climates.
-use crate::world::{hash, rand01, Biome, Sample, ShoreKind};
+use crate::{
+    regions::{self, Landscape},
+    world::{hash, rand01, Biome, Sample, ShoreKind},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Ecology {
@@ -12,6 +15,10 @@ pub struct Ecology {
     pub flowers: f32,
     pub ferns: f32,
     pub heather: f32,
+    pub seedheads: f32,
+    /// Stable community pigment and flower group: cream0, gold1, blue2.
+    pub cover_color: [f32; 3],
+    pub flower_group: u32,
 }
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -44,6 +51,16 @@ pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
     {
         return 0.0;
     }
+    tree_density_in(seed, x, z, terrain, &regions::sample(seed, x, z, terrain))
+}
+fn tree_density_in(seed: u32, x: f32, z: f32, terrain: &Sample, region: &Landscape) -> f32 {
+    if terrain.ocean
+        || terrain.shore != ShoreKind::None
+        || matches!(terrain.biome, Biome::Alpine | Biome::Desert)
+        || terrain.water_height > terrain.height - 0.3
+    {
+        return 0.0;
+    }
     // Domain warping removes the appearance of rectangular noise cells. The
     // 1.1km region, 380m stand, and 190m opening fields have distinct roles.
     let wx = x + (field(seed ^ 0x45435758, x / 1900.0, z / 1900.0) - 0.5) * 380.0;
@@ -53,7 +70,8 @@ pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
     let opening = field(seed ^ 0x45434f50, x / 190.0, z / 190.0);
     let woodland = smooth(0.36, 0.61, province * 0.66 + stand * 0.34);
     let clearings = smooth(0.54, 0.82, opening);
-    let canopy = woodland * (1.0 - clearings);
+    let ancient = region.ancient;
+    let canopy = (woodland + ancient * 0.18).min(1.0) * (1.0 - clearings * (1.0 - ancient * 0.24));
     let capacity = match terrain.biome {
         Biome::Forest | Biome::PineForest => 0.98,
         Biome::Grassland => 0.90,
@@ -62,85 +80,159 @@ pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
         _ => 0.0,
     };
     let moisture = 0.86 + 0.14 * smooth(0.20, 0.60, terrain.moisture);
-    (0.002 + canopy.powf(1.35) * capacity * moisture).min(0.985)
+    let shelter = 1.0 - region.exposure * 0.22;
+    (0.002 + canopy.powf(1.35) * capacity * moisture * shelter).min(0.985)
 }
 
 pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
+    let region = regions::sample(seed, x, z, terrain);
+    let clump = field(seed ^ 0x45434752, x / 34.0, z / 34.0);
     if terrain.ocean || terrain.shore != ShoreKind::None {
+        // Salty exposed sites have sparse tough grass, never inland fern beds.
+        let dry = !terrain.ocean && terrain.water_height < terrain.height - 0.3;
+        let density = if dry && terrain.shore == ShoreKind::Beach && terrain.height > 2.0 {
+            0.025 + smooth(0.40, 0.72, clump) * 0.11
+        } else if dry
+            && terrain.shore == ShoreKind::Cliff
+            && terrain.height > 6.0
+            && region.slope < 0.75
+        {
+            smooth(0.48, 0.72, clump) * 0.09
+        } else {
+            0.0
+        };
         return Ecology {
             tree_density: 0.0,
-            grass_density: if terrain.shore == ShoreKind::Beach && terrain.height > 3.0 {
-                0.025
-            } else {
-                0.0
-            },
-            grass_height: 0.5,
+            grass_density: density,
+            grass_height: 0.82,
             flowers: 0.0,
             ferns: 0.0,
             heather: 0.0,
+            seedheads: 0.0,
+            cover_color: mix([0.42, 0.49, 0.25], [0.59, 0.61, 0.34], clump),
+            flower_group: 0,
         };
     }
-    let trees = tree_density(seed, x, z, terrain);
+    let trees = tree_density_in(seed, x, z, terrain, &region);
     let open = 1.0 - smooth(0.08, 0.75, trees);
-    let small = field(seed ^ 0x45434752, x / 65.0, z / 65.0);
-    let bloom = smooth(0.51, 0.76, field(seed ^ 0x4543464c, x / 120.0, z / 120.0));
+    let bloom_field = field(seed ^ 0x4543464c, x / 76.0, z / 76.0);
+    let patch = smooth(0.47, 0.72, bloom_field) * smooth(0.22, 0.64, clump);
+    let fern_patch = smooth(0.30, 0.68, field(seed ^ 0x4645524e, x / 29.0, z / 29.0));
+    let wet_bank = smooth(0.28, 0.70, region.wetness) * (0.65 + region.soil * 0.35);
+    let dry = (1.0 - smooth(0.25, 0.62, region.wetness)) * open;
+    let temperate = !matches!(terrain.biome, Biome::Desert | Biome::Alpine | Biome::Moor);
+    // Dense stands deliberately leave quiet litter between fern colonies, while
+    // open meadows carry grasses punctuated by whole patches of flowering plants.
     let base = match terrain.biome {
-        Biome::Grassland | Biome::Forest => 0.58 + open * 0.14,
-        Biome::PineForest => 0.45 + open * 0.22,
-        Biome::Wetland => 0.76,
-        Biome::Moor => 0.67,
-        Biome::Alpine => 0.16,
+        Biome::Grassland | Biome::Forest => 0.37 + open * 0.36,
+        Biome::PineForest => 0.30 + open * 0.30,
+        Biome::Wetland => 0.69,
+        Biome::Moor => 0.58,
+        Biome::Alpine => 0.14,
         Biome::Desert => 0.055,
     };
-    let temperate = !matches!(terrain.biome, Biome::Desert | Biome::Alpine | Biome::Moor);
-    Ecology {
-        tree_density: trees,
-        grass_density: (base * (0.76 + small * 0.40)).clamp(0.0, 0.88),
-        grass_height: if matches!(terrain.biome, Biome::Desert | Biome::Alpine) {
-            0.64
-        } else {
-            0.66 + open * 0.53 + small * 0.12
-        },
-        flowers: if temperate { bloom * open * 0.36 } else { 0.0 },
-        ferns: if temperate {
-            smooth(0.24, 0.66, terrain.moisture) * (0.05 + trees * 0.48)
-        } else {
-            0.0
-        },
-        heather: if terrain.biome == Biome::Moor {
-            0.24 + bloom * 0.32
-        } else if terrain.biome == Biome::PineForest {
-            open * bloom * 0.15
-        } else {
-            0.0
-        },
-    }
-}
-
-/// The same canopy field darkens visible forest floors and their map footprints.
-/// This deliberately avoids per-triangle hue noise that would obscure clearings.
-pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
-    let shore_grain = if terrain.ocean || terrain.shore != ShoreKind::None {
-        field(seed ^ 0x53484f52, x / 75.0, z / 75.0)
+    let mut flowers = if temperate {
+        patch * open * (0.40 + region.soil * 0.25)
     } else {
         0.0
     };
+    let mut ferns = if temperate {
+        wet_bank * (0.09 + trees * 0.69) * fern_patch * (1.0 - region.exposure * 0.60)
+    } else {
+        0.0
+    };
+    let mut heather = if terrain.biome == Biome::Moor {
+        0.18 + patch * 0.44
+    } else if terrain.biome == Biome::PineForest {
+        patch * open * 0.17
+    } else {
+        0.0
+    };
+    let mut seedheads = if terrain.biome != Biome::Wetland {
+        dry * (0.13 + clump * 0.30)
+    } else {
+        0.0
+    };
+    let normalize = (0.94 / (flowers + ferns + heather + seedheads).max(0.94)).min(1.0);
+    flowers *= normalize;
+    ferns *= normalize;
+    heather *= normalize;
+    seedheads *= normalize;
+    let colony = field(seed ^ 0x50455441, x / 170.0, z / 170.0);
+    let flower_group = if region.wetness > 0.55 && colony > 0.57 {
+        2
+    } else if colony < 0.45 {
+        0
+    } else {
+        1
+    };
+    let grass_color = match terrain.biome {
+        Biome::Grassland | Biome::Forest => mix([0.24, 0.38, 0.16], [0.40, 0.53, 0.20], open),
+        Biome::PineForest => mix([0.25, 0.35, 0.22], [0.39, 0.47, 0.26], open),
+        Biome::Wetland => [0.34, 0.48, 0.23],
+        Biome::Moor => [0.46, 0.44, 0.25],
+        Biome::Alpine => [0.47, 0.48, 0.32],
+        Biome::Desert => [0.65, 0.53, 0.29],
+    };
+    Ecology {
+        tree_density: trees,
+        grass_density: (base * (0.67 + clump * 0.47) * (1.0 - region.rockiness * 0.48))
+            .clamp(0.0, 0.86),
+        grass_height: if matches!(terrain.biome, Biome::Desert | Biome::Alpine) {
+            0.61
+        } else {
+            (0.68 + open * 0.37 + wet_bank * 0.12) * (1.0 - region.exposure * 0.14)
+        },
+        flowers,
+        ferns,
+        heather,
+        seedheads,
+        cover_color: mix(grass_color, [0.58, 0.49, 0.25], dry * 0.30),
+        flower_group,
+    }
+}
+
+/// Broad substrate follows geology; canopy and community-scale fields tie the
+/// visible ground to the plants above it. The atlas samples this same palette.
+pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
+    let patch = field(seed ^ 0x534f494c, x / 24.0, z / 24.0);
     if terrain.ocean || terrain.shore == ShoreKind::Beach {
-        let sand = mix([0.54, 0.48, 0.33], [0.65, 0.59, 0.43], shore_grain);
-        return mix([0.34, 0.36, 0.27], sand, smooth(-0.5, 2.8, terrain.height));
+        let sand = mix([0.55, 0.50, 0.36], [0.70, 0.64, 0.45], patch);
+        return mix([0.34, 0.38, 0.30], sand, smooth(-0.5, 2.8, terrain.height));
     }
+    let region = regions::sample(seed, x, z, terrain);
     if terrain.shore == ShoreKind::Cliff {
-        return mix([0.39, 0.41, 0.38], [0.57, 0.56, 0.46], shore_grain);
+        return mix(region.rock_color, [0.48, 0.48, 0.39], 0.10 + patch * 0.10);
     }
-    let cover = smooth(0.08, 0.76, tree_density(seed, x, z, terrain));
-    match terrain.biome {
-        Biome::Grassland | Biome::Forest => mix([0.36, 0.50, 0.18], [0.25, 0.40, 0.17], cover),
-        Biome::PineForest => mix([0.35, 0.47, 0.24], [0.22, 0.36, 0.25], cover),
-        Biome::Moor => mix([0.43, 0.47, 0.25], [0.32, 0.40, 0.25], cover),
-        Biome::Wetland => mix([0.34, 0.48, 0.25], [0.25, 0.39, 0.23], cover),
-        Biome::Alpine => [0.52, 0.56, 0.46],
-        Biome::Desert => [0.70, 0.55, 0.29],
-    }
+    let cover = smooth(0.08, 0.76, tree_density_in(seed, x, z, terrain, &region));
+    let open_color = match terrain.biome {
+        Biome::Grassland | Biome::Forest => [0.39, 0.51, 0.22],
+        Biome::PineForest => [0.38, 0.46, 0.28],
+        Biome::Moor => [0.46, 0.44, 0.31],
+        Biome::Wetland => [0.36, 0.46, 0.26],
+        Biome::Alpine => [0.53, 0.55, 0.46],
+        Biome::Desert => [0.71, 0.57, 0.36],
+    };
+    let forest_floor = if terrain.biome == Biome::PineForest {
+        [0.30, 0.33, 0.22]
+    } else {
+        [0.29, 0.37, 0.18]
+    };
+    let substrate = mix(
+        open_color,
+        region.ground_color,
+        0.42 + region.rockiness * 0.40,
+    );
+    // Thin soil exposes the actual regional stone, with broad patches rather
+    // than a uniformly green alpine or sandstone surface.
+    let exposed = smooth(0.35, 0.82, region.rockiness) * (0.62 + patch * 0.32);
+    let substrate = mix(substrate, region.rock_color, exposed);
+    let soil = mix(
+        forest_floor,
+        [0.33, 0.29, 0.19],
+        smooth(0.40, 0.75, patch) * 0.42,
+    );
+    mix(substrate, soil, cover * 0.76)
 }
 
 #[cfg(test)]
@@ -234,19 +326,80 @@ mod tests {
         assert_eq!(tree_density(1337, 500., 100., &s), 0.0);
     }
     #[test]
-    fn saltwater_and_exposed_shores_have_no_forest_or_marsh_plants() {
+    fn saltwater_excludes_plants_and_exposed_shores_have_only_sparse_grass() {
         for shore in [ShoreKind::Beach, ShoreKind::Cliff] {
             let mut terrain = temperate();
             terrain.shore = shore;
             let cover = sample(1337, 500., 100., &terrain);
             assert_eq!(cover.tree_density, 0.0);
             assert_eq!(cover.ferns + cover.flowers + cover.heather, 0.0);
-            assert!(cover.grass_density <= 0.025);
+            assert!(cover.grass_density <= 0.14);
+            assert_eq!(cover.seedheads, 0.0);
         }
         let mut terrain = temperate();
         terrain.ocean = true;
         terrain.height = -15.0;
         let cover = sample(1337, 500., 100., &terrain);
         assert_eq!(cover.tree_density + cover.grass_density, 0.0);
+    }
+    #[test]
+    fn communities_and_palettes_are_bounded_repeatable_and_patchy() {
+        let mut terrain = temperate();
+        let mut flower_patches = 0;
+        let mut quiet_patches = 0;
+        let mut fern_patches = 0;
+        for biome in [
+            Biome::Grassland,
+            Biome::Forest,
+            Biome::PineForest,
+            Biome::Wetland,
+            Biome::Moor,
+            Biome::Alpine,
+            Biome::Desert,
+        ] {
+            terrain.biome = biome;
+            for z in -15..15 {
+                for x in -15..15 {
+                    let (x, z) = (x as f32 * 173.0, z as f32 * 173.0);
+                    let a = sample(1337, x, z, &terrain);
+                    let b = sample(1337, x, z, &terrain);
+                    assert_eq!(a.cover_color, b.cover_color);
+                    assert_eq!(a.flower_group, b.flower_group);
+                    for value in [
+                        a.tree_density,
+                        a.grass_density,
+                        a.flowers,
+                        a.ferns,
+                        a.heather,
+                        a.seedheads,
+                    ] {
+                        assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+                    }
+                    assert!(a.flowers + a.ferns + a.heather + a.seedheads <= 0.941);
+                    assert!(a.grass_height > 0.0 && a.grass_height < 1.4);
+                    assert!(a.flower_group <= 2);
+                    let color = ground_color(1337, x, z, &terrain);
+                    assert!(color
+                        .iter()
+                        .chain(a.cover_color.iter())
+                        .all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+                    if biome == Biome::Forest {
+                        if a.flowers > 0.16 {
+                            flower_patches += 1;
+                        }
+                        if a.flowers < 0.01 {
+                            quiet_patches += 1;
+                        }
+                        if a.ferns > 0.10 {
+                            fern_patches += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            flower_patches > 20 && quiet_patches > 200 && fern_patches > 20,
+            "communities: flowers{flower_patches}, quiet{quiet_patches}, ferns{fern_patches}"
+        );
     }
 }

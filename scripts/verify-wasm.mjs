@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import init, { Game, inspect_world, inspect_map, inspect_routes } from '../dist/pkg/fantasy_land.js';
+import init, { Game, inspect_world, inspect_map, inspect_routes, inspect_landscapes } from '../dist/pkg/fantasy_land.js';
 await init({ module_or_path: await fs.readFile(new URL('../dist/pkg/fantasy_land_bg.wasm', import.meta.url)) });
 const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
@@ -44,3 +44,19 @@ assert.equal(inspect_routes(1337, 185000, 185000, 6000).length, 0, 'no roads acr
 console.log('WASM coastal checks passed: expanded map, deep ocean, sea level, no offshore trees, roads or settlements.');
 
 assert.equal(typeof Game.prototype.set_ground_cover_density, "function", "density control is present in the actual WASM bindings");
+
+assert.equal(typeof Game.prototype.set_shadows, "function", "sun shadows are exposed in the actual WASM bindings");
+assert.ok(['ancient_woodland', 'granite_highlands', 'windswept_coast', 'wet_lowlands', 'sandstone_country', 'meadowlands', 'alpine'].includes(a.landscape.kind));
+for (const field of ['exposure', 'soil', 'wetness', 'rockiness', 'ancient', 'pale']) assert.ok(a.landscape[field] >= 0 && a.landscape[field] <= 1, `${field} remains bounded`);
+assert.ok(a.lakes.length > 0 && a.lakes.length === a.hydrology.retained_lakes, 'retained basins serialize with the drainage network');
+const lake = a.lakes[0];
+const water = inspect_world(1337, ...lake.center);
+assert.ok(water.height < lake.surface && Math.abs(water.water_height - lake.surface) < .01, 'retained lake has a flat surface above its basin floor');
+assert.ok(lake.outlet.every(Number.isFinite) && lake.area_km2 > 0);
+console.log('WASM regional checks passed: landscape fields, retained lake surface, outlet metadata, shadow control.');
+
+const destinations = inspect_landscapes(1337);
+assert.equal(destinations.length, 7, 'landscape tour finds all seven generated families');
+assert.equal(new Set(destinations.map(d => d.name)).size, 7);
+assert.ok(destinations.every(d => Number.isFinite(d.x) && Number.isFinite(d.z)));
+console.log('WASM landscape tour passed: seven distinct finite destinations.');

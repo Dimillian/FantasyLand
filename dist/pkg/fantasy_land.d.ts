@@ -8,6 +8,7 @@ export class Game {
     static create(canvas: HTMLCanvasElement, seed: number): Promise<Game>;
     features(cx: number, cz: number, span: number): any;
     is_ready(): boolean;
+    landscape_destinations(): any;
     look(dx: number, dy: number): void;
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
     render_resolution(): Uint32Array;
@@ -18,6 +19,7 @@ export class Game {
     set_ground_cover_density(density: number): void;
     set_quality(q: number): void;
     set_render_resolution(height: number): void;
+    set_shadows(enabled: boolean): void;
     set_time(hour: number): void;
     spawn(): Float32Array;
     state(): any;
@@ -25,6 +27,8 @@ export class Game {
     tick(dt: number, forward: number, strafe: number, sprint: boolean, jump: boolean): void;
     world_size(): number;
 }
+
+export function inspect_landscapes(seed: number): any;
 
 export function inspect_map(seed: number, cx: number, cz: number, span: number, res: number): Uint8Array;
 
@@ -40,6 +44,7 @@ export interface InitOutput {
     readonly game_create: (a: any, b: number) => any;
     readonly game_features: (a: number, b: number, c: number, d: number) => any;
     readonly game_is_ready: (a: number) => number;
+    readonly game_landscape_destinations: (a: number) => any;
     readonly game_look: (a: number, b: number, c: number) => void;
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly game_render_resolution: (a: number) => [number, number];
@@ -50,12 +55,14 @@ export interface InitOutput {
     readonly game_set_ground_cover_density: (a: number, b: number) => void;
     readonly game_set_quality: (a: number, b: number) => void;
     readonly game_set_render_resolution: (a: number, b: number) => void;
+    readonly game_set_shadows: (a: number, b: number) => void;
     readonly game_set_time: (a: number, b: number) => void;
     readonly game_spawn: (a: number) => [number, number];
     readonly game_state: (a: number) => any;
     readonly game_teleport: (a: number, b: number, c: number) => void;
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly game_world_size: (a: number) => number;
+    readonly inspect_landscapes: (a: number) => any;
     readonly inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly inspect_routes: (a: number, b: number, c: number, d: number) => any;
     readonly inspect_world: (a: number, b: number, c: number) => any;

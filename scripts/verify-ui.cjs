@@ -13,34 +13,40 @@ class Element {
   getBoundingClientRect(){return {width:800,height:500,left:0,top:0};}
   getContext(){return {};}
   setPointerCapture(){}
+  append(child){(this.children ||= []).push(child);}
 }
 const ids = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((m)=>[m[1],new Element(m[1])]));
 ids.world.tagName='CANVAS'; ids['map-canvas'].tagName='CANVAS';
 const document = new Element('document');
-document.body=new Element('body'); document.getElementById=id=>ids[id];
+document.body=new Element('body'); document.getElementById=id=>ids[id]; document.createElement=tag=>new Element(tag);
 document.querySelectorAll=selector=>selector==='[data-close]' ? ['map','bag','character','skills','settings'].map(name=>ids[name+'-modal'].querySelector()) : selector==='.overlay' ? ['map','bag','character','skills','settings'].map(name=>ids[name+'-modal']) : [];
 document.pointerLockElement=null;
 document.exitPointerLock=()=>{document.pointerLockElement=null;document.fire('pointerlockchange');};
 const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,sensitivity:1.4,x:900,z:800,waypoint:{x:5,z:8,name:'Old'},atlas:{x:9,z:8,span:700}}) };
 let calls=0, looks=[], rejected;
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},set_time(){},set_quality(){},set_ground_cover_density(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
 const key=code=>document.fire('keydown',{code,target:ids.world});
 // Run the real boot/settings code against a GPU boundary stub. This verifies
 // renderer calls and reload behavior, not merely the shape of saved fields.
-function filterHarness(snapshot) {
+function filterHarness(snapshot, destinations = []) {
   const filterIds = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((m) => [m[1], new Element(m[1])]));
   const filterDocument = new Element('document');
   filterDocument.body = new Element('body');
   filterDocument.getElementById = id => filterIds[id];
+  filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
   const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [];
+  let destinationCalls = 0;
+  const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
   const engine = {
+    landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
+    set_shadows:value=>{rendererEvents.push(['shadows',value]);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
     set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
     set_ascii:(scale,palette)=>{asciiCalls.push([scale,palette]);rendererEvents.push(['ascii',scale,palette]);},
@@ -49,14 +55,14 @@ function filterHarness(snapshot) {
     world_size:()=>384000,
     set_quality:value=>{selectedQuality=value;qualityCalls.push(value);rendererEvents.push(['quality',value]);},
     resize:(width,height)=>{surfaceWidth=width;surfaceHeight=height;rendererEvents.push(['resize',width,height]);},
-    teleport:(x,z)=>teleports.push([x,z]),
-    state:()=>({x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100})
+    teleport:(x,z)=>{teleports.push([x,z]);playerState.x=x;playerState.z=z;},
+    state:()=>({...playerState})
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
   const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -72,7 +78,7 @@ async function verifyFilterSettings() {
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
   assert.deepEqual(first.asciiCalls,[[2,0]]); assert.deepEqual(first.resolutionCalls,[0]);
   assert.equal(first.ids['render-dimensions'].textContent,'Actual 720 × 450');
-  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','groundCover','resize'],'Preferences must apply after world quality and before resize.');
+  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','groundCover','shadows','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
@@ -184,7 +190,41 @@ async function verifyGroundCoverSettings() {
     const invalid=filterHarness({...existing,groundCoverDensity:value}); await invalid.run('boot()');
     assert.deepEqual(invalid.groundCoverCalls,[expected], 'Saved values must be finite and bounded before reaching WASM.');
   }
+  assert.equal(selected.ids['sun-shadows'].value,'on');
+  selected.ids['sun-shadows'].value='off'; selected.ids['sun-shadows'].fire('change');
+  assert.deepEqual(selected.rendererEvents.at(-1),['shadows',false]);
+  assert.equal(selected.saved().sunShadows,false);
+  const shadowOff=filterHarness(selected.saved()); await shadowOff.run('boot()');
+  assert.equal(shadowOff.ids['sun-shadows'].value,'off');
+  assert.ok(shadowOff.rendererEvents.some(e=>e[0]==='shadows' && e[1]===false));
   console.log('PASS: accessible ground-cover slider; old-save default; immediate GPU input calls; boot order; 0/Off and reload persistence; multiplier labels; finite validation/clamping; independence of quality; all existing v4 progress and preferences preserved.');
+}
+
+async function verifyLandscapeDestinations() {
+  const existing={seed:1337,x:637,z:222,quality:2,sunShadows:false,groundCoverDensity:4,sensitivity:1.2,filterMode:2,filterStrength:1.1,renderResolution:720,asciiScale:3,asciiPalette:2,atlas:{x:640,z:225,span:6000}};
+  const names=['Ancient woodland','Granite highlands','Windswept coast','Wet lowlands','Sandstone country','Meadowlands','Alpine heights'];
+  const destinations=names.map((name,i)=>({name,x:1000+i*320,z:-1000-i*450}));
+  const h=filterHarness(existing,destinations); await h.run('boot()');h.run('initialReady=true;');
+  assert.equal(h.destinationCalls,0,'Boot must not scan destinations.');
+  h.run("openModal('settings')");assert.equal(h.destinationCalls,0,'Opening settings must not scan until the selector is used.');
+  assert.equal(h.run('selectedLandscapeDestination()'),null);
+  h.ids['landscape-destination'].fire('focus');assert.equal(h.destinationCalls,1);
+  assert.equal(h.ids['landscape-destination'].children.length,7);
+  assert.deepEqual(h.ids['landscape-destination'].children.map(option=>option.textContent),names);
+  assert.equal(h.ids['travel-landscape'].disabled,true);
+  h.ids['landscape-destination'].fire('pointerdown');assert.equal(h.destinationCalls,1,'The world destination list must be cached.');
+  h.ids['landscape-travel-form'].fire('submit');assert.deepEqual(h.teleports,[[637,222]],'The placeholder must never teleport.');
+  h.ids['landscape-destination'].value='2';h.ids['landscape-destination'].fire('change');assert.equal(h.ids['travel-landscape'].disabled,false);
+  h.ids['landscape-travel-form'].fire('submit');assert.deepEqual(h.teleports.at(-1),[1640,-1900]);
+  assert.equal(h.run('modal'),null);assert.equal(h.ids.toast.textContent,'Arrived at Windswept coast.');
+  const saved=h.saved();assert.equal(saved.x,1640);assert.equal(saved.z,-1900);assert.equal(saved.waypoint.name,'Windswept coast');
+  for(const key of Object.keys(existing).filter(key=>!['x','z'].includes(key)))assert.deepEqual(saved[key],existing[key],`Travel must preserve ${key}.`);
+  h.ids['landscape-destination'].value='99';h.ids['landscape-destination'].fire('change');assert.equal(h.ids['travel-landscape'].disabled,true);
+  h.ids['landscape-travel-form'].fire('submit');assert.equal(h.teleports.length,2);
+  const unsafe=filterHarness(existing,[{name:'Valid <landscape>',x:1,z:2},{name:'Bad',x:Infinity,z:0},{name:'Outside',x:900000,z:0},{name:'',x:1,z:2},null]);
+  await unsafe.run('boot()');unsafe.run('initialReady=true;');unsafe.ids['landscape-destination'].fire('focus');
+  assert.equal(unsafe.ids['landscape-destination'].children.length,1);assert.equal(unsafe.ids['landscape-destination'].children[0].textContent,'Valid <landscape>','Names must be text, never HTML.');
+  console.log('PASS: lazy cached landscape destinations; seven generated entries; explicit selection/travel; actual coordinates and saved waypoint; empty/invalid selection safety; destination validation; preservation of sun shadows and all visual/atlas settings.');
 }
 
 function verifyAtlasRoutes() {
@@ -250,6 +290,7 @@ async function main(){
   await verifyFilterSettings();
   await verifyAsciiResolutionSettings();
   await verifyGroundCoverSettings();
+  await verifyLandscapeDestinations();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,10 +1,13 @@
 pub mod cover;
 pub mod ecology;
+pub mod exploration;
 pub mod geometry;
 mod horizon;
 mod player;
 mod postprocess;
+pub mod regions;
 pub mod renderer;
+mod shadow;
 pub mod world;
 
 use player::Player;
@@ -44,6 +47,7 @@ struct GameState {
     chunk_count: usize,
     triangle_count: usize,
     ground_cover_density: f32,
+    sun_shadows: bool,
     cover_instances: u32,
     mesh_megabytes: f32,
 }
@@ -149,24 +153,13 @@ impl Game {
             yaw: p.yaw,
             pitch: p.pitch,
             biome: sample.biome.name().to_string(),
-            landscape: {
-                let trees =
-                    ecology::tree_density(self.world.seed, p.position.x, p.position.z, &sample);
-                match sample.biome {
-                    _ if sample.ocean => "Ocean",
-                    _ if sample.shore == world::ShoreKind::Beach => "Sandy shore",
-                    _ if sample.shore == world::ShoreKind::Cliff => "Sea cliffs",
-                    world::Biome::Alpine
-                    | world::Biome::Desert
-                    | world::Biome::Moor
-                    | world::Biome::Wetland => sample.biome.name(),
-                    _ if trees < 0.025 => "Open wildland",
-                    _ if trees < 0.20 => "Sparse woodland",
-                    world::Biome::PineForest if trees > 0.70 => "Dense pine forest",
-                    _ if trees > 0.70 => "Dense forest",
-                    _ => "Woodland",
-                }
-                .to_string()
+            landscape: if sample.ocean {
+                "Ocean".into()
+            } else {
+                regions::sample(self.world.seed, p.position.x, p.position.z, &sample)
+                    .kind
+                    .name()
+                    .into()
             },
             grounded: p.grounded,
             stamina: p.stamina,
@@ -181,6 +174,7 @@ impl Game {
             chunk_count: self.renderer.chunk_count(),
             triangle_count: self.renderer.triangle_count(),
             ground_cover_density: self.renderer.ground_cover_density(),
+            sun_shadows: self.renderer.shadows_enabled(),
             cover_instances: self.renderer.cover_drawn_instances(),
             mesh_megabytes: self.renderer.mesh_bytes() as f32 / 1_000_000.0,
         })
@@ -224,6 +218,10 @@ impl Game {
         })
         .unwrap_or(JsValue::NULL)
     }
+    pub fn landscape_destinations(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&exploration::destinations(&self.world))
+            .unwrap_or(JsValue::NULL)
+    }
     pub fn world_size(&self) -> f32 {
         world::WORLD_SIZE
     }
@@ -247,6 +245,9 @@ impl Game {
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.renderer.set_filter(mode, strength);
+    }
+    pub fn set_shadows(&mut self, enabled: bool) {
+        self.renderer.set_shadows(enabled);
     }
     pub fn set_ground_cover_density(&mut self, density: f32) {
         self.renderer.set_ground_cover_density(density);
@@ -280,6 +281,8 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         world_size: f32,
         vegetation_density: f32,
         hydrology: world::HydrologyStats,
+        landscape: regions::Landscape,
+        lakes: Vec<world::LakeInfo>,
         spawn: [f32; 2],
         sites: Vec<world::Site>,
     }
@@ -296,6 +299,8 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         world_size: world::WORLD_SIZE,
         vegetation_density: ecology::tree_density(seed, x, z, &s),
         hydrology: world.hydrology_stats(),
+        landscape: regions::sample(seed, x, z, &s),
+        lakes: world.lakes().to_vec(),
         spawn: world.spawn(),
         sites: world.sites_near(x, z, 4000.0),
     })
@@ -316,4 +321,10 @@ pub fn inspect_routes(seed: u32, cx: f32, cz: f32, span: f32) -> JsValue {
     let routes =
         World::new(seed).road_map_routes(cx, cz, span.clamp(128.0, world::WORLD_SIZE * 4.0));
     serde_wasm_bindgen::to_value(&routes).unwrap_or(JsValue::NULL)
+}
+
+#[wasm_bindgen]
+pub fn inspect_landscapes(seed: u32) -> JsValue {
+    serde_wasm_bindgen::to_value(&exploration::destinations(&World::new(seed)))
+        .unwrap_or(JsValue::NULL)
 }

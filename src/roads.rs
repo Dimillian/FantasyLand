@@ -225,6 +225,7 @@ impl Network {
                 if coast.distance < 100.
                     || world.ground(p[0], p[1]) < 3.
                     || river.distance < river.width * 2. + 35.
+                    || world.lake_at(p[0], p[1]).is_some()
                 {
                     continue;
                 }
@@ -729,10 +730,19 @@ impl Network {
             .collect()
     }
 }
-/// Test the travelled corridor using only the continental mask. Rivers are
-/// deliberately not obstacles: bridge selection remains in the fine planner.
+/// Keep corridors on their landmass and outside retained lakes. Narrow rivers
+/// remain bridge candidates in the fine planner.
 fn land_segment(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> bool {
     let length = distance2(a, b).sqrt();
+    // Lake shores are clipped by detailed terrain, so their clearance cannot
+    // be inferred from the continent's signed coast-distance field.
+    let near_lake = world.lakes().iter().any(|l| {
+        a[0].min(b[0]) <= l.bounds[2]
+            && a[0].max(b[0]) >= l.bounds[0]
+            && a[1].min(b[1]) <= l.bounds[3]
+            && a[1].max(b[1]) >= l.bounds[1]
+    });
+    let maximum_step = if near_lake { 4.0 } else { 64.0 };
     let mut along = 0.;
     loop {
         let t = (along / length.max(0.001)).min(1.);
@@ -740,6 +750,7 @@ fn land_segment(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> bool 
         let coast = world.coast_info(p[0], p[1]);
         if coast.landmass_id != Some(landmass)
             || coast.distance < ROAD_COAST_CLEARANCE
+            || world.lake_at(p[0], p[1]).is_some()
             || p[0].abs() > HALF_WORLD
             || p[1].abs() > HALF_WORLD
         {
@@ -750,7 +761,7 @@ fn land_segment(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> bool 
         }
         // Fine near a shore, coarse safely inland. Conservative coast distance
         // keeps the segment sampling independent of map or query resolution.
-        along = (along + (coast.distance * 0.35).clamp(4., 192.)).min(length);
+        along = (along + (coast.distance * 0.35).clamp(4., maximum_step)).min(length);
     }
 }
 fn land_path(world: &World, points: &[[f32; 2]], landmass: u32) -> bool {
@@ -875,7 +886,10 @@ fn land_corridor(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> Opti
             }
             let q = position(next);
             let coast = world.coast_info(q[0], q[1]);
-            if coast.landmass_id != Some(landmass) || coast.distance < ROAD_COAST_CLEARANCE {
+            if coast.landmass_id != Some(landmass)
+                || coast.distance < ROAD_COAST_CLEARANCE
+                || world.lake_at(q[0], q[1]).is_some()
+            {
                 continue;
             }
             let step = distance2(p, q).sqrt();
@@ -1028,7 +1042,9 @@ fn plan_local(world: &World, a: [f32; 2], b: [f32; 2], seed: u32, kind: RoadKind
             points[layer][k] = p;
             heights[layer][k] = world.ground(p[0], p[1]);
             let r = world.river(p[0], p[1]);
-            wet[layer][k] = if r.distance < r.width * 2. {
+            wet[layer][k] = if world.lake_at(p[0], p[1]).is_some() {
+                10000.0
+            } else if r.distance < r.width * 2. {
                 1. + r.width * 0.02
             } else {
                 0.
@@ -1359,7 +1375,12 @@ mod road_network_tests {
         for &index in coastal.iter().take(32) {
             let edge = &network.edges[index];
             let route = network.route(&world, index);
-            assert!(route.points.len() >= 2, "coastal road lost its endpoint");
+            assert!(
+                route.points.len() >= 2,
+                "coastal road lost its endpoint: edge{index} {:?} {:?}",
+                edge.corridor,
+                edge.join
+            );
             assert!(land_path(
                 &world,
                 &route.points,

@@ -25,6 +25,8 @@ fn main() {
     let roads_only = check.as_deref() == Some("roads");
     let coasts_only = check.as_deref() == Some("coasts");
     let cover_only = check.as_deref() == Some("cover");
+    let regions_only = check.as_deref() == Some("regions");
+    let vista_only = check.as_deref() == Some("vista");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -40,7 +42,14 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only && !ascii_only && !grounding_only && !roads_only && !coasts_only && !cover_only
+    if !filters_only
+        && !ascii_only
+        && !grounding_only
+        && !roads_only
+        && !coasts_only
+        && !cover_only
+        && !regions_only
+        && !vista_only
     {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
@@ -51,6 +60,42 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("vista") {
+        // Exact position/orientation from the user's empty-valley feedback.
+        // Keep this camera stable even when the default spawn selection changes.
+        renderer.set_quality(1);
+        renderer.set_render_resolution(450);
+        renderer.set_ground_cover_density(4.0);
+        renderer.set_filter(1, 1.0);
+        let eye = glam::Vec3::new(3215.626953125, 384.6331787109375, -14435.6171875);
+        renderer.update_chunks(&world, eye, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(&world, eye, false);
+        }
+        renderer
+            .render(eye, 1.3643598556518555, -0.18, 11.)
+            .unwrap();
+        save_png(
+            &format!("{dir}/feedback-vista.png"),
+            1280,
+            720,
+            &renderer.capture_rgba().unwrap(),
+        );
+        println!(
+            "Feedback vista: mesh{}MB triangles{}",
+            renderer.mesh_bytes() as f64 / 1e6,
+            renderer.triangle_count()
+        );
+        return;
+    }
+    if check.as_deref() == Some("lakes") {
+        verify_lakes(&world, &mut renderer, &dir);
+        return;
+    }
+    if regions_only {
+        verify_regions(&world, &mut renderer, &dir);
+        return;
+    }
     if cover_only {
         verify_cover(&world, &mut renderer, &dir);
         return;
@@ -142,6 +187,263 @@ fn main() {
         serde_json::to_string_pretty(&metadata).unwrap(),
     )
     .unwrap();
+    fn verify_regions(world: &World, renderer: &mut Renderer, dir: &str) {
+        use fantasy_land::regions::{self, LandscapeKind};
+        use std::collections::BTreeMap;
+        let kinds = [
+            LandscapeKind::AncientWoodland,
+            LandscapeKind::GraniteHighlands,
+            LandscapeKind::WindsweptCoast,
+            LandscapeKind::WetLowlands,
+            LandscapeKind::SandstoneCountry,
+            LandscapeKind::Meadowlands,
+            LandscapeKind::Alpine,
+        ];
+        let mut candidates: BTreeMap<String, (f32, [f32; 2])> = BTreeMap::new();
+        let mut occurrences: BTreeMap<String, Vec<[i32; 2]>> = BTreeMap::new();
+        // Unbiased regular samples choose actual generated country, never planted showcases.
+        for iz in -62..=62 {
+            for ix in -62..=62 {
+                let x = ix as f32 * 2900.0 + 731.0;
+                let z = iz as f32 * 2900.0 + 419.0;
+                let s = world.natural_sample(x, z);
+                if s.ocean || s.water_height > s.height - 0.3 {
+                    continue;
+                }
+                let r = regions::sample(world.seed, x, z, &s);
+                let name = r.kind.name().to_string();
+                let region_cell = [(x / 24000.).floor() as i32, (z / 24000.).floor() as i32];
+                let cells = occurrences.entry(name.clone()).or_default();
+                if !cells.contains(&region_cell) {
+                    cells.push(region_cell);
+                }
+                let trees = fantasy_land::ecology::tree_density(world.seed, x, z, &s);
+                let mut score = -r.slope.min(5.) * 8.0;
+                score += match r.kind {
+                    LandscapeKind::AncientWoodland => trees * 12. + r.ancient * 10.,
+                    LandscapeKind::GraniteHighlands => r.rockiness * 8. + s.height / 250.,
+                    LandscapeKind::WindsweptCoast => {
+                        r.exposure * 5. - (world.coast_info(x, z).distance - 80.).abs() / 120.
+                    }
+                    LandscapeKind::WetLowlands => r.wetness * 12. + trees * 2.,
+                    LandscapeKind::SandstoneCountry => r.rockiness * 7. + (1. - trees) * 3.,
+                    LandscapeKind::Meadowlands => (1. - trees) * 10.,
+                    LandscapeKind::Alpine => r.rockiness * 5. + s.height / 500.,
+                };
+                if candidates.get(&name).is_none_or(|old| score > old.0) {
+                    candidates.insert(name, (score, [x, z]));
+                }
+            }
+        }
+        for kind in kinds {
+            assert!(
+                candidates.contains_key(kind.name()),
+                "missing landscape {}",
+                kind.name()
+            );
+            assert!(
+                occurrences[kind.name()].len() >= 2,
+                "landscape must repeat: {}",
+                kind.name()
+            );
+        }
+        println!(
+            "Regional occurrences: {:?}",
+            occurrences
+                .iter()
+                .map(|(k, v)| (k, v.len()))
+                .collect::<Vec<_>>()
+        );
+        renderer.set_quality(1);
+        renderer.set_render_resolution(450);
+        renderer.set_ground_cover_density(4.0);
+        renderer.set_filter(1, 1.0);
+        let mut reports = Vec::new();
+        for kind in kinds {
+            let p = candidates[kind.name()].1;
+            let eye = glam::Vec3::new(p[0], geometry::walk_height(world, p[0], p[1]) + 1.72, p[1]);
+            let mut yaw = 0.0;
+            if kind == LandscapeKind::WindsweptCoast {
+                let dirs = [[-1., 0.], [1., 0.], [0., -1.], [0., 1.]];
+                let mut nearest = f32::MAX;
+                for d in dirs {
+                    let dist = world
+                        .coast_info(p[0] + d[0] * 600., p[1] + d[1] * 600.)
+                        .distance;
+                    if dist < nearest {
+                        nearest = dist;
+                        yaw = d[0].atan2(-d[1]);
+                    }
+                }
+            }
+            renderer.clear_chunks();
+            let warm_start = Instant::now();
+            renderer.update_chunks(world, eye, true);
+            let mut updates = 0;
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(world, eye, false);
+                updates += 1;
+                assert!(updates < 8000);
+            }
+            let warm_ms = warm_start.elapsed().as_secs_f64() * 1000.;
+            renderer.set_shadows(true);
+            renderer.render(eye, yaw, -0.08, 10.0).unwrap();
+            let on = renderer.capture_rgba().unwrap();
+            let label = kind.name().to_lowercase().replace(' ', "-");
+            save_png(&format!("{dir}/{label}.png"), 1280, 720, &on);
+            let colors: std::collections::HashSet<_> =
+                on.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect();
+            assert!(colors.len() > 120, "empty regional view {label}");
+            let sample = world.sample(p[0], p[1]);
+            let region = regions::sample(world.seed, p[0], p[1], &sample);
+            let mut times = Vec::new();
+            for _ in 0..15 {
+                let start = Instant::now();
+                renderer.render(eye, yaw, -0.08, 10.0).unwrap();
+                renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                times.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+            let mut shadow_difference = 0;
+            if kind == LandscapeKind::AncientWoodland {
+                renderer.set_shadows(false);
+                renderer.render(eye, yaw, -0.08, 10.0).unwrap();
+                let off = renderer.capture_rgba().unwrap();
+                shadow_difference = on
+                    .chunks_exact(4)
+                    .zip(off.chunks_exact(4))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                assert!(
+                    shadow_difference > 500,
+                    "sunlight toggle must change visible woodland shade"
+                );
+                save_png(&format!("{dir}/{label}-shadows-off.png"), 1280, 720, &off);
+                renderer.set_shadows(true);
+                for (mode, name) in [(0, "clean"), (2, "crt"), (3, "ascii")] {
+                    renderer.set_filter(mode, 1.0);
+                    renderer.render(eye, yaw, -0.08, 10.0).unwrap();
+                    save_png(
+                        &format!("{dir}/{label}-{name}.png"),
+                        1280,
+                        720,
+                        &renderer.capture_rgba().unwrap(),
+                    );
+                }
+                renderer.set_filter(1, 1.0);
+                renderer.render(eye, yaw, -0.08, 18.0).unwrap();
+                save_png(
+                    &format!("{dir}/{label}-dusk.png"),
+                    1280,
+                    720,
+                    &renderer.capture_rgba().unwrap(),
+                );
+                renderer.render(eye, yaw, -0.08, 23.0).unwrap();
+                save_png(
+                    &format!("{dir}/{label}-night.png"),
+                    1280,
+                    720,
+                    &renderer.capture_rgba().unwrap(),
+                );
+            }
+            let report = serde_json::json!({"landscape":region,"eye":eye.to_array(),"yaw":yaw,"warmMs":warm_ms,"meshBytes":renderer.mesh_bytes(),"frameMeanMs":times.iter().sum::<f64>()/times.len() as f64,"shadowDifferencePixels":shadow_difference,"cover":renderer.cover_stats()});
+            println!("Regional capture {label}: {report}");
+            reports.push(report);
+        }
+        verify_lakes(world, renderer, dir);
+        let map = world.map_background_rgba(0., 0., WORLD_SIZE, 512);
+        save_png(&format!("{dir}/regional-atlas.png"), 512, 512, &map);
+        let report = serde_json::json!({"seed":world.seed,"landscapes":reports,"occurrences":occurrences,"lakes":world.lakes(),"method":"Native serialized render plus device.poll(Wait),15 completed frames,450p Bloom,400% cover; not browser FPS. Landscape locations chosen from generated terrain."});
+        fs::write(
+            format!("{dir}/regions-report.json"),
+            serde_json::to_string_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn verify_lakes(world: &World, renderer: &mut Renderer, dir: &str) {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(450);
+        renderer.set_filter(1, 1.);
+        renderer.set_ground_cover_density(4.);
+        // Use actual water/terrain intersection points to frame a retained basin.
+        assert!(!world.lakes().is_empty(), "world must retain natural lakes");
+        let mut shore_view: Option<(f32, glam::Vec3, f32, u32)> = None;
+        for lake in world.lakes().iter().take(12) {
+            let center = world.natural_sample(lake.center[0], lake.center[1]);
+            assert!(
+                center.height < lake.surface && (center.water_height - lake.surface).abs() < 0.02
+            );
+            for i in 0..24 {
+                let angle = i as f32 * std::f32::consts::TAU / 24.;
+                let dir = [angle.sin(), angle.cos()];
+                let mut wet = 0.;
+                for step in 1..=160 {
+                    let d = step as f32 * 64.;
+                    let p = [lake.center[0] + dir[0] * d, lake.center[1] + dir[1] * d];
+                    if !world.lake_at(p[0], p[1]).is_some_and(|l| l.id == lake.id) {
+                        if wet < 128. {
+                            break;
+                        }
+                        let mut low = wet;
+                        let mut high = d;
+                        for _ in 0..12 {
+                            let mid = (low + high) * 0.5;
+                            if !world
+                                .lake_at(
+                                    lake.center[0] + dir[0] * mid,
+                                    lake.center[1] + dir[1] * mid,
+                                )
+                                .is_some_and(|l| l.id == lake.id)
+                            {
+                                high = mid;
+                            } else {
+                                low = mid;
+                            }
+                        }
+                        let dry = high + 12.;
+                        let p = [lake.center[0] + dir[0] * dry, lake.center[1] + dir[1] * dry];
+                        let ground = geometry::walk_height(world, p[0], p[1]);
+                        if ground > lake.surface && ground < lake.surface + 18. {
+                            let sample = world.natural_sample(p[0], p[1]);
+                            let trees = fantasy_land::ecology::tree_density(
+                                world.seed, p[0], p[1], &sample,
+                            );
+                            let score = wet - (ground - lake.surface) * 30. + (1. - trees) * 600.;
+                            if shore_view.is_none_or(|old| score > old.0) {
+                                shore_view = Some((
+                                    score,
+                                    glam::Vec3::new(p[0], ground + 1.72, p[1]),
+                                    (-dir[0]).atan2(dir[1]),
+                                    lake.id,
+                                ));
+                            }
+                        }
+                        break;
+                    }
+                    wet = d;
+                }
+            }
+        }
+        let (_, lake_eye, lake_yaw, lake_id) =
+            shore_view.expect("a lake must have an accessible shore");
+        renderer.clear_chunks();
+        renderer.update_chunks(world, lake_eye, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(world, lake_eye, false);
+        }
+        renderer.render(lake_eye, lake_yaw, -0.06, 10.).unwrap();
+        save_png(
+            &format!("{dir}/retained-lake.png"),
+            1280,
+            720,
+            &renderer.capture_rgba().unwrap(),
+        );
+        println!(
+            "Retained lake{lake_id} shore: {:?}, yaw{lake_yaw}",
+            lake_eye
+        );
+    }
+
     fn verify_cover(world: &World, renderer: &mut Renderer, dir: &str) {
         const WIDTH: u32 = 1280;
         const HEIGHT: u32 = 720;

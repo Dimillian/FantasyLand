@@ -46,7 +46,10 @@ fn vs_cover(input:CoverIn,@builtin(vertex_index) vertex:u32)->VertexOut {
     if dot(sheared,sheared)>0.00000001 {normal=normalize(sheared);}
     let packed=input.data.x;
     let tint=vec3<f32>(f32(packed&255u),f32((packed>>8u)&255u),f32((packed>>16u)&255u))/255.0;
-    let color=plant.color.rgb*mix(vec3<f32>(1.0),tint,plant.color.w);
+    // Dark basal pigment joins the plant to soil; the upper leaves and flowers
+    // retain their palette. This is local shading, not an extra shadow sample.
+    let root_light=mix(0.60,1.0,smoothstep(0.0,0.32,p.y));
+    let color=plant.color.rgb*mix(vec3<f32>(1.0),tint,plant.color.w)*root_light;
     let weight=clamp(p.y/0.65,0.0,1.0);
     return transform_vertex(VertexIn(vec3<f32>(world_xz.x,surface.x+p.y-0.018,world_xz.y),
         normal,color,6.0+weight*0.4));

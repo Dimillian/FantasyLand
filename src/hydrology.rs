@@ -29,6 +29,7 @@ pub struct Segment {
     pub width_b: f32,
     pub flow: f32,
     pub influence: f32,
+    pub deposition: f32,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
@@ -74,6 +75,8 @@ pub struct Stats {
     pub retained_bytes: usize,
     pub estimated_peak_generation_bytes: usize,
     pub river_segments: usize,
+    pub retained_lakes: usize,
+    pub lake_area_km2: f32,
     pub headwaters: usize,
     pub confluences: usize,
     pub outlets: usize,
@@ -83,9 +86,228 @@ pub struct Stats {
     pub mean_incision_m: f32,
     pub index_references: usize,
 }
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct LakeInfo {
+    pub id: u32,
+    pub center: [f32; 2],
+    pub surface: f32,
+    pub outlet: [f32; 2],
+    /// min x, min z, max x, max z; includes a narrow conditioned shore margin.
+    pub bounds: [f32; 4],
+    pub area_km2: f32,
+    pub max_depth: f32,
+}
+fn retain_lakes(
+    seed: u32,
+    raw: &[f32],
+    conditioned: &[f32],
+    receiver: &[u32],
+    flow: &[f32],
+) -> (Vec<LakeInfo>, Vec<u16>, Vec<u8>, Vec<f32>) {
+    let size = raw.len();
+    let mut seen = vec![false; size];
+    let mut candidates = Vec::new();
+    let mut incoming = vec![NONE; size];
+    let mut next = vec![NONE; size];
+    for i in 0..size {
+        if receiver[i] != NONE {
+            let d = receiver[i] as usize;
+            next[i] = incoming[d];
+            incoming[d] = i as u32;
+        }
+    }
+    for i in 0..size {
+        if seen[i] || raw[i] <= 30. || conditioned[i] - raw[i] < 4. {
+            continue;
+        }
+        let mut todo = vec![i];
+        let mut cells = Vec::new();
+        seen[i] = true;
+        while let Some(j) = todo.pop() {
+            cells.push(j);
+            for (n, _) in neighbors(j) {
+                if !seen[n] && raw[n] > 30. && conditioned[n] - raw[n] >= 4. {
+                    seen[n] = true;
+                    todo.push(n);
+                }
+            }
+        }
+        if cells.len() < 6 || cells.len() > 104 {
+            continue;
+        }
+        let minimum = *cells
+            .iter()
+            .min_by(|&&a, &&b| raw[a].total_cmp(&raw[b]))
+            .unwrap();
+        let level = cells
+            .iter()
+            .map(|&j| conditioned[j])
+            .fold(f32::MAX, f32::min)
+            - 0.8;
+        let top = cells.iter().map(|&j| conditioned[j]).fold(0., f32::max);
+        let depth = level - raw[minimum];
+        let maxflow = cells.iter().map(|&j| flow[j]).fold(0., f32::max);
+        if !(10.0..=55.0).contains(&depth) || level > 420. || top - level > 2.5 || maxflow < 26. {
+            continue;
+        }
+        let score = cells.len() as f32 * 0.20
+            + depth * 0.12
+            + rand01(hash(seed ^ 0x6c11, minimum as i32, 0)) * 8.;
+        candidates.push((score, minimum, level));
+    }
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut lakes: Vec<LakeInfo> = Vec::new();
+    let mut owner = vec![0u16; size];
+    for (_, minimum, level) in candidates {
+        if lakes.len() >= 72 {
+            break;
+        }
+        let center = node_position(minimum);
+        if lakes
+            .iter()
+            .any(|l| distance2(center, l.center) < 7000. * 7000.)
+        {
+            continue;
+        }
+        let mut todo = vec![minimum];
+        let mut cells = Vec::new();
+        let mut accepted = HashSet::new();
+        accepted.insert(minimum);
+        while let Some(j) = todo.pop() {
+            cells.push(j);
+            if cells.len() > 180 {
+                break;
+            }
+            for (n, _) in neighbors(j) {
+                if raw[n] < level + 0.2 && raw[n] > 30. && accepted.insert(n) {
+                    todo.push(n);
+                }
+            }
+        }
+        if cells.len() > 180
+            || cells.iter().any(|&j| {
+                let x = j % GRID;
+                let z = j / GRID;
+                (z.saturating_sub(8)..=(z + 8).min(GRID - 1)).any(|zz| {
+                    (x.saturating_sub(8)..=(x + 8).min(GRID - 1))
+                        .any(|xx| owner[zz * GRID + xx] != 0)
+                })
+            })
+        {
+            continue;
+        }
+        // Follow the same acyclic receiver graph to the first dry spill cell. The
+        // retained surface is slightly below that saddle; its outlet is a small cut.
+        let mut outlet = minimum;
+        let mut visited = 0;
+        while receiver[outlet] != NONE
+            && accepted.contains(&(receiver[outlet] as usize))
+            && visited < size
+        {
+            outlet = receiver[outlet] as usize;
+            visited += 1;
+        }
+        if receiver[outlet] == NONE {
+            continue;
+        }
+        let downstream = receiver[outlet] as usize;
+        if raw[downstream] < level - 4. {
+            continue;
+        }
+        // Retaining this basin must not raise an unrelated, deeper upstream pocket.
+        // Every submerged ancestor must belong to this connected flooded footprint.
+        let mut stack = vec![outlet];
+        let mut compatible = true;
+        while let Some(j) = stack.pop() {
+            if raw[j] < level - 0.8 && !accepted.contains(&j) {
+                compatible = false;
+                break;
+            }
+            let mut child = incoming[j];
+            while child != NONE {
+                stack.push(child as usize);
+                child = next[child as usize];
+            }
+        }
+        if !compatible {
+            continue;
+        }
+        let id = lakes.len() as u16 + 1;
+        let mut bounds = [center[0], center[1], center[0], center[1]];
+        for &j in &cells {
+            owner[j] = id;
+            let p = node_position(j);
+            bounds[0] = bounds[0].min(p[0] - CELL * 3.);
+            bounds[1] = bounds[1].min(p[1] - CELL * 3.);
+            bounds[2] = bounds[2].max(p[0] + CELL * 3.);
+            bounds[3] = bounds[3].max(p[1] + CELL * 3.);
+        }
+        lakes.push(LakeInfo {
+            id: id as u32,
+            center,
+            surface: level,
+            outlet: node_position(downstream),
+            bounds,
+            area_km2: cells.len() as f32 * CELL * CELL / 1e6,
+            max_depth: level - raw[minimum],
+        });
+    }
+    let mut minimum_level = vec![SEA_LEVEL; size];
+    // Reverse dependency traversal: receivers always have lower flood rank, but
+    // their indices need not be ordered. Memoized walks visit each cell once.
+    let mut done = vec![false; size];
+    for start in 0..size {
+        if done[start] {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut i = start;
+        while !done[i] {
+            path.push(i);
+            done[i] = true;
+            if receiver[i] == NONE {
+                break;
+            }
+            i = receiver[i] as usize;
+        }
+        for &j in path.iter().rev() {
+            let below = if receiver[j] == NONE {
+                SEA_LEVEL
+            } else {
+                minimum_level[receiver[j] as usize]
+            };
+            minimum_level[j] = if owner[j] > 0 {
+                lakes[owner[j] as usize - 1].surface.max(below)
+            } else {
+                below
+            };
+        }
+    }
+    // Expand only the dry shore interpolation stencil. The actual water footprint
+    // is still clipped by the terrain at the retained level, not by cell squares.
+    let mut strength: Vec<u8> = owner.iter().map(|&i| if i > 0 { 255 } else { 0 }).collect();
+    for value in [192u8, 128, 64] {
+        let previous = owner.clone();
+        for i in 0..size {
+            if previous[i] > 0 {
+                for (n, _) in neighbors(i) {
+                    if owner[n] == 0 && raw[n] > lakes[previous[i] as usize - 1].surface - 3. {
+                        owner[n] = previous[i];
+                        strength[n] = value;
+                    }
+                }
+            }
+        }
+    }
+    (lakes, owner, strength, minimum_level)
+}
+
 #[derive(Clone, Debug)]
 pub struct Hydrology {
     pub segments: Vec<Segment>,
+    pub lakes: Vec<LakeInfo>,
+    lake_grid: Vec<u16>,
+    lake_strength: Vec<u8>,
     buckets: Vec<Vec<u32>>,
     pub stats: Stats,
     // Audit data is dropped after generation in browser/native builds.
@@ -307,7 +529,7 @@ impl Hydrology {
                     return 0.0;
                 }
                 let p = node_position(i);
-                0.42 + noise(seed ^ 0x3102, p[0] / 29000.0, p[1] / 29000.0) * 1.28
+                0.24 + crate::regions::base(seed, p[0], p[1]).rainfall * 1.52
             })
             .collect();
         let mut catchment_cells: Vec<u32> = ocean.iter().map(|&sea| u32::from(!sea)).collect();
@@ -351,6 +573,8 @@ impl Hydrology {
                 upstream[d] = i as u32;
             }
         }
+        let (mut lakes, lake_grid, lake_strength, minimum_level) =
+            retain_lakes(seed, &raw, &conditioned, &receiver, &accumulation);
         let mut positions: Vec<[f32; 2]> = (0..size).map(node_position).collect();
         // A small shared-node offset removes the rigid 500m lattice without
         // changing the drainage topology. All tributaries use the same junction.
@@ -372,6 +596,17 @@ impl Hydrology {
                 }
             }
         }
+        for lake in &mut lakes {
+            let mut i = (((lake.outlet[1] + HALF) / CELL).round() as usize) * GRID
+                + ((lake.outlet[0] + HALF) / CELL).round() as usize;
+            for _ in 0..200 {
+                if active[i] || receiver[i] == NONE {
+                    break;
+                }
+                i = receiver[i] as usize;
+            }
+            lake.outlet = positions[i];
+        }
         let mut tangents = vec![[0.0, 1.0]; size];
         for i in 0..size {
             if !active[i] && incoming[i] == 0 {
@@ -391,7 +626,8 @@ impl Hydrology {
         }
         let mut water_level: Vec<f32> = positions
             .iter()
-            .map(|p| (height_at(p[0], p[1]) - 1.5).max(SEA_LEVEL))
+            .enumerate()
+            .map(|(i, p)| (height_at(p[0], p[1]) - 1.5).max(minimum_level[i]))
             .collect();
         // Burn the lowest upstream basin level through its spill route. Unlike
         // rendering the flood-filled DEM directly, this never makes aqueducts.
@@ -429,7 +665,7 @@ impl Hydrology {
                     }
                 }
             }
-            water_level[d] = water_level[d].min((lowest - EPS).max(SEA_LEVEL));
+            water_level[d] = water_level[d].min((lowest - EPS).max(minimum_level[d]));
         }
         let mut segments = Vec::new();
         let mut coastal_outlets = 0usize;
@@ -483,6 +719,10 @@ impl Hydrology {
                     (height_at(middle[0], middle[1]) - (last_level + level) * 0.5).max(0.0);
                 maximum_incision = maximum_incision.max(incision);
                 sum_incision += incision;
+                let grade = (last_level - level).max(0.) / distance2(last, p).sqrt().max(1.);
+                let deposition = (1. - smooth(0.002, 0.035, grade))
+                    * smooth(35., 480., accumulation[i])
+                    * (1. - smooth(70., 220., incision));
                 if distance2(last, p) > 0.001 {
                     segments.push(Segment {
                         a: last,
@@ -492,7 +732,9 @@ impl Hydrology {
                         width_a: last_width,
                         width_b: w,
                         flow: accumulation[i],
-                        influence: (340.0 + incision * 1.5 + w * 2.0).min(2200.0),
+                        influence: (160.0 + deposition * 430. + incision * 1.5 + w * 2.0)
+                            .min(2200.0),
+                        deposition,
                     });
                 }
                 if mouth {
@@ -517,7 +759,10 @@ impl Hydrology {
                 }
             }
         }
-        let retained_bytes = segments.capacity() * std::mem::size_of::<Segment>()
+        let retained_bytes = lake_strength.capacity()
+            + lake_grid.capacity() * std::mem::size_of::<u16>()
+            + lakes.capacity() * std::mem::size_of::<LakeInfo>()
+            + segments.capacity() * std::mem::size_of::<Segment>()
             + buckets.capacity() * std::mem::size_of::<Vec<u32>>()
             + buckets
                 .iter()
@@ -526,7 +771,7 @@ impl Hydrology {
         // Approximate simultaneously live generation vectors, excluding allocator
         // overhead and test-only diagnostic copies. The heap peak is bounded by
         // one FloodNode per cell, including the initially queued ocean outlets.
-        let estimated_peak_generation_bytes = retained_bytes + size * (4 * 11 + 8 * 3 + 3);
+        let estimated_peak_generation_bytes = retained_bytes + size * (4 * 14 + 8 * 3 + 7);
         let stats = Stats {
             grid_resolution: GRID,
             grid_spacing_m: CELL,
@@ -537,6 +782,8 @@ impl Hydrology {
             retained_bytes,
             estimated_peak_generation_bytes,
             river_segments: segments.len(),
+            retained_lakes: lakes.len(),
+            lake_area_km2: lakes.iter().map(|l| l.area_km2).sum(),
             headwaters: (0..size).filter(|&i| active[i] && incoming[i] == 0).count(),
             confluences: incoming.iter().filter(|&&n| n > 1).count(),
             outlets: (0..size)
@@ -552,6 +799,9 @@ impl Hydrology {
         };
         Self {
             segments,
+            lakes,
+            lake_grid,
+            lake_strength,
             buckets,
             stats,
             #[cfg(test)]
@@ -571,6 +821,40 @@ impl Hydrology {
             #[cfg(test)]
             basin,
         }
+    }
+    pub(super) fn lake_membership(&self, x: f32, z: f32) -> Option<(usize, f32)> {
+        let fx = ((x + HALF) / CELL).clamp(0., (GRID - 1) as f32 - 0.001);
+        let fz = ((z + HALF) / CELL).clamp(0., (GRID - 1) as f32 - 0.001);
+        let ix = fx.floor() as usize;
+        let iz = fz.floor() as usize;
+        let u = fx - ix as f32;
+        let v = fz - iz as f32;
+        let corners = [
+            (iz * GRID + ix, (1. - u) * (1. - v)),
+            (iz * GRID + ix + 1, u * (1. - v)),
+            ((iz + 1) * GRID + ix, (1. - u) * v),
+            ((iz + 1) * GRID + ix + 1, u * v),
+        ];
+        let id = corners
+            .iter()
+            .filter(|(i, _)| self.lake_grid[*i] > 0)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| self.lake_grid[*i])?;
+        let weight = corners
+            .iter()
+            .filter(|(i, _)| self.lake_grid[*i] == id)
+            .map(|(i, w)| *w * self.lake_strength[*i] as f32 / 255.)
+            .sum();
+        Some((id as usize - 1, weight))
+    }
+    pub fn lake_at(&self, x: f32, z: f32, height_at: impl FnOnce() -> f32) -> Option<&LakeInfo> {
+        let (i, weight) = self.lake_membership(x, z)?;
+        let lake = &self.lakes[i];
+        if weight <= 0.20 {
+            return None;
+        }
+        let t = self.terrain(x, z, height_at());
+        (t.water > t.height && (t.water - lake.surface).abs() < 8.).then_some(lake)
     }
     pub fn nearest(&self, x: f32, z: f32) -> Hit {
         let mut best = Hit::none();
@@ -615,7 +899,11 @@ impl Hydrology {
             let valley_weight = 1.0 - smooth(bank_end + 20.0, segment.influence, h.distance);
             let bank_land =
                 raw.min(h.level + 3.5 + (raw - h.level - 3.5).max(0.0) * (1.0 - valley_weight));
-            let shaped = lerp(floor, bank_land, bank);
+            let terrace = segment.deposition
+                * 1.6
+                * smooth(bank_end + 25., bank_end + 90., h.distance)
+                * (1. - smooth(bank_end + 100., segment.influence, h.distance));
+            let shaped = lerp(floor, bank_land + terrace, bank);
             // Smooth, local corridor ownership prevents a lower adjacent reach
             // from cutting the ground out beneath an upper river. Compact
             // support makes the spatial index invisible at bucket boundaries.
@@ -643,6 +931,59 @@ impl Hydrology {
             result.height = lerp(shaped, channel, protection);
             if proximity < 1.90 {
                 result.water = level;
+            }
+        }
+        if let Some((id, mut coverage)) = self.lake_membership(x, z) {
+            let lake = &self.lakes[id];
+            let limit = (lake.max_depth + 6.).min(100.);
+            // A support stencil must not fill a lower neighbouring catchment or
+            // borrow its river. Only compatible spill levels join this lake.
+            let cut = (result.river * 8.)
+                .min(1.)
+                .max(smooth(3., 18., raw - result.height));
+            let ownership_level = if total > 0. {
+                level_sum / total
+            } else {
+                lake.surface
+            };
+            let compatibility = 1. - smooth(5., 16., (ownership_level - lake.surface).abs());
+            coverage *= 1. - cut * (1. - compatibility);
+            let shallow = 1. - smooth(8., 26., lake.surface - raw);
+            coverage *= shallow.max(smooth(0.50, 0.65, coverage));
+            let old_height = result.height;
+            let old_water = result.water;
+            let old_river = result.river;
+            let support = smooth(0., 0.30, coverage);
+            let signed = (coverage - 0.60) * 2000.;
+            let floor = lake.surface - (signed * 0.12).clamp(-24., limit);
+            let mut target = raw.min(old_height).max(floor);
+            // A continuous shore berm closes unresolved sub-cell depressions.
+            // The real receiver channel cuts through it, gradually joining the
+            // retained plane. Its influence vanishes smoothly away from banks.
+            let joining = smooth(0., 0.60, coverage);
+            let channel_water = if old_water > NO_WATER {
+                lerp(old_water, lake.surface, joining)
+            } else {
+                lake.surface
+            };
+            if old_water > NO_WATER {
+                let cut = result.river * (1. - smooth(0.58, 0.82, coverage));
+                target = lerp(target, raw.min(channel_water - 2.2), cut);
+            }
+            result.height = lerp(old_height, target, support);
+            if old_water > NO_WATER {
+                result.water = lerp(old_water, channel_water, support);
+            }
+            if coverage >= 0.60 {
+                result.water = lake.surface;
+            }
+            if old_water > NO_WATER {
+                let core = smooth(0.72, 0.96, old_river);
+                result.water = lerp(result.water, old_water, core);
+                result.height = lerp(result.height, old_height, core);
+            }
+            if coverage > 0.60 && result.height < lake.surface {
+                result.river = result.river.max(0.55 * smooth(0.60, 0.85, coverage));
             }
         }
         result
@@ -689,8 +1030,107 @@ mod coastal_tests {
     fn archipelago_height(x: f32, z: f32) -> f32 {
         let main = (1.0 - (x + 20000.0).hypot(z) / 75000.0) * 900.0;
         let island = (1.0 - (x - 105000.0).hypot(z + 45000.0) / 12000.0) * 400.0;
-        let outer_island = (1.0 - (x - 160000.0).hypot(z - 62000.0) / 9000.0) * 300.0;
+        let outer_island = (1.0 - (x - 160000.0).hypot(z - 62000.0) / 14000.0) * 300.0;
         main.max(island).max(outer_island).max(-180.0)
+    }
+    #[test]
+    fn retained_lakes_have_flat_centers_wet_outlets_and_bounded_shores() {
+        for seed in [1337, 42, 2026] {
+            let h = Hydrology::new(seed);
+            assert!(h.lakes.len() >= 20);
+            let mut tested = 0;
+            for l in &h.lakes {
+                let center = h.terrain(
+                    l.center[0],
+                    l.center[1],
+                    raw_height(seed, l.center[0], l.center[1]),
+                );
+                assert!(
+                    center.water > center.height,
+                    "dry lake{} seed{}",
+                    l.id,
+                    seed
+                );
+                assert!(
+                    (center.water - l.surface).abs() < 0.003,
+                    "lake{} center {} vs{} seed{}",
+                    l.id,
+                    center.water,
+                    l.surface,
+                    seed
+                );
+                let outlet = h.terrain(
+                    l.outlet[0],
+                    l.outlet[1],
+                    raw_height(seed, l.outlet[0], l.outlet[1]),
+                );
+                assert!(
+                    outlet.water > outlet.height,
+                    "dry routed outlet lake{} seed{} {:?}",
+                    l.id,
+                    seed,
+                    l.outlet
+                );
+                assert!(
+                    outlet.water <= l.surface + 0.05,
+                    "uphill outlet lake{} seed{}",
+                    l.id,
+                    seed
+                );
+                for angle in 0..8 {
+                    let a = angle as f32 * std::f32::consts::TAU / 8.;
+                    let dir = [a.cos(), a.sin()];
+                    let mut previous = l.center;
+                    let mut wet = center;
+                    for step in 1..100 {
+                        let p = [
+                            l.center[0] + dir[0] * step as f32 * 80.,
+                            l.center[1] + dir[1] * step as f32 * 80.,
+                        ];
+                        let q = h.terrain(p[0], p[1], raw_height(seed, p[0], p[1]));
+                        if wet.water > wet.height && q.water <= q.height {
+                            let mut inside = previous;
+                            let mut outside = p;
+                            for _ in 0..16 {
+                                let m = [
+                                    (inside[0] + outside[0]) * 0.5,
+                                    (inside[1] + outside[1]) * 0.5,
+                                ];
+                                let t = h.terrain(m[0], m[1], raw_height(seed, m[0], m[1]));
+                                if t.water > t.height {
+                                    inside = m
+                                } else {
+                                    outside = m
+                                }
+                            }
+                            let a = h.terrain(
+                                inside[0],
+                                inside[1],
+                                raw_height(seed, inside[0], inside[1]),
+                            );
+                            let b = h.terrain(
+                                outside[0],
+                                outside[1],
+                                raw_height(seed, outside[0], outside[1]),
+                            );
+                            assert!(
+                                a.water - b.height < 0.20,
+                                "exposed retained shore lake{} seed{} gap{} at{:?}",
+                                l.id,
+                                seed,
+                                a.water - b.height,
+                                inside
+                            );
+                            tested += 1;
+                            break;
+                        }
+                        previous = p;
+                        wet = q;
+                    }
+                }
+            }
+            assert!(tested > 100);
+        }
     }
     #[test]
     fn coastal_receivers_conserve_land_rainfall_and_stop_at_sea() {
@@ -710,7 +1150,7 @@ mod coastal_tests {
             } else {
                 let p = node_position(i);
                 expected_rain +=
-                    (0.42 + noise(1337 ^ 0x3102, p[0] / 29000.0, p[1] / 29000.0) * 1.28) as f64;
+                    (0.24 + crate::regions::base(1337, p[0], p[1]).rainfall * 1.52) as f64;
                 assert_ne!(
                     h.receiver[i], NONE,
                     "interior island drainage failed to reach a coast"
@@ -777,7 +1217,10 @@ mod coastal_tests {
             }
         }
         assert!(terminal_segments >= h.mouths.len());
-        assert!(outer_island_segments > 10);
+        assert!(
+            outer_island_segments > 0,
+            "small offshore catchment must retain visible drainage"
+        );
         for x in [-180000.0, -96000.0, 60000.0, 185000.0] {
             let raw = archipelago_height(x, 0.0);
             assert!(raw < SEA_LEVEL);

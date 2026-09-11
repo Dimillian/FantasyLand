@@ -13,11 +13,12 @@ use std::{
 use wgpu::util::DeviceExt;
 
 pub const TILE_SIZE: f32 = 48.;
-pub const COVER_DISTANCE: f32 = 250.;
+pub const COVER_DISTANCE: f32 = 420.;
 const GRID_SIZE: usize = 11;
 const HEIGHT_STEP: f32 = 6.;
 const DIVISIONS: i32 = 32;
 const VARIANTS: u32 = 8;
+const TEMPLATE_KINDS: u32 = 6;
 const TEMPLATE_VERTICES: u32 = 24;
 
 #[repr(C)]
@@ -144,11 +145,7 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
             let x = origin[0] + local[0];
             let z = origin[1] + local[1];
             let sample = world.sample(x, z);
-            if sample.ocean
-                || sample.shore != ShoreKind::None
-                || sample.road > 0.10
-                || sample.water_height > sample.height + 0.15
-            {
+            if sample.ocean || sample.road > 0.10 || sample.water_height > sample.height + 0.15 {
                 continue;
             }
             let ecology = ecology::sample(world.seed, x, z, &sample);
@@ -169,21 +166,28 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                 3
             } else if r < ecology.ferns + ecology.flowers + ecology.heather {
                 4
-            } else if sample.biome == Biome::Wetland {
+            } else if sample.biome == Biome::Wetland || sample.shore != ShoreKind::None {
                 1
+            } else if r < ecology.ferns + ecology.flowers + ecology.heather + ecology.seedheads {
+                5
             } else {
                 0
             };
-            let open = 1. - ecology.tree_density;
-            let color = match sample.biome {
-                Biome::Grassland | Biome::Forest => {
-                    color_mix([0.25, 0.41, 0.17], [0.38, 0.52, 0.19], open)
+            let color = if kind == 5 {
+                color_mix(ecology.cover_color, [0.64, 0.53, 0.29], 0.52)
+            } else {
+                ecology.cover_color
+            };
+            // A colony shares flower shape/palette; small variant changes avoid
+            // copies without scattering unrelated species across every cell.
+            let variant = if kind == 3 {
+                match ecology.flower_group {
+                    0 => hash(seed, 403, 409) % 3,
+                    1 => 3 + hash(seed, 403, 409) % 3,
+                    _ => 6 + hash(seed, 403, 409) % 2,
                 }
-                Biome::PineForest => color_mix([0.25, 0.36, 0.23], [0.39, 0.48, 0.23], open),
-                Biome::Wetland => [0.37, 0.49, 0.23],
-                Biome::Moor => [0.46, 0.46, 0.25],
-                Biome::Alpine => [0.49, 0.50, 0.34],
-                Biome::Desert => [0.70, 0.55, 0.29],
+            } else {
+                hash(seed, 403, 409) % VARIANTS
             };
             let instance = CoverInstance {
                 placement: [
@@ -195,10 +199,7 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                     let angle = random(seed, 401) * std::f32::consts::TAU;
                     [angle.sin(), angle.cos()]
                 },
-                data: [
-                    pack_color(color),
-                    kind * VARIANTS + hash(seed, 403, 409) % VARIANTS,
-                ],
+                data: [pack_color(color), kind * VARIANTS + variant],
             };
             plants.push((random(seed, 397) * 4., seed, instance));
         }
@@ -226,8 +227,8 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
 }
 
 fn templates() -> Vec<TemplateVertex> {
-    let mut result = Vec::with_capacity((5 * VARIANTS * TEMPLATE_VERTICES) as usize);
-    for kind in 0..5 {
+    let mut result = Vec::with_capacity((TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES) as usize);
+    for kind in 0..TEMPLATE_KINDS {
         for variant in 0..VARIANTS {
             let mesh = geometry::cover_template(kind, variant);
             assert!(mesh.vertices.len() <= TEMPLATE_VERTICES as usize);
@@ -409,12 +410,14 @@ impl CoverLayer {
             return;
         }
         self.center = Some(center);
-        self.tiles
-            .retain(|&(x, z), _| (x - center.0).pow(2) + (z - center.1).pow(2) <= 49);
+        let radius = (COVER_DISTANCE / TILE_SIZE).ceil() as i32 + 1;
+        self.tiles.retain(|&(x, z), _| {
+            (x - center.0).pow(2) + (z - center.1).pow(2) <= (radius + 1).pow(2)
+        });
         let mut requested = Vec::new();
-        for dz in -6i32..=6 {
-            for dx in -6i32..=6 {
-                if dx * dx + dz * dz > 42 {
+        for dz in -radius..=radius {
+            for dx in -radius..=radius {
+                if (dx * dx + dz * dz) as f32 > (radius as f32 + 0.5).powi(2) {
                     continue;
                 }
                 let key = (center.0 + dx, center.1 + dz);
@@ -506,7 +509,9 @@ impl CoverLayer {
         if density > 0. && density.is_finite() {
             pass.set_pipeline(&self.pipeline);
             for tile in self.tiles.values() {
-                let count = prefix_count(&tile.ranks, density);
+                let nearest = eye.clamp(tile.bounds_min, tile.bounds_max);
+                let distance = (nearest - eye).length();
+                let count = prefix_count(&tile.ranks, density * distance_density(distance));
                 if count == 0 || !visible(tile.bounds_min, tile.bounds_max, eye, view_projection) {
                     continue;
                 }
@@ -542,6 +547,10 @@ impl CoverLayer {
         }
     }
 }
+fn distance_density(distance: f32) -> f32 {
+    let t = ((distance - 180.) / (COVER_DISTANCE - 180.)).clamp(0., 1.);
+    1.0 - 0.85 * t * t * (3.0 - 2.0 * t)
+}
 fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
     let nearest = eye.clamp(min, max);
     if (nearest - eye).length_squared() > COVER_DISTANCE * COVER_DISTANCE {
@@ -571,7 +580,7 @@ mod tests {
     fn templates_and_instances_are_bounded() {
         assert_eq!(std::mem::size_of::<CoverInstance>(), 28);
         let vertices = templates();
-        assert_eq!(vertices.len(), 5 * 8 * 24);
+        assert_eq!(vertices.len(), TEMPLATE_KINDS as usize * 8 * 24);
         assert!(vertices.iter().all(|v| v
             .position
             .iter()
@@ -583,6 +592,38 @@ mod tests {
             && v.position[1] >= 0.
             && v.position[1] < 2.));
     }
+    #[test]
+    fn flower_groups_preserve_petals_and_seedhead_silhouettes() {
+        let vertices = templates();
+        for variant in 0..VARIANTS {
+            let start = ((3 * VARIANTS + variant) * TEMPLATE_VERTICES) as usize;
+            let flower = &vertices[start..start + TEMPLATE_VERTICES as usize];
+            assert!(
+                flower
+                    .iter()
+                    .any(|v| v.position[1] == 0.0 && v.color[3] == 1.0),
+                "Flower stems must stay rooted and take biome tint"
+            );
+            let petals: Vec<_> = flower
+                .iter()
+                .filter(|v| v.color[3] == 0.0 && v.color[0] > 0.0)
+                .collect();
+            assert!(!petals.is_empty());
+            if variant < 3 {
+                assert!(petals.iter().any(|v| v.color[0] > 0.8 && v.color[1] > 0.8));
+            } else if variant < 6 {
+                assert!(petals.iter().any(|v| v.color[0] > 0.8 && v.color[2] < 0.3));
+            } else {
+                assert!(petals.iter().any(|v| v.color[2] > v.color[0] * 1.5));
+                assert!(flower.iter().any(|v| v.position[1] > 0.9));
+            }
+            let start = ((5 * VARIANTS + variant) * TEMPLATE_VERTICES) as usize;
+            assert!(vertices[start..start + TEMPLATE_VERTICES as usize]
+                .iter()
+                .any(|v| v.position[1] > 0.9 && v.color[3] == 0.0));
+        }
+    }
+
     #[test]
     fn live_prefix_is_nested_and_does_not_modify_data() {
         let world = World::new(1337);
@@ -668,7 +709,7 @@ mod tests {
         println!("anchors checked={checked} outside-own-tile={crossed} max_error={worst}");
     }
     #[test]
-    fn generated_plants_preserve_water_road_and_coast_exclusions() {
+    fn generated_plants_preserve_water_roads_and_shore_communities() {
         let world = World::new(1337);
         let p = world.spawn();
         let tx = (p[0] / 48.).floor() as i32;
@@ -681,16 +722,67 @@ mod tests {
                         tile.origin[0] + plant.placement[0],
                         tile.origin[1] + plant.placement[1],
                     );
-                    assert!(
-                        !s.ocean
-                            && s.shore == ShoreKind::None
-                            && s.road <= 0.10
-                            && s.water_height <= s.height + 0.15
-                    );
+                    assert!(!s.ocean && s.road <= 0.10 && s.water_height <= s.height + 0.15);
+                    if s.shore != ShoreKind::None {
+                        assert_eq!(
+                            plant.data[1] / VARIANTS,
+                            1,
+                            "Only salt-tolerant tall grass is selected on shores"
+                        );
+                    }
                 }
             }
         }
     }
+    #[test]
+    fn coastal_tiles_choose_salt_tolerant_grass_only() {
+        let world = World::new(1337);
+        let mut plants_checked = 0;
+        for ray in 0..16 {
+            let angle = ray as f32 * std::f32::consts::TAU / 16.0;
+            let direction = [angle.sin(), angle.cos()];
+            let mut inside = 0.0;
+            let mut outside = 190000.0;
+            for _ in 0..22 {
+                let middle = (inside + outside) * 0.5;
+                if world.landmass_id(direction[0] * middle, direction[1] * middle) == Some(0) {
+                    inside = middle;
+                } else {
+                    outside = middle;
+                }
+            }
+            for inland in [12.0, 48.0, 100.0] {
+                let p = [
+                    direction[0] * (inside - inland),
+                    direction[1] * (inside - inland),
+                ];
+                let tile = tile_data(
+                    &world,
+                    (p[0] / TILE_SIZE).floor() as i32,
+                    (p[1] / TILE_SIZE).floor() as i32,
+                );
+                for plant in &tile.instances {
+                    let terrain = world.sample(
+                        tile.origin[0] + plant.placement[0],
+                        tile.origin[1] + plant.placement[1],
+                    );
+                    assert!(!terrain.ocean);
+                    if terrain.shore != ShoreKind::None {
+                        assert_eq!(plant.data[1] / VARIANTS, 1);
+                        assert!(
+                            terrain.height > 2.0 && terrain.water_height < terrain.height - 0.3
+                        );
+                        plants_checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            plants_checked > 30,
+            "coastal grass candidates checked {plants_checked}"
+        );
+    }
+
     #[test]
     fn culling_rejects_far_tiles_and_keeps_near_crossing_boxes() {
         let eye = Vec3::new(0., 2., 0.);
@@ -701,9 +793,15 @@ mod tests {
             eye,
             projection
         ));
-        assert!(!visible(
+        assert!(visible(
             Vec3::new(-3., -2., -400.),
             Vec3::new(3., 4., -390.),
+            eye,
+            projection
+        ));
+        assert!(!visible(
+            Vec3::new(-3., -2., -COVER_DISTANCE - 30.),
+            Vec3::new(3., 4., -COVER_DISTANCE - 20.),
             eye,
             projection
         ));

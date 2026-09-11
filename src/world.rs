@@ -17,7 +17,7 @@ pub(crate) mod coast;
 pub use coast::{Info as CoastInfo, ShoreKind, SEA_LEVEL};
 #[path = "hydrology.rs"]
 mod hydrology;
-pub use hydrology::Stats as HydrologyStats;
+pub use hydrology::{LakeInfo, Stats as HydrologyStats};
 const LANDMARK_SPACING: f32 = 640.0;
 #[path = "roads.rs"]
 mod roads;
@@ -152,12 +152,6 @@ fn noise(seed: u32, x: f32, z: f32) -> f32 {
     )
 }
 
-fn fbm(seed: u32, x: f32, z: f32) -> f32 {
-    noise(seed, x, z) * 0.58
-        + noise(seed ^ 0x129a, x * 2.03 + 7.1, z * 2.03 - 5.7) * 0.28
-        + noise(seed ^ 0xab73, x * 4.09 - 11.3, z * 4.09 + 8.2) * 0.14
-}
-
 fn distance2(a: [f32; 2], b: [f32; 2]) -> f32 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
@@ -175,29 +169,12 @@ fn segment_hit(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> RoadHit {
 }
 
 fn raw_height(seed: u32, x: f32, z: f32) -> f32 {
-    coast::elevation(coast::info(seed, x, z), inland_height(seed, x, z))
+    let region = crate::regions::base(seed, x, z);
+    coast::regional_elevation(seed, x, z, coast::info(seed, x, z), &region)
 }
+#[cfg(test)]
 fn inland_height(seed: u32, x: f32, z: f32) -> f32 {
-    let warp_x = (noise(seed ^ 0x1801, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
-    let warp_z = (noise(seed ^ 0x1802, x / 13000.0, z / 13000.0) - 0.5) * 2300.0;
-    let wx = x + warp_x;
-    let wz = z + warp_z;
-    let province = fbm(seed ^ 0x1901, wx / 25000.0, wz / 25000.0);
-    let mountains = smooth(0.38, 0.70, province);
-    let ridge_noise = noise(seed ^ 0x1902, wx / 5600.0, wz / 5600.0);
-    let ridge = (1.0 - (ridge_noise * 2.0 - 1.0).abs()).powi(3);
-    let hill = fbm(seed ^ 0x1903, wx / 1400.0, wz / 1400.0);
-    let rolling = fbm(seed ^ 0x1913, wx / 410.0, wz / 510.0);
-    let continental = 1.0;
-    let detail = (noise(seed ^ 0x1904, x / 95.0, z / 95.0) - 0.5) * 6.0
-        + (noise(seed ^ 0x1905, x / 30.0, z / 30.0) - 0.5) * 0.9;
-    24.0 + continental
-        * (95.0
-            + 110.0 * noise(seed ^ 0x1930, x / 48000.0, z / 48000.0)
-            + 76.0 * rolling
-            + 135.0 * hill
-            + mountains * (170.0 + 1420.0 * ridge))
-        + detail
+    crate::regions::base(seed, x, z).height
 }
 
 impl World {
@@ -230,6 +207,15 @@ impl World {
     }
     pub fn landmass_id(&self, x: f32, z: f32) -> Option<u32> {
         coast::landmass_id(self.seed, x, z)
+    }
+    pub fn lakes(&self) -> &[LakeInfo] {
+        &self.hydrology.lakes
+    }
+    pub fn lake_at(&self, x: f32, z: f32) -> Option<&LakeInfo> {
+        self.hydrology.lake_at(x, z, || raw_height(self.seed, x, z))
+    }
+    pub fn landscape(&self, x: f32, z: f32) -> crate::regions::Landscape {
+        crate::regions::sample(self.seed, x, z, &self.natural_sample(x, z))
     }
     pub fn water_flow(&self, x: f32, z: f32) -> [f32; 2] {
         self.river(x, z).tangent
@@ -294,8 +280,9 @@ impl World {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
         let coast = self.coast_info(x, z);
-        let interior = inland_height(self.seed, x, z);
-        let raw = coast::elevation(coast, interior);
+        let regional = crate::regions::base(self.seed, x, z);
+
+        let raw = coast::regional_elevation(self.seed, x, z, coast, &regional);
         let mut water = self.hydrology.terrain(x, z, raw);
         if coast.landmass_id.is_none() {
             water.height = raw;
@@ -333,9 +320,9 @@ impl World {
         let temperature = (0.66 + (continental_heat - 0.5) * 0.52 + z / 128000.0 * 0.23
             - (height - 180.0).max(0.0) * 0.00043)
             .clamp(0.0, 1.0);
-        let rain = fbm(self.seed ^ 0x3102, x / 29000.0, z / 29000.0);
+        let rain = regional.rainfall;
         let wet_edge = 1.0 - smooth(river.width * 1.8, river.width + 520.0, river.distance);
-        let moisture = ((rain - 0.5) * 1.55 + 0.49 + wet_edge * 0.22).clamp(0.0, 1.0);
+        let moisture = (rain + wet_edge * 0.22 - regional.exposure * 0.08).clamp(0.0, 1.0);
         let cover = noise(self.seed ^ 0x3103, x / 720.0, z / 720.0);
         let biome = if height > 1250.0 || (temperature < 0.17 && height > 720.0) {
             Biome::Alpine
@@ -360,7 +347,16 @@ impl World {
             road,
             road_kind: road_hit.kind.filter(|_| road > 0.),
             ocean,
-            shore: coast::shore(coast.distance, interior),
+            shore: if coast.distance < 260.
+                && coast.distance > -70.
+                && height < 12.
+                && river.width > 6.
+                && river.distance < river.width * 3. + 65.
+            {
+                ShoreKind::Beach
+            } else {
+                coast::regional_shore(self.seed, x, z, coast, &regional)
+            },
             river: water.river,
             water_height: water.water,
             temperature,
@@ -371,8 +367,9 @@ impl World {
         let x = x.clamp(-HALF_WORLD, HALF_WORLD);
         let z = z.clamp(-HALF_WORLD, HALF_WORLD);
         let coast = self.coast_info(x, z);
-        let interior = inland_height(self.seed, x, z);
-        let raw = coast::elevation(coast, interior);
+        let regional = crate::regions::base(self.seed, x, z);
+
+        let raw = coast::regional_elevation(self.seed, x, z, coast, &regional);
         let mut water = self.hydrology.terrain(x, z, raw);
         if coast.landmass_id.is_none() {
             water.height = raw;
@@ -450,6 +447,7 @@ impl World {
                     && p[1].abs() <= HALF_WORLD
                     && self.coast_info(p[0], p[1]).distance > 80.
                     && self.ground(p[0], p[1]) > SEA_LEVEL + 0.5
+                    && self.lake_at(p[0], p[1]).is_none()
                     && distance2(p, [x, z]) <= radius * radius
                 {
                     result.push(self.site(i, j));
@@ -526,6 +524,9 @@ impl World {
                 }
                 if self.coast_info(px, pz).distance < 60. || self.ground(px, pz) < SEA_LEVEL + 0.25
                 {
+                    continue;
+                }
+                if self.lake_at(px, pz).is_some() {
                     continue;
                 }
                 let river = self.river(px, pz);
@@ -649,10 +650,17 @@ impl World {
                                 Biome::Moor => 0.0,
                                 _ => -30.0,
                             };
-                            let score =
-                                biome_bonus + rise.min(75.0) * 0.55 + opposite.min(700.0) * 0.09
-                                    - (distance - 430.0).abs() * 0.045
-                                    - distance2(p, [0.0, 0.0]).sqrt() * 0.00035;
+                            let trees = crate::ecology::tree_density(self.seed, p[0], p[1], &s);
+                            let woodland_edge = (1.0 - (trees - 0.52).abs() / 0.52).clamp(0.0, 1.0);
+                            let gx = self.ground(p[0] + 12., p[1]) - self.ground(p[0] - 12., p[1]);
+                            let gz = self.ground(p[0], p[1] + 12.) - self.ground(p[0], p[1] - 12.);
+                            let local_grade = gx.hypot(gz) / 24.;
+                            let score = woodland_edge * 75.0 - local_grade.min(2.0) * 35.0
+                                + biome_bonus
+                                + rise.min(75.0) * 0.55
+                                + opposite.min(700.0) * 0.09
+                                - (distance - 430.0).abs() * 0.045
+                                - distance2(p, [0.0, 0.0]).sqrt() * 0.00035;
                             if best.map_or(true, |(_, _, old)| score > old) {
                                 best = Some((p, dx.atan2(-dz), score));
                             }
@@ -837,8 +845,7 @@ mod tests {
             } else {
                 let x = -WORLD_SIZE * 0.5 + (i % hydrology::GRID) as f32 * hydrology::CELL;
                 let z = -WORLD_SIZE * 0.5 + (i / hydrology::GRID) as f32 * hydrology::CELL;
-                expected_rain +=
-                    (0.42 + noise(w.seed ^ 0x3102, x / 29000.0, z / 29000.0) * 1.28) as f64;
+                expected_rain += (0.24 + crate::regions::base(w.seed, x, z).rainfall * 1.52) as f64;
                 assert!(
                     h.ocean[h.basin[i] as usize],
                     "inland catchment must terminate at an ocean outlet"
@@ -853,10 +860,15 @@ mod tests {
             assert!(rank[r] < rank[i]);
             assert!(h.conditioned[r] <= h.conditioned[i]);
             assert!(h.water_level[r] <= h.water_level[i]);
-            if h.water_level[i] > SEA_LEVEL {
+            if h.water_level[i] > SEA_LEVEL
+                && !h
+                    .lakes
+                    .iter()
+                    .any(|l| (l.surface - h.water_level[i]).abs() < 0.0001)
+            {
                 assert!(
                     h.water_level[r] < h.water_level[i],
-                    "only sea-level tidal reaches may have a flat profile"
+                    "non-lake, non-tidal reaches descend"
                 );
             }
             assert!(h.accumulation[r] >= h.accumulation[i]);
@@ -922,7 +934,8 @@ mod tests {
             let sample = h.terrain(p[0], p[1], raw);
             assert!(sample.height < sample.water, "dry river {p:?}");
             assert!(
-                (sample.water - (s.level_a + s.level_b) * 0.5).abs() < 0.5,
+                h.lake_membership(p[0], p[1]).is_some()
+                    || (sample.water - (s.level_a + s.level_b) * 0.5).abs() < 0.5,
                 "inconsistent surface {p:?}"
             );
         }
@@ -1053,7 +1066,12 @@ mod tests {
                         let sample = h.terrain(q[0], q[1], raw_height(seed, q[0], q[1]));
                         if sample.water > sample.height {
                             assert!(
-                                sample.water - sample.height <= 9.002,
+                                sample.water - sample.height
+                                    <= if h.lake_membership(q[0], q[1]).is_some() {
+                                        100.002
+                                    } else {
+                                        9.002
+                                    },
                                 "excessive depth seed{} {:?}:{}",
                                 seed,
                                 q,
