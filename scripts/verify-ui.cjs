@@ -148,18 +148,18 @@ async function verifyGroundCoverSettings() {
   const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:3,filterStrength:0.8,renderResolution:720,asciiScale:3,asciiPalette:2,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
   const controls = html.match(/<input id="ground-cover-density"[^>]+>/)?.[0];
   assert.ok(controls, 'Ground-cover control must exist in the actual settings HTML.');
-  for (const attr of ['type="range"','min="0"','max="400"','step="25"','value="100"','aria-describedby="ground-cover-density-help"']) assert.ok(controls.includes(attr), attr);
+  for (const attr of ['type="range"','min="0"','max="400"','step="25"','value="400"','aria-describedby="ground-cover-density-help"']) assert.ok(controls.includes(attr), attr);
   const selected = filterHarness(existing);
-  assert.equal(selected.run('groundCoverDensity'),1, 'Old v4 saves receive the 100% default.');
-  assert.equal(selected.ids['ground-cover-density'].value,'100');
-  assert.equal(selected.ids['ground-cover-density-value'].textContent,'100% · 1×');
+  assert.equal(selected.run('groundCoverDensity'),4, 'Old v4 saves without a density preference receive the 400% default.');
+  assert.equal(selected.ids['ground-cover-density'].value,'400');
+  assert.equal(selected.ids['ground-cover-density-value'].textContent,'400% · 4×');
   await selected.run('boot()'); selected.run('initialReady=true;');
-  assert.deepEqual(selected.groundCoverCalls,[1]);
+  assert.deepEqual(selected.groundCoverCalls,[4]);
   assert.ok(selected.rendererEvents.findIndex(e=>e[0]==='groundCover') < selected.rendererEvents.findIndex(e=>e[0]==='resize'), 'Density must reach the renderer before first resize.');
   const eventsBefore = selected.rendererEvents.length;
   const change = value => { selected.ids['ground-cover-density'].value=String(value); selected.ids['ground-cover-density'].fire('input'); };
   change(225);
-  assert.deepEqual(selected.groundCoverCalls,[1,2.25], 'An input event must call the GPU API immediately.');
+  assert.deepEqual(selected.groundCoverCalls,[4,2.25], 'An input event must call the GPU API immediately.');
   assert.deepEqual(selected.rendererEvents.slice(eventsBefore),[['groundCover',2.25]], 'Density must not resize, alter quality, or rebuild through unrelated APIs.');
   assert.deepEqual(selected.teleports,[[637,222]], 'Live density changes must never teleport/reset the player.');
   assert.equal(selected.ids['ground-cover-density-value'].textContent,'225% · 2.25×');
@@ -178,9 +178,9 @@ async function verifyGroundCoverSettings() {
   const count=selected.groundCoverCalls.length;
   selected.ids['quality-select'].value='0'; selected.ids['quality-select'].fire('change');
   assert.equal(selected.groundCoverCalls.length,count); assert.equal(selected.saved().groundCoverDensity,2.25, 'World quality must not replace explicit density.');
-  for (const [value, expected] of [[-25,0],[650,4],['not a number',1],['Infinity',1]]) { change(value); assert.equal(selected.groundCoverCalls.at(-1),expected); assert.equal(selected.saved().groundCoverDensity,expected); assert.equal(selected.ids['ground-cover-density'].value,String(expected*100)); }
+  for (const [value, expected] of [[-25,0],[650,4],['not a number',4],['Infinity',4]]) { change(value); assert.equal(selected.groundCoverCalls.at(-1),expected); assert.equal(selected.saved().groundCoverDensity,expected); assert.equal(selected.ids['ground-cover-density'].value,String(expected*100)); }
   change(400); assert.equal(selected.ids['ground-cover-density-value'].textContent,'400% · 4×');
-  for (const [value, expected] of [[-3,0],[8,4],['invalid',1],['Infinity',1],[null,1]]) {
+  for (const [value, expected] of [[-3,0],[8,4],['invalid',4],['Infinity',4],[null,4]]) {
     const invalid=filterHarness({...existing,groundCoverDensity:value}); await invalid.run('boot()');
     assert.deepEqual(invalid.groundCoverCalls,[expected], 'Saved values must be finite and bounded before reaching WASM.');
   }

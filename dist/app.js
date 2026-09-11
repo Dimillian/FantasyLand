@@ -33,7 +33,7 @@ let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution
 let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(saved.asciiScale ?? 2) : 2;
 let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
-let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 1)) ? clamp(Number(saved.groundCoverDensity ?? 1), 0, 4) : 1;
+let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 4)) ? clamp(Number(saved.groundCoverDensity ?? 4), 0, 4) : 4;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
@@ -611,7 +611,7 @@ $('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgr
 $('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); updateRenderDimensions(); saveProgress(); });
 $('ground-cover-density').addEventListener('input', (event) => {
   const percent = Number(event.target.value);
-  groundCoverDensity = Number.isFinite(percent) ? clamp(percent / 100, 0, 4) : 1;
+  groundCoverDensity = Number.isFinite(percent) ? clamp(percent / 100, 0, 4) : 4;
   // The engine updates a GPU density setting immediately; no terrain regeneration.
   applyGroundCoverDensity();
   saveProgress();

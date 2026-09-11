@@ -292,7 +292,7 @@ impl Renderer {
             resolution: 0,
             elapsed: 0.0,
             cover,
-            ground_cover_density: 1.0,
+            ground_cover_density: 4.0,
             cover_drawn_instances: 0,
             width,
             height,
@@ -443,7 +443,7 @@ impl Renderer {
         self.ground_cover_density = if density.is_finite() {
             density.clamp(0.0, 4.0)
         } else {
-            1.0
+            4.0
         };
     }
     pub fn cover_stats(&self) -> CoverStats {
