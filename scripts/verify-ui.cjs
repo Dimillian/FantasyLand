@@ -56,6 +56,7 @@ function filterHarness(snapshot, destinations = []) {
     set_quality:value=>{selectedQuality=value;qualityCalls.push(value);rendererEvents.push(['quality',value]);},
     resize:(width,height)=>{surfaceWidth=width;surfaceHeight=height;rendererEvents.push(['resize',width,height]);},
     teleport:(x,z)=>{teleports.push([x,z]);playerState.x=x;playerState.z=z;},
+    face:(yaw,pitch)=>{playerState.yaw=yaw;playerState.pitch=pitch;},
     state:()=>({...playerState})
   };
   let readyFrames = 0;
@@ -203,7 +204,7 @@ async function verifyGroundCoverSettings() {
 async function verifyLandscapeDestinations() {
   const existing={seed:1337,x:637,z:222,quality:2,sunShadows:false,groundCoverDensity:4,sensitivity:1.2,filterMode:2,filterStrength:1.1,renderResolution:720,asciiScale:3,asciiPalette:2,atlas:{x:640,z:225,span:6000}};
   const names=['Ancient woodland','Granite highlands','Windswept coast','Wet lowlands','Sandstone country','Meadowlands','Alpine heights'];
-  const destinations=names.map((name,i)=>({name,x:1000+i*320,z:-1000-i*450}));
+  const destinations=names.map((name,i)=>({name,x:1000+i*320,z:-1000-i*450,yaw:i*0.3,pitch:-0.04}));
   const h=filterHarness(existing,destinations); await h.run('boot()');h.run('initialReady=true;');
   assert.equal(h.destinationCalls,0,'Boot must not scan destinations.');
   h.run("openModal('settings')");assert.equal(h.destinationCalls,0,'Opening settings must not scan until the selector is used.');
@@ -215,7 +216,7 @@ async function verifyLandscapeDestinations() {
   h.ids['landscape-destination'].fire('pointerdown');assert.equal(h.destinationCalls,1,'The world destination list must be cached.');
   h.ids['landscape-travel-form'].fire('submit');assert.deepEqual(h.teleports,[[637,222]],'The placeholder must never teleport.');
   h.ids['landscape-destination'].value='2';h.ids['landscape-destination'].fire('change');assert.equal(h.ids['travel-landscape'].disabled,false);
-  h.ids['landscape-travel-form'].fire('submit');assert.deepEqual(h.teleports.at(-1),[1640,-1900]);
+  h.ids['landscape-travel-form'].fire('submit');assert.deepEqual(h.teleports.at(-1),[1640,-1900]);assert.equal(h.run('state.yaw'),0.6);assert.equal(h.run('state.pitch'),-0.04);
   assert.equal(h.run('modal'),null);assert.equal(h.ids.toast.textContent,'Arrived at Windswept coast.');
   const saved=h.saved();assert.equal(saved.x,1640);assert.equal(saved.z,-1900);assert.equal(saved.waypoint.name,'Windswept coast');
   for(const key of Object.keys(existing).filter(key=>!['x','z'].includes(key)))assert.deepEqual(saved[key],existing[key],`Travel must preserve ${key}.`);

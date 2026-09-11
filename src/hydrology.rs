@@ -30,6 +30,42 @@ pub struct Segment {
     pub flow: f32,
     pub influence: f32,
     pub deposition: f32,
+    /// Signed curvature of the actual smoothed reach; positive bends left.
+    pub bend: f32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaterEdgeKind {
+    None,
+    RiverGravel,
+    RiverCutBank,
+    LakeMud,
+    LakeReeds,
+    LakeGravel,
+    CoastalShelf,
+    CoastalSand,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct WaterEdge {
+    pub kind: WaterEdgeKind,
+    /// Continuous strength near the bank, never a wet/dry geometry classifier.
+    pub influence: f32,
+    pub sediment: f32,
+    pub wetness: f32,
+    pub water_level: f32,
+    pub flow: [f32; 2],
+}
+impl WaterEdge {
+    pub fn none() -> Self {
+        Self {
+            kind: WaterEdgeKind::None,
+            influence: 0.,
+            sediment: 0.,
+            wetness: 0.,
+            water_level: NO_WATER,
+            flow: [0., 1.],
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
@@ -96,6 +132,17 @@ pub struct LakeInfo {
     pub bounds: [f32; 4],
     pub area_km2: f32,
     pub max_depth: f32,
+}
+fn lake_margin(seed: u32, x: f32, z: f32) -> (f32, f32, f32) {
+    let b = crate::regions::base(seed, x, z);
+    let exposure =
+        (b.exposure * 0.70 + noise(seed ^ 0x6c81, x / 850., z / 850.) * 0.30).clamp(0., 1.);
+    let sediment = (b.fertility * 0.72 + (1. - exposure) * 0.28).clamp(0., 1.);
+    (
+        lerp(0.042, 0.145, (1. - sediment) * 0.70 + exposure * 0.30),
+        sediment,
+        exposure,
+    )
 }
 fn retain_lakes(
     seed: u32,
@@ -304,6 +351,7 @@ fn retain_lakes(
 
 #[derive(Clone, Debug)]
 pub struct Hydrology {
+    seed: u32,
     pub segments: Vec<Segment>,
     pub lakes: Vec<LakeInfo>,
     lake_grid: Vec<u16>,
@@ -724,6 +772,25 @@ impl Hydrology {
                     * smooth(35., 480., accumulation[i])
                     * (1. - smooth(70., 220., incision));
                 if distance2(last, p) > 0.001 {
+                    let mid_t = (n as f32 - 0.5) / SUBDIV as f32;
+                    let left = bezier(
+                        positions[i],
+                        positions[d],
+                        tangents[i],
+                        tangents[d],
+                        (mid_t - 0.07).max(0.),
+                    );
+                    let mid = bezier(positions[i], positions[d], tangents[i], tangents[d], mid_t);
+                    let right = bezier(
+                        positions[i],
+                        positions[d],
+                        tangents[i],
+                        tangents[d],
+                        (mid_t + 0.07).min(1.),
+                    );
+                    let ta = normalize([mid[0] - left[0], mid[1] - left[1]]);
+                    let tb = normalize([right[0] - mid[0], right[1] - mid[1]]);
+                    let bend = ((ta[0] * tb[1] - ta[1] * tb[0]) * 9.).clamp(-1., 1.);
                     segments.push(Segment {
                         a: last,
                         b: p,
@@ -735,6 +802,7 @@ impl Hydrology {
                         influence: (160.0 + deposition * 430. + incision * 1.5 + w * 2.0)
                             .min(2200.0),
                         deposition,
+                        bend,
                     });
                 }
                 if mouth {
@@ -797,7 +865,8 @@ impl Hydrology {
             mean_incision_m: sum_incision / segments.len().max(1) as f32,
             index_references: references,
         };
-        Self {
+        let mut result = Self {
+            seed,
             segments,
             lakes,
             lake_grid,
@@ -820,7 +889,41 @@ impl Hydrology {
             order,
             #[cfg(test)]
             basin,
+        };
+        for id in 0..result.lakes.len() {
+            let lake = result.lakes[id];
+            let at = |p: [f32; 2]| result.terrain(p[0], p[1], height_at(p[0], p[1]));
+            let current = at(lake.center);
+            if current.water > current.height && (current.water - lake.surface).abs() < 0.002 {
+                continue;
+            }
+            let mut best = None;
+            for z in 0..17 {
+                for x in 0..17 {
+                    let p = [
+                        lake.center[0] + (x - 8) as f32 * 125.,
+                        lake.center[1] + (z - 8) as f32 * 125.,
+                    ];
+                    let Some((owner, coverage)) = result.lake_membership(p[0], p[1]) else {
+                        continue;
+                    };
+                    if owner != id || coverage < 0.8 {
+                        continue;
+                    }
+                    let t = at(p);
+                    if (t.water - lake.surface).abs() < 0.002 && t.water - t.height > 2. {
+                        let score = t.water - t.height - distance2(p, lake.center).sqrt() * 0.002;
+                        if best.is_none_or(|(old, _)| score > old) {
+                            best = Some((score, p));
+                        }
+                    }
+                }
+            }
+            if let Some((_, p)) = best {
+                result.lakes[id].center = p;
+            }
         }
+        result
     }
     pub(super) fn lake_membership(&self, x: f32, z: f32) -> Option<(usize, f32)> {
         let fx = ((x + HALF) / CELL).clamp(0., (GRID - 1) as f32 - 0.001);
@@ -883,6 +986,8 @@ impl Hydrology {
         let mut level_sum = 0.0;
         let mut depth_sum = 0.0;
         let mut proximity = f32::MAX;
+        let mut inner_sum = 0.;
+        let mut outer_sum = 0.;
         for &id in &self.buckets[bucket(z) * BUCKETS + bucket(x)] {
             let segment = &self.segments[id as usize];
             let h = hit(segment, [x, z], id);
@@ -914,19 +1019,45 @@ impl Hydrology {
             terrain_sum += weight * shaped;
             level_sum += weight * h.level;
             depth_sum += weight * depth;
+            let side = (h.tangent[0] * (z - h.point[1]) - h.tangent[1] * (x - h.point[0]))
+                / h.distance.max(1.);
+            let curvature = side * segment.bend;
+            inner_sum += weight * smooth(0.05, 0.70, curvature) * segment.deposition;
+            outer_sum +=
+                weight * smooth(0.05, 0.70, -curvature) * (0.35 + segment.deposition * 0.65);
             proximity = proximity.min(h.distance / h.width.max(1.0));
             result.river = result
                 .river
                 .max(1.0 - smooth(h.width, bank_end, h.distance));
         }
         if total > 0.0 {
-            let level = level_sum / total;
+            let mut level = level_sum / total;
+            // Mixed nearby reaches may otherwise leave a few centimetres of
+            // elevated water at the coastline beside a sea-level river mouth.
+            // A short tidal transition converges continuously to the sea plane.
+            if raw < 24. && result.nearest.level < 8. {
+                let coast = super::coast::info(self.seed, x, z);
+                level *=
+                    1. - smooth(0.25, 0.75, proximity) * (1. - smooth(0., 90., coast.distance));
+            }
             let depth = depth_sum / total;
             let shaped = terrain_sum / total;
             // The same continuous surface owns water, its bed and both banks.
             // In particular, overlapping tributaries cannot independently
             // choose a high water surface and a low neighboring valley floor.
-            let channel = lerp(level - depth, level + 3.5, smooth(0.70, 1.90, proximity));
+            let base_channel = lerp(level - depth, level + 3.5, smooth(0.70, 1.90, proximity));
+            // Inner-bend sediment emerges as a low, broad gravel shelf; the
+            // opposite bank has a short, steep face. The thalweg stays exactly
+            // at its existing depth and level. Shared weighted ownership keeps
+            // bends and confluences continuous, including where reach IDs change.
+            let gravel = lerp(level - depth, level + 0.28, smooth(0.58, 1.20, proximity))
+                + 3.22 * smooth(1.62, 2.45, proximity);
+            let cut = lerp(level - depth, level + 3.5, smooth(0.98, 1.63, proximity));
+            let channel = lerp(
+                lerp(base_channel, gravel, inner_sum / total),
+                cut,
+                outer_sum / total,
+            );
             let protection = 1.0 - smooth(1.90, 2.60, proximity);
             result.height = lerp(shaped, channel, protection);
             if proximity < 1.90 {
@@ -955,7 +1086,10 @@ impl Hydrology {
             let old_river = result.river;
             let support = smooth(0., 0.30, coverage);
             let signed = (coverage - 0.60) * 2000.;
-            let floor = lake.surface - (signed * 0.12).clamp(-24., limit);
+            // Quiet, fertile margins become broad mud/reed shallows; exposed
+            // hard substrate makes shorter gravel shores. No water level moves.
+            let margin = lake_margin(self.seed, x, z);
+            let floor = lake.surface - (signed * margin.0).clamp(-24., limit);
             let mut target = raw.min(old_height).max(floor);
             // A continuous shore berm closes unresolved sub-cell depressions.
             // The real receiver channel cuts through it, gradually joining the
@@ -974,6 +1108,9 @@ impl Hydrology {
             if old_water > NO_WATER {
                 result.water = lerp(old_water, channel_water, support);
             }
+            if coverage >= 0.56 && old_water <= NO_WATER {
+                result.water = lake.surface;
+            }
             if coverage >= 0.60 {
                 result.water = lake.surface;
             }
@@ -987,6 +1124,55 @@ impl Hydrology {
             }
         }
         result
+    }
+    pub fn water_edge(&self, x: f32, z: f32, raw: f32) -> WaterEdge {
+        let t = self.terrain(x, z, raw);
+        if let Some((id, coverage)) = self.lake_membership(x, z) {
+            let lake = &self.lakes[id];
+            if coverage > 0.50 && (t.water - lake.surface).abs() < 1. {
+                let (_, sediment, exposure) = lake_margin(self.seed, x, z);
+                let clearance = t.height - lake.surface;
+                let influence =
+                    (1. - smooth(2., 9., clearance.abs())) * smooth(0.50, 0.61, coverage);
+                let kind = if sediment > 0.57 && exposure < 0.55 {
+                    WaterEdgeKind::LakeReeds
+                } else if sediment > 0.40 {
+                    WaterEdgeKind::LakeMud
+                } else {
+                    WaterEdgeKind::LakeGravel
+                };
+                return WaterEdge {
+                    kind,
+                    influence,
+                    sediment,
+                    wetness: (1. - smooth(0.2, 4., clearance)) * influence,
+                    water_level: lake.surface,
+                    flow: t.nearest.tangent,
+                };
+            }
+        }
+        let h = t.nearest;
+        if h.segment == NONE || h.distance > h.width * 3.5 + 15. {
+            return WaterEdge::none();
+        }
+        let segment = &self.segments[h.segment as usize];
+        let side = (h.tangent[0] * (z - h.point[1]) - h.tangent[1] * (x - h.point[0]))
+            / h.distance.max(1.);
+        let inside = smooth(-0.15, 0.6, side * segment.bend);
+        let influence = (1. - smooth(h.width * 1.8, h.width * 3.5 + 15., h.distance))
+            * smooth(h.width * 0.65, h.width * 1.0, h.distance);
+        WaterEdge {
+            kind: if inside > 0.45 && segment.deposition > 0.15 {
+                WaterEdgeKind::RiverGravel
+            } else {
+                WaterEdgeKind::RiverCutBank
+            },
+            influence,
+            sediment: inside * segment.deposition,
+            wetness: (1. - smooth(0.2, 4., t.height - h.level)) * influence,
+            water_level: h.level,
+            flow: h.tangent,
+        }
     }
     pub fn crossings(&self, a: [f32; 2], b: [f32; 2]) -> Vec<Crossing> {
         let mut ids = HashSet::new();

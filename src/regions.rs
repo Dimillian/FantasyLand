@@ -49,6 +49,29 @@ impl Geology {
         }
     }
 }
+/// Formation identity is descriptive; blended height fields remain continuous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Formation {
+    None,
+    BrokenRidge,
+    LayeredLedge,
+    Ravine,
+    ChalkScarp,
+    BasaltBench,
+}
+impl Formation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "Open ground",
+            Self::BrokenRidge => "Broken granite ridge",
+            Self::LayeredLedge => "Sandstone ledges",
+            Self::Ravine => "Incised ravine",
+            Self::ChalkScarp => "Chalk scarp",
+            Self::BasaltBench => "Basalt benches",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Landscape {
     pub kind: LandscapeKind,
@@ -63,6 +86,10 @@ pub struct Landscape {
     pub tree_scale: f32,
     pub ancient: f32,
     pub pale: f32,
+    pub formation: Formation,
+    pub formation_strength: f32,
+    /// Unit world X/Z geological strike, shared by terrain and larger outcrops.
+    pub formation_axis: [f32; 2],
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Base {
@@ -74,6 +101,9 @@ pub struct Base {
     pub weights: [f32; 5],
     pub shelter: f32,
     pub fertility: f32,
+    pub formation: Formation,
+    pub formation_strength: f32,
+    pub formation_axis: [f32; 2],
 }
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0., 1.);
@@ -152,12 +182,141 @@ fn provinces(seed: u32, x: f32, z: f32) -> ([f32; 5], [[f32; 2]; 5]) {
     }
     (w, g)
 }
+// A small first-order value keeps the formation profiles and their true slope
+// together. There are only two extra noise evaluations, no neighbor resampling.
+#[derive(Clone, Copy)]
+struct Differential {
+    v: f32,
+    g: [f32; 2],
+}
+impl Differential {
+    fn scaled(self, k: f32) -> Self {
+        Self {
+            v: self.v * k,
+            g: [self.g[0] * k, self.g[1] * k],
+        }
+    }
+    fn plus(self, b: Self) -> Self {
+        Self {
+            v: self.v + b.v,
+            g: [self.g[0] + b.g[0], self.g[1] + b.g[1]],
+        }
+    }
+    fn shifted(self, k: f32) -> Self {
+        Self {
+            v: self.v + k,
+            ..self
+        }
+    }
+    fn times(self, b: Self) -> Self {
+        Self {
+            v: self.v * b.v,
+            g: [
+                self.g[0] * b.v + self.v * b.g[0],
+                self.g[1] * b.v + self.v * b.g[1],
+            ],
+        }
+    }
+    fn abs(self) -> Self {
+        self.scaled(if self.v < 0. { -1. } else { 1. })
+    }
+    fn step(self, a: f32, b: f32) -> Self {
+        let t = ((self.v - a) / (b - a)).clamp(0., 1.);
+        let d = 6. * t * (1. - t) / (b - a);
+        Self {
+            v: t * t * (3. - 2. * t),
+            g: [self.g[0] * d, self.g[1] * d],
+        }
+    }
+    fn complement(self) -> Self {
+        self.scaled(-1.).shifted(1.)
+    }
+}
+struct LocalForms {
+    profiles: [Differential; 5],
+    strength: [f32; 5],
+    ravine: f32,
+    axis: [f32; 2],
+}
+fn local_forms(seed: u32, x: f32, z: f32) -> LocalForms {
+    // A long geological strike, gently warped by a lower-frequency joint field,
+    // yields connected ribs and non-repeating broken scarps at walking scales.
+    let (j, jg) = field(
+        seed ^ 0x7351,
+        x * 0.76 + z * 0.65,
+        z * 0.76 - x * 0.65,
+        940.,
+    );
+    let jg = [jg[0] * 0.76 - jg[1] * 0.65, jg[0] * 0.65 + jg[1] * 0.76];
+    let u = (x * 0.82 + z * 0.5723635) * 0.33;
+    let v = -x * 0.5723635 + z * 0.82 + (j - 0.5) * 210.;
+    let (f, fg) = field(seed ^ 0x7352, u, v, 370.);
+    let fold = Differential {
+        v: f,
+        g: [
+            fg[0] * 0.82 * 0.33 + fg[1] * (-0.5723635 + jg[0] * 210.),
+            fg[0] * 0.5723635 * 0.33 + fg[1] * (0.82 + jg[1] * 210.),
+        ],
+    };
+    let joint = Differential { v: j, g: jg };
+    let broken = joint.step(0.64, 0.86).scaled(-0.64).shifted(1.);
+    let rib = fold
+        .scaled(2.)
+        .shifted(-1.)
+        .abs()
+        .complement()
+        .step(0.61, 0.96)
+        .times(broken);
+    let ravine = fold
+        .shifted(0.0)
+        .shifted(-0.53)
+        .abs()
+        .step(0.015, 0.09)
+        .complement()
+        .times(joint.step(0.18, 0.43));
+    let ledge = fold
+        .step(0.22, 0.33)
+        .scaled(40.)
+        .plus(fold.step(0.68, 0.765).scaled(27.));
+    let basalt = fold
+        .step(0.20, 0.29)
+        .scaled(54.)
+        .plus(fold.step(0.52, 0.625).scaled(36.));
+    let chalk = fold
+        .step(0.44, 0.57)
+        .scaled(37.)
+        .plus(joint.step(0.58, 0.79).scaled(-13.));
+    let transverse = [-0.5723635 + jg[0] * 210., 0.82 + jg[1] * 210.];
+    let length = transverse[0].hypot(transverse[1]).max(0.001);
+    LocalForms {
+        profiles: [
+            fold.shifted(-0.5).scaled(3.),
+            rib.scaled(68.).plus(ravine.scaled(-21.)).shifted(-15.),
+            ledge.plus(ravine.scaled(-46.)).shifted(-26.),
+            chalk.shifted(-15.),
+            basalt.plus(ravine.scaled(-15.)).shifted(-37.),
+        ],
+        strength: [
+            0.,
+            rib.v,
+            fold.step(0.18, 0.32).v * (1. - fold.step(0.78, 0.89).v),
+            fold.step(0.37, 0.49).v * (1. - fold.step(0.59, 0.75).v),
+            fold.step(0.15, 0.30).v * (1. - fold.step(0.66, 0.83).v),
+        ],
+        ravine: ravine.v,
+        axis: [transverse[1] / length, -transverse[0] / length],
+    }
+}
 pub fn base(seed: u32, x: f32, z: f32) -> Base {
     let (weights, weight_gradient) = provinces(seed, x, z);
     let (broad, bg) = field(seed ^ 0x7310, x, z, 45000.);
     let (crest, cg) = field(seed ^ 0x7311, x + z * 0.19, z - x * 0.11, 4800.);
-    let ridge = 1. - (crest * 2. - 1.).abs();
-    let ridge_derivative = if crest < 0.5 { 2. } else { -2. };
+    // Round the ridge apex over a narrow band so slope-dependent ecology has
+    // no derivative jump at the former absolute-value cusp.
+    let crest_delta = crest * 2. - 1.;
+    let rounded = crest_delta.hypot(0.02);
+    let ridge = (1.00019998 - rounded) / 0.98019998;
+    let ridge_derivative = -2. * crest_delta / (rounded * 0.98019998);
     let ridge2 = ridge * ridge;
     let ridge_g = [
         2. * ridge * ridge_derivative * (cg[0] - cg[1] * 0.11),
@@ -173,14 +332,14 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
         6. * t * (1. - t) / (b - a)
     };
     let mesa_d = derivative(0.27, 0.48, crest) * 0.57 + derivative(0.67, 0.78, crest) * 0.43;
-    let profiles = [
+    let mut profiles = [
         105. + broad * 140. + hill * 110. + ridge2 * 45.,
         260. + broad * 150. + ridge2 * 1620. + hill * 105.,
         140. + broad * 130. + mesa * 560. + hill * 55.,
         120. + broad * 110. + crest * 220. + hill * 55.,
         250. + broad * 170. + mesa * 710. + hill * 110.,
     ];
-    let gradients = [
+    let mut gradients = [
         [
             bg[0] * 140. + hg[0] * 110. + ridge_g[0] * 45.,
             bg[1] * 140. + hg[1] * 110. + ridge_g[1] * 45.,
@@ -202,13 +361,24 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
             bg[1] * 170. + hg[1] * 110. + mesa_d * 710. * (cg[1] + cg[0] * 0.19),
         ],
     ];
+    let climate_profiles = profiles;
+    let climate_gradients = gradients;
+    let forms = local_forms(seed, x, z);
+    for k in 0..5 {
+        profiles[k] += forms.profiles[k].v;
+        gradients[k][0] += forms.profiles[k].g[0];
+        gradients[k][1] += forms.profiles[k].g[1];
+    }
     let mut height = 0.;
     let mut gradient = [0.; 2];
+    let mut climate_gradient = [0.; 2];
     let mut dominant = 0;
     for k in 0..5 {
         height += profiles[k] * weights[k];
         for a in 0..2 {
             gradient[a] += gradients[k][a] * weights[k] + profiles[k] * weight_gradient[k][a];
+            climate_gradient[a] +=
+                climate_gradients[k][a] * weights[k] + climate_profiles[k] * weight_gradient[k][a];
         }
         if weights[k] > weights[dominant] {
             dominant = k;
@@ -227,24 +397,53 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
         + weights[3] * 12.
         + weights[4] * 28.;
     height += (roll - 0.5) * roughness + (detail - 0.5) * 3.;
-    let slope = (gradient[0] + rg[0] * roughness + dg[0] * 3.)
-        .hypot(gradient[1] + rg[1] * roughness + dg[1] * 3.);
+    for a in 0..2 {
+        gradient[a] += rg[a] * roughness + dg[a] * 3.;
+        for k in 0..5 {
+            gradient[a] += (roll - 0.5) * [18., 40., 14., 12., 28.][k] * weight_gradient[k][a];
+        }
+    }
+    let slope = gradient[0].hypot(gradient[1]);
     // Moist ocean winds travel east-northeast. Analytic upslope lift and lee
     // shelter respond to the same relief that shapes the visible ridgelines.
-    let lift = (gradient[0] * 0.91 - gradient[1] * 0.41).clamp(-0.35, 0.35);
+    // Rain and shelter respond to hills/ridges, not to a two-metre ledge face.
+    let lift = (climate_gradient[0] * 0.91 - climate_gradient[1] * 0.41).clamp(-0.35, 0.35);
     let regional_rain = field(seed ^ 0x7315, x, z, 38000.).0;
     let rainfall =
         (0.45 + regional_rain * 0.40 + lift * 0.62 - weights[2] * 0.16).clamp(0.10, 0.98);
     let exposure =
         (0.12 + smooth(300., 1300., height) * 0.60 + ridge2 * weights[1] * 0.24 + lift.abs() * 0.5)
             .clamp(0., 1.);
-    let shelter = (0.90 - exposure * 0.64 - smooth(0.06, 0.6, slope) * 0.18).clamp(0., 1.);
+    let shelter = (0.90
+        - exposure * 0.64
+        - smooth(0.06, 0.6, climate_gradient[0].hypot(climate_gradient[1])) * 0.18)
+        .clamp(0., 1.);
     let fertility = (weights[0] * 0.94
         + weights[1] * 0.32
         + weights[2] * 0.36
         + weights[3] * 0.55
         + weights[4] * 0.72)
         .clamp(0., 1.);
+    let mut formation = Formation::None;
+    let mut formation_strength = 0.;
+    for k in 1..5 {
+        let value = forms.strength[k] * weights[k];
+        if value > formation_strength {
+            formation_strength = value;
+            formation = [
+                Formation::None,
+                Formation::BrokenRidge,
+                Formation::LayeredLedge,
+                Formation::ChalkScarp,
+                Formation::BasaltBench,
+            ][k];
+        }
+    }
+    let ravine = forms.ravine * (weights[2] + weights[1] * 0.35 + weights[4] * 0.35);
+    if ravine > formation_strength * 0.85 {
+        formation = Formation::Ravine;
+        formation_strength = ravine;
+    }
     Base {
         height,
         slope,
@@ -254,6 +453,9 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
         weights,
         shelter,
         fertility,
+        formation,
+        formation_strength,
+        formation_axis: forms.axis,
     }
 }
 pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Landscape {
@@ -335,6 +537,9 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Landscape {
         tree_scale: (0.80 + soil * 0.32 + ancient * 0.75 - exposure * 0.20).clamp(0.60, 1.80),
         ancient,
         pale,
+        formation: b.formation,
+        formation_strength: b.formation_strength,
+        formation_axis: b.formation_axis,
     }
 }
 

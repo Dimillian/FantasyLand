@@ -1,7 +1,7 @@
 //! Small, immutable ground-cover tiles; density only changes an instance prefix.
 use crate::{
     ecology, geometry,
-    world::{hash, rand01, Biome, ShoreKind, World},
+    world::{hash, rand01, ShoreKind, World},
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
@@ -18,8 +18,8 @@ const GRID_SIZE: usize = 11;
 const HEIGHT_STEP: f32 = 6.;
 const DIVISIONS: i32 = 32;
 const VARIANTS: u32 = 8;
-const TEMPLATE_KINDS: u32 = 6;
-const TEMPLATE_VERTICES: u32 = 24;
+const TEMPLATE_KINDS: u32 = crate::plants::KINDS;
+const TEMPLATE_VERTICES: u32 = crate::plants::TRIANGLES * 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -145,7 +145,11 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
             let x = origin[0] + local[0];
             let z = origin[1] + local[1];
             let sample = world.sample(x, z);
+            let rendered_root = surface_height(world.seed, origin, &heights, local) - 0.018;
             if sample.ocean || sample.road > 0.10 || sample.water_height > sample.height + 0.15 {
+                continue;
+            }
+            if sample.water_height > rendered_root + 0.12 {
                 continue;
             }
             let ecology = ecology::sample(world.seed, x, z, &sample);
@@ -166,10 +170,32 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                 3
             } else if r < ecology.ferns + ecology.flowers + ecology.heather {
                 4
-            } else if sample.biome == Biome::Wetland || sample.shore != ShoreKind::None {
-                1
             } else if r < ecology.ferns + ecology.flowers + ecology.heather + ecology.seedheads {
                 5
+            } else if r < ecology.ferns
+                + ecology.flowers
+                + ecology.heather
+                + ecology.seedheads
+                + ecology.shrubs
+            {
+                6
+            } else if r < ecology.ferns
+                + ecology.flowers
+                + ecology.heather
+                + ecology.seedheads
+                + ecology.shrubs
+                + ecology.litter
+            {
+                7
+            } else if r < ecology.ferns
+                + ecology.flowers
+                + ecology.heather
+                + ecology.seedheads
+                + ecology.shrubs
+                + ecology.litter
+                + ecology.reeds
+            {
+                1
             } else {
                 0
             };
@@ -543,7 +569,7 @@ impl CoverLayer {
             pending_tiles: self.pending.len(),
             drawn_tiles,
             drawn_instances,
-            drawn_triangles: drawn_instances * 8,
+            drawn_triangles: drawn_instances * crate::plants::TRIANGLES,
         }
     }
 }
@@ -577,10 +603,41 @@ fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn shoreline_plants_clear_the_rendered_water_surface() {
+        let mut count = 0;
+        for (seed, x, z) in [(1337, 9499.871, 2954.6006), (42, -41522.246, 32523.418)] {
+            let world = World::new(seed);
+            let tx = (x / TILE_SIZE).floor() as i32;
+            let tz = (z / TILE_SIZE).floor() as i32;
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let tile = tile_data(&world, tx + dx, tz + dz);
+                    for plant in &tile.instances {
+                        let local = [plant.placement[0], plant.placement[1]];
+                        let s = world.sample(tile.origin[0] + local[0], tile.origin[1] + local[1]);
+                        if s.water_height > -999. {
+                            let floor =
+                                surface_height(seed, tile.origin, &tile.heights, local) - 0.018;
+                            assert!(
+                                s.water_height - floor <= 0.121,
+                                "plant rooted below water in a triangulated bank"
+                            );
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(count > 30);
+    }
+    #[test]
     fn templates_and_instances_are_bounded() {
         assert_eq!(std::mem::size_of::<CoverInstance>(), 28);
         let vertices = templates();
-        assert_eq!(vertices.len(), TEMPLATE_KINDS as usize * 8 * 24);
+        assert_eq!(
+            vertices.len(),
+            (TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES) as usize
+        );
         assert!(vertices.iter().all(|v| v
             .position
             .iter()
@@ -768,7 +825,7 @@ mod tests {
                     );
                     assert!(!terrain.ocean);
                     if terrain.shore != ShoreKind::None {
-                        assert_eq!(plant.data[1] / VARIANTS, 1);
+                        assert_eq!(plant.data[1] / VARIANTS, 0);
                         assert!(
                             terrain.height > 2.0 && terrain.water_height < terrain.height - 0.3
                         );

@@ -17,7 +17,7 @@ pub(crate) mod coast;
 pub use coast::{Info as CoastInfo, ShoreKind, SEA_LEVEL};
 #[path = "hydrology.rs"]
 mod hydrology;
-pub use hydrology::{LakeInfo, Stats as HydrologyStats};
+pub use hydrology::{LakeInfo, Stats as HydrologyStats, WaterEdge, WaterEdgeKind};
 const LANDMARK_SPACING: f32 = 640.0;
 #[path = "roads.rs"]
 mod roads;
@@ -216,6 +216,35 @@ impl World {
     }
     pub fn landscape(&self, x: f32, z: f32) -> crate::regions::Landscape {
         crate::regions::sample(self.seed, x, z, &self.natural_sample(x, z))
+    }
+    /// Descriptive near-bank ecology/prop metadata; never changes water geometry.
+    pub fn water_edge(&self, x: f32, z: f32) -> WaterEdge {
+        let c = self.coast_info(x, z);
+        let region = crate::regions::base(self.seed, x, z);
+        let raw = coast::regional_elevation(self.seed, x, z, c, &region);
+        if c.distance.abs() < 260. {
+            let shore = coast::regional_shore(self.seed, x, z, c, &region);
+            if shore != ShoreKind::None {
+                let influence = 1. - smooth(90., 260., c.distance.abs());
+                return WaterEdge {
+                    kind: if shore == ShoreKind::Cliff {
+                        WaterEdgeKind::CoastalShelf
+                    } else {
+                        WaterEdgeKind::CoastalSand
+                    },
+                    influence,
+                    sediment: if shore == ShoreKind::Beach {
+                        0.85
+                    } else {
+                        0.15
+                    },
+                    wetness: (1. - smooth(0., 4., raw)) * influence,
+                    water_level: SEA_LEVEL,
+                    flow: [0.91, -0.41],
+                };
+            }
+        }
+        self.hydrology.water_edge(x, z, raw)
     }
     pub fn water_flow(&self, x: f32, z: f32) -> [f32; 2] {
         self.river(x, z).tangent
@@ -1139,5 +1168,98 @@ mod tests {
                 "interpolated surface deviates from downhill graph"
             );
         }
+    }
+}
+
+// Append this module to world.rs; it exercises actual World terrain and channels.
+#[cfg(test)]
+mod terrain_character_regressions {
+    use super::*;
+    #[test]
+    fn geological_faces_are_visible_at_walking_scale_and_axes_are_continuous() {
+        let w = World::new(1337);
+        let cases = [
+            ([33800., 36280.], crate::regions::Formation::LayeredLedge),
+            ([4660., -9600.], crate::regions::Formation::Ravine),
+            ([14580., 39380.], crate::regions::Formation::ChalkScarp),
+            ([32560., 87120.], crate::regions::Formation::BasaltBench),
+        ];
+        for (p, kind) in cases {
+            let l = w.landscape(p[0], p[1]);
+            assert_eq!(l.formation, kind);
+            assert!(l.formation_strength > 0.60);
+            let axis = l.formation_axis;
+            assert!((axis[0].hypot(axis[1]) - 1.).abs() < 0.0001);
+            let q = [p[0] - axis[1] * 110., p[1] + axis[0] * 110.];
+            assert!(
+                (w.height(q[0], q[1]) - w.height(p[0], p[1])).abs() > 35.,
+                "unreadably flat {:?}",
+                kind
+            );
+            let nearby = w.landscape(p[0] + 0.02, p[1]);
+            assert!((nearby.formation_axis[0] - axis[0]).abs() < 0.002);
+            assert!((w.height(p[0] + 0.02, p[1]) - w.height(p[0], p[1])).abs() < 0.15);
+        }
+    }
+    #[test]
+    fn inside_meander_bars_have_lower_shelves_than_opposing_cutbanks() {
+        let w = World::new(1337);
+        let mut considered = 0;
+        let mut lower = 0;
+        let mut difference = 0.;
+        for s in w.hydrology.segments.iter().step_by(3) {
+            if s.bend.abs() < 0.60 || s.deposition < 0.70 {
+                continue;
+            }
+            let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
+            if w.coast_info(p[0], p[1]).distance < 500.
+                || w.hydrology.lake_membership(p[0], p[1]).is_some()
+            {
+                continue;
+            }
+            let delta = [s.b[0] - s.a[0], s.b[1] - s.a[1]];
+            let length = delta[0].hypot(delta[1]);
+            let side = s.bend.signum();
+            let width = (s.width_a + s.width_b) * 0.5;
+            let n = [
+                -delta[1] / length * width * 1.55 * side,
+                delta[0] / length * width * 1.55 * side,
+            ];
+            let inner = [p[0] + n[0], p[1] + n[1]];
+            let outer = [p[0] - n[0], p[1] - n[1]];
+            let a = w
+                .hydrology
+                .terrain(inner[0], inner[1], raw_height(w.seed, inner[0], inner[1]));
+            let b = w
+                .hydrology
+                .terrain(outer[0], outer[1], raw_height(w.seed, outer[0], outer[1]));
+            if (a.nearest.level - b.nearest.level).abs() > 0.15 {
+                continue;
+            }
+            considered += 1;
+            difference += b.height - a.height;
+            if b.height > a.height + 0.30 {
+                lower += 1;
+            }
+            if considered >= 120 {
+                break;
+            }
+        }
+        assert!(
+            considered >= 35,
+            "too few actual low-gradient bends: {considered}"
+        );
+        assert!(
+            lower as f32 / considered as f32 > 0.65,
+            "no consistent inside gravel shelf: {lower}/{considered}"
+        );
+        assert!(
+            difference / considered as f32 > 0.50,
+            "banks remain indistinguishable"
+        );
+        eprintln!(
+            "bend bank checks {considered}, lower inner shelves {lower}, mean difference {}m",
+            difference / considered as f32
+        );
     }
 }

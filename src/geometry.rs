@@ -24,7 +24,14 @@ pub struct MeshData {
 }
 
 impl MeshData {
-    fn triangle(&mut self, a: [f32; 3], b: [f32; 3], c: [f32; 3], color: [f32; 3], material: f32) {
+    pub(crate) fn triangle(
+        &mut self,
+        a: [f32; 3],
+        b: [f32; 3],
+        c: [f32; 3],
+        color: [f32; 3],
+        material: f32,
+    ) {
         let u = sub(b, a);
         let v = sub(c, a);
         let n = [
@@ -46,7 +53,7 @@ impl MeshData {
         }));
         self.indices.extend([i, i + 1, i + 2]);
     }
-    fn quad(
+    pub(crate) fn quad(
         &mut self,
         a: [f32; 3],
         b: [f32; 3],
@@ -278,7 +285,7 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
         let z = triangle.iter().map(|v| v.position[2]).sum::<f32>() / 3.0;
         let flow = world.water_flow(x, z);
         for v in triangle {
-            // Blue stores ocean depth (+1); zero retains the river material.
+            // Blue stores signed depth (+sea, -freshwater); XY stores flow.
             v.color[0] = flow[0];
             v.color[1] = flow[1];
         }
@@ -314,6 +321,9 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
     }
     for i in 1..polygon.len().saturating_sub(1) {
         let start = mesh.vertices.len() as u32;
+        let ocean = [polygon[0], polygon[i], polygon[i + 1]]
+            .iter()
+            .all(|p| p.0[1] <= crate::world::SEA_LEVEL + 0.01);
         for (position, depth) in [polygon[0], polygon[i], polygon[i + 1]] {
             mesh.vertices.push(Vertex {
                 position,
@@ -321,10 +331,10 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
                 color: [
                     0.0,
                     0.0,
-                    if position[1] <= crate::world::SEA_LEVEL + 0.01 {
+                    if ocean {
                         depth.max(0.0) + 1.0
                     } else {
-                        0.0
+                        -(depth.max(0.0) + 1.0)
                     },
                 ],
                 material: 4.0,
@@ -721,6 +731,12 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     }
     let region = crate::regions::sample(world.seed, x, z, &sample);
     let density = ecology::tree_density(world.seed, x, z, &sample);
+    let formation = region.rockiness > 0.44
+        && region.formation_strength > 0.18
+        && formation_cell(world.seed, gx, gz)
+        && sample.river < 0.10
+        && sample.water_height < sample.height - 1.0
+        && sample.shore == crate::world::ShoreKind::None;
     let species = random(seed, 6);
     let detail = random(seed, 8);
     let mut kind = if sample.shore != crate::world::ShoreKind::None {
@@ -737,6 +753,8 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         } else {
             return None;
         }
+    } else if formation {
+        PropKind::Boulder
     } else if pick < density {
         match sample.biome {
             Biome::Forest => {
@@ -845,7 +863,9 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     } else {
         1.0
     };
-    let stone_axis = if kind == PropKind::Boulder {
+    let stone_axis = if formation {
+        region.formation_axis[1].atan2(region.formation_axis[0])
+    } else if kind == PropKind::Boulder {
         let dx = world.height(x + 6., z) - world.height(x - 6., z);
         let dz = world.height(x, z + 6.) - world.height(x, z - 6.);
         if dx * dx + dz * dz > 0.01 {
@@ -877,8 +897,56 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
             rockiness: region.rockiness,
             stone_axis,
             river_stone: sample.river > 0.16 || region.geology == crate::regions::Geology::Alluvium,
+            formation,
         },
     };
+    if matches!(
+        prop.kind,
+        PropKind::Pine
+            | PropKind::Fir
+            | PropKind::Broadleaf
+            | PropKind::Birch
+            | PropKind::Willow
+            | PropKind::DeadTree
+    ) && sample.water_height > -999.
+    {
+        // Eligibility uses the same triangulated ground as visible roots. A
+        // narrow analytic bank can disappear inside its six-metre mesh cell.
+        if prop.position[1] < sample.water_height + 0.30 {
+            return None;
+        }
+        let radius = tree_radius(prop) * 1.3;
+        for i in 0..8 {
+            let angle = i as f32 * TAU / 8.;
+            let wx = x + angle.sin() * radius;
+            let wz = z + angle.cos() * radius;
+            let water = world.natural_sample(wx, wz);
+            if water.ocean
+                || terrain_surface_height(world, wx, wz) - 0.08 < water.water_height + 0.30
+            {
+                return None;
+            }
+        }
+    }
+    if prop.style.formation {
+        // Check the actual footprint, not merely its dry center. At this rare
+        // placement rate the extra samples are bounded and avoid coast/river dams.
+        let radius = rock_radius(prop);
+        let steps = (radius / 2.5).ceil() as i32;
+        for iz in -steps..=steps {
+            for ix in -steps..=steps {
+                let wx = x + ix as f32 * 2.5;
+                let wz = z + iz as f32 * 2.5;
+                if !rock_blocks(prop, wx, wz, 1.25) {
+                    continue;
+                }
+                let s = world.natural_sample(wx, wz);
+                if s.ocean || s.water_height > terrain_surface_height(world, wx, wz) - 0.8 {
+                    return None;
+                }
+            }
+        }
+    }
     if prop.kind == PropKind::Boulder {
         let radius = rock_radius(prop) + 0.4;
         for road in world.road_routes_near(x, z, radius + 5.) {
@@ -1019,7 +1087,7 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
     let count = (CHUNK_SIZE / PROP_GRID) as i32;
     for z in gz..gz + count {
         for x in gx..gx + count {
-            if hash(world.seed ^ 0x54455252, x, z) & 1 != 0 {
+            if hash(world.seed ^ 0x54455252, x, z) & 1 != 0 && !formation_cell(world.seed, x, z) {
                 continue;
             }
             let Some(mut p) = prop_at(world, x, z) else {
@@ -1134,16 +1202,16 @@ fn owns(ox: f32, oz: f32, x: f32, z: f32) -> bool {
 pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
     let gx = (x / PROP_GRID).floor() as i32;
     let gz = (z / PROP_GRID).floor() as i32;
-    let sites = world.sites_near(x, z, 50.0);
-    let landmarks = world.landmarks_near(x, z, 20.0);
-    for dz in -1..=1 {
-        for dx in -1..=1 {
+    let sites = world.sites_near(x, z, 70.0);
+    let landmarks = world.landmarks_near(x, z, 40.0);
+    for dz in -2..=2 {
+        for dx in -2..=2 {
             let cell_x = (gx + dx) as f32 * PROP_GRID;
             let cell_z = (gz + dz) as f32 * PROP_GRID;
-            if x < cell_x - 4.0
-                || x > cell_x + PROP_GRID + 4.0
-                || z < cell_z - 4.0
-                || z > cell_z + PROP_GRID + 4.0
+            if x < cell_x - 20.0
+                || x > cell_x + PROP_GRID + 20.0
+                || z < cell_z - 20.0
+                || z > cell_z + PROP_GRID + 20.0
             {
                 continue;
             }
@@ -1159,6 +1227,9 @@ pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
                     PropKind::Stump => 0.48 * p.scale + 0.35,
                     _ => continue,
                 };
+                if p.kind == PropKind::Boulder && !rock_blocks(p, x, z, 0.35) {
+                    continue;
+                }
                 if (p.position[0] - x).powi(2) + (p.position[2] - z).powi(2) >= radius * radius {
                     continue;
                 }
@@ -2838,7 +2909,7 @@ mod tests {
                 _ => {}
             }
             assert_mesh(&m);
-            assert!(m.indices.len() / 3 <= 540);
+            assert!(m.indices.len() / 3 <= 580);
         }
         let mut m = MeshData::default();
         grass_clump(&mut m, [0., 0., 0.], 1., 2, [0.3, 0.4, 0.2], false);
@@ -3285,12 +3356,34 @@ mod log_grounding_tests {
         let seed = (1..100u32)
             .find(|&seed| (random(seed, 291) * TAU).sin() > 0.9)
             .unwrap();
-        let x = -16512.15;
-        let z = -12295.9;
         let yaw = random(seed, 291) * TAU;
         let scale = 1.4;
         let length = (3.0 + random(seed, 292) * 3.0) * scale;
         let r = 0.36 * scale;
+        // Discover a truly tilted seam in the current generated terrain. A
+        // hard-coded old-world point can legitimately become a flat meadow.
+        let (x, z) = (-6..=6)
+            .flat_map(|ix| (-6..=6).map(move |iz| (ix, iz)))
+            .map(|(ix, iz)| {
+                (
+                    -74880.15 + ix as f32 * CHUNK_SIZE,
+                    69900.0 + iz as f32 * CHUNK_SIZE,
+                )
+            })
+            .find(|&(x, z)| {
+                (0..=3).all(|lod| {
+                    let start = terrain_surface_height_lod(&world, x, z, lod) - 0.08 + r * 0.85;
+                    let end = terrain_surface_height_lod(
+                        &world,
+                        x + yaw.sin() * length,
+                        z + yaw.cos() * length,
+                        lod,
+                    ) + r * 0.70
+                        - 0.10;
+                    (end - start).abs() > 0.5
+                })
+            })
+            .expect("actual steep seam is needed to exercise tilted-log grounding");
         let mut altered = 0;
         let mut worst_old_gap = f32::NEG_INFINITY;
         let mut minimum_embed = f32::INFINITY;
@@ -3512,21 +3605,9 @@ mod road_grounding_tests {
 }
 
 /// Local-space templates used by the instanced ground-cover layer.
-/// Kinds: dry grass, wet grass, fern, flowers, heather. Every recipe fits 8 triangles.
+/// Eight plant communities share bounded, bent low-poly templates.
 pub(crate) fn cover_template(kind: u32, variant: u32) -> MeshData {
-    let mut mesh = MeshData::default();
-    let seed = hash(0x434f5645, kind as i32, variant as i32);
-    let base = [0.; 3];
-    let tint = [1.; 3];
-    match kind {
-        1 => grass_clump(&mut mesh, base, 1., seed, tint, true),
-        2 => fern(&mut mesh, base, 1., seed, tint),
-        3 => meadow_flower_template(&mut mesh, variant, seed),
-        5 => seedhead_template(&mut mesh, seed),
-        4 => heather(&mut mesh, base, 1., seed),
-        _ => grass_clump(&mut mesh, base, 1., seed, tint, false),
-    }
-    mesh
+    crate::plants::template(kind, variant)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3540,6 +3621,7 @@ struct PropStyle {
     rockiness: f32,
     stone_axis: f32,
     river_stone: bool,
+    formation: bool,
 }
 impl Default for PropStyle {
     fn default() -> Self {
@@ -3553,6 +3635,7 @@ impl Default for PropStyle {
             rockiness: 0.3,
             stone_axis: 0.,
             river_stone: false,
+            formation: false,
         }
     }
 }
@@ -3649,7 +3732,7 @@ fn tree_model(p: Prop) -> TreeModel {
         });
     let radius = tree_radius(p);
     let wind = if age == TreeAge::Windswept {
-        0.19
+        0.28
     } else {
         0.025 + random(p.seed, 504) * 0.055
     };
@@ -3672,7 +3755,7 @@ fn tree_model(p: Prop) -> TreeModel {
     ) {
         0.97
     } else {
-        0.69
+        0.57
     };
     let mut model = TreeModel {
         trunk: Vec::new(),
@@ -3681,7 +3764,16 @@ fn tree_model(p: Prop) -> TreeModel {
         bark,
         height: h,
     };
-    for (i, f) in [0., 0.09, 0.28, 0.56, stem_top].into_iter().enumerate() {
+    for (i, f) in [
+        0.,
+        0.08,
+        0.24,
+        if stem_top < 0.7 { 0.39 } else { 0.56 },
+        stem_top,
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let bend = h * wind * f * f;
         let kink = (random(p.seed, 510 + i as u32) - 0.5) * radius * f * 0.65;
         model.trunk.push((
@@ -3723,9 +3815,32 @@ fn tree_model(p: Prop) -> TreeModel {
         let spokes = if fir { 2 } else { 3 };
         for level in 0..levels {
             let f = level as f32 / (levels as f32);
-            let y = h * ((if fir { 0.20 } else { 0.35 }) + f * (if fir { 0.66 } else { 0.52 }));
+            let coastal = age == TreeAge::Windswept && !fir;
+            let y = h
+                * ((if fir {
+                    0.18
+                } else if coastal {
+                    0.46
+                } else {
+                    0.31
+                }) + f
+                    * (if fir {
+                        0.68
+                    } else if coastal {
+                        0.36
+                    } else {
+                        0.54
+                    }));
             let start = stem_at(&model, y);
-            let spread = h * (if fir { 0.17 } else { 0.25 }) * (1. - f * 0.77) * p.canopy;
+            let spread =
+                h * (if fir {
+                    0.18
+                } else if coastal {
+                    0.31
+                } else {
+                    0.24
+                }) * (1. - f * 0.77)
+                    * p.canopy;
             for arm in 0..spokes {
                 let n = (level * spokes + arm) as u32;
                 let a = yaw
@@ -3749,13 +3864,19 @@ fn tree_model(p: Prop) -> TreeModel {
                     center: [end[0], end[1] + h * 0.065, end[2]],
                     radii: [
                         spread * (if fir { 0.80 } else { 0.68 }),
-                        h * (if fir { 0.19 } else { 0.15 }) * (1. - f * 0.36),
+                        h * (if fir {
+                            0.15
+                        } else if coastal {
+                            0.055
+                        } else {
+                            0.11
+                        }) * (1. - f * 0.36),
                         spread * (if fir { 0.65 } else { 0.53 }),
                     ],
                     yaw: a,
                     seed: hash(p.seed, n as i32, 591),
                     color: mul(green, 0.85 + f * 0.18 + random(p.seed, 595 + n) * 0.06),
-                    pointed: true,
+                    pointed: !coastal,
                 });
             }
         }
@@ -3783,16 +3904,16 @@ fn tree_model(p: Prop) -> TreeModel {
             let f = if birch || dead {
                 0.35 + n as f32 * 0.095
             } else {
-                0.32 + n as f32 * 0.065
+                0.22 + n as f32 * 0.056
             };
             let start = stem_at(&model, h * f);
             let spread =
                 h * (if birch {
-                    0.18
+                    0.20
                 } else if dead {
                     0.29
                 } else {
-                    0.34
+                    0.43
                 }) * (0.77 + random(p.seed, 630 + n) * 0.42)
                     * p.canopy;
             let elbow = [
@@ -3802,15 +3923,15 @@ fn tree_model(p: Prop) -> TreeModel {
                 } else if willow {
                     0.68
                 } else {
-                    0.70
+                    0.52 + n as f32 * 0.037
                 }) + random(p.seed, 640 + n) * h * 0.055,
                 start[2] + a.cos() * spread * 0.62 + direction.cos() * h * wind * 0.2,
             ];
             model.limbs.push(TreeLimb {
                 start,
                 end: elbow,
-                r0: radius * 0.47,
-                r1: radius * 0.20,
+                r0: radius * if birch { 0.36 } else { 0.67 },
+                r1: radius * if birch { 0.14 } else { 0.31 },
             });
             for fork in 0..2 {
                 let j = n * 2 + fork;
@@ -3830,20 +3951,24 @@ fn tree_model(p: Prop) -> TreeModel {
                 model.limbs.push(TreeLimb {
                     start: elbow,
                     end,
-                    r0: radius * 0.21,
-                    r1: radius * 0.035,
+                    r0: radius * if birch { 0.15 } else { 0.32 },
+                    r1: radius * 0.055,
                 });
                 if !dead {
                     let crown_size = if birch {
-                        [0.115, 0.18, 0.095]
+                        [0.10, 0.14, 0.085]
                     } else if willow {
-                        [0.16, 0.33, 0.145]
+                        [0.135, 0.25, 0.12]
                     } else {
-                        [0.245, 0.225, 0.205]
+                        [0.175, 0.102, 0.14]
                     };
                     let varied = 0.77 + random(p.seed, 690 + j) * 0.46;
                     model.crowns.push(TreeCrown {
-                        center: [end[0], end[1] - if willow { h * 0.17 } else { 0. }, end[2]],
+                        center: [
+                            end[0],
+                            end[1] - if willow { h * 0.13 } else { -h * 0.02 },
+                            end[2],
+                        ],
                         radii: crown_size.map(|v| v * h * varied),
                         yaw: b,
                         seed: hash(p.seed, j as i32, 701),
@@ -3852,6 +3977,42 @@ fn tree_model(p: Prop) -> TreeModel {
                     });
                 }
             }
+        }
+    }
+    if p.kind == PropKind::Birch && age != TreeAge::Young {
+        for n in 0..2u32 {
+            let a = yaw + n as f32 * 2.7 + 0.7;
+            let base = [a.sin() * radius * 0.55, 0., a.cos() * radius * 0.55];
+            let elbow = [
+                a.sin() * h * 0.045,
+                h * (0.34 + n as f32 * 0.04),
+                a.cos() * h * 0.045,
+            ];
+            let tip = [
+                a.sin() * h * 0.15,
+                h * (0.72 + n as f32 * 0.12),
+                a.cos() * h * 0.15,
+            ];
+            model.limbs.push(TreeLimb {
+                start: base,
+                end: elbow,
+                r0: radius * 0.35,
+                r1: radius * 0.20,
+            });
+            model.limbs.push(TreeLimb {
+                start: elbow,
+                end: tip,
+                r0: radius * 0.20,
+                r1: radius * 0.035,
+            });
+            model.crowns.push(TreeCrown {
+                center: tip,
+                radii: [h * 0.09, h * 0.14, h * 0.08],
+                yaw: a,
+                seed: hash(p.seed, n as i32, 718),
+                color: mul(green, 1.02 + n as f32 * 0.04),
+                pointed: false,
+            });
         }
     }
     model
@@ -3893,7 +4054,7 @@ fn tree_trunk(mesh: &mut MeshData, p: Prop, model: &TreeModel, far: bool) {
     }
 }
 fn crown_mesh(mesh: &mut MeshData, base: [f32; 3], c: TreeCrown, far: bool) {
-    let center = std::array::from_fn(|i| base[i] + c.center[i]);
+    let center: [f32; 3] = std::array::from_fn(|i| base[i] + c.center[i]);
     if c.pointed {
         let sides = if far { 3 } else { 5 };
         let mut lower = Vec::new();
@@ -3964,11 +4125,42 @@ fn crown_mesh(mesh: &mut MeshData, base: [f32; 3], c: TreeCrown, far: bool) {
             );
         }
     } else {
-        let first = mesh.vertices.len();
-        polyhedron(mesh, center, c.radii, c.seed, c.color, 1.);
-        for v in &mut mesh.vertices[first..] {
-            let local_y = (v.position[1] - center[1]) / c.radii[1];
-            v.color = mul(v.color, 0.79 + ((local_y + 1.) * 0.5).clamp(0., 1.) * 0.25);
+        // Irregular layered foliage pads expose the fork structure through
+        // gaps. Broad horizontal upper facets replace round polygon spheres.
+        let lower: [[f32; 3]; 6] = std::array::from_fn(|i| {
+            let angle = c.yaw + i as f32 * TAU / 6.;
+            let v = 0.76 + random(c.seed, 750 + i as u32) * 0.40;
+            [
+                center[0] + angle.sin() * c.radii[0] * v,
+                center[1] + c.radii[1] * (random(c.seed, 760 + i as u32) * 0.32 - 0.22),
+                center[2] + angle.cos() * c.radii[2] * v,
+            ]
+        });
+        let upper: [[f32; 3]; 6] = std::array::from_fn(|i| {
+            [
+                center[0] + (lower[i][0] - center[0]) * 0.62 + c.radii[0] * 0.08,
+                center[1] + c.radii[1] * (0.54 + random(c.seed, 770 + i as u32) * 0.30),
+                center[2] + (lower[i][2] - center[2]) * 0.63 - c.radii[2] * 0.06,
+            ]
+        });
+        let top = [
+            center[0] + c.radii[0] * 0.12,
+            center[1] + c.radii[1] * 0.96,
+            center[2] - c.radii[2] * 0.04,
+        ];
+        let bottom = [center[0], center[1] - c.radii[1] * 0.78, center[2]];
+        for i in 0..6 {
+            let j = (i + 1) % 6;
+            mesh.quad(
+                lower[i],
+                lower[j],
+                upper[j],
+                upper[i],
+                mul(c.color, 0.88 + (i % 3) as f32 * 0.045),
+                1.,
+            );
+            mesh.triangle(upper[i], upper[j], top, mul(c.color, 1.04), 1.);
+            mesh.triangle(bottom, lower[j], lower[i], mul(c.color, 0.71), 1.);
         }
     }
 }
@@ -3978,6 +4170,58 @@ fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
     if far {
         for crown in distant_crowns(&model, p) {
             crown_mesh(mesh, p.position, crown, true);
+            if matches!(p.kind, PropKind::Broadleaf | PropKind::Willow)
+                || (p.kind == PropKind::Pine && tree_age(p) == TreeAge::Windswept)
+            {
+                // Separated crown pads need a visible attachment even after
+                // branch-detail LOD. Two crossed tapered strokes keep the actual
+                // limb height and crown center without rebuilding the hierarchy.
+                let nearest = model.limbs.iter().min_by(|a, b| {
+                    let distance = |limb: &TreeLimb| {
+                        (0..3)
+                            .map(|i| (limb.end[i] - crown.center[i]).powi(2))
+                            .sum::<f32>()
+                    };
+                    distance(a).total_cmp(&distance(b))
+                });
+                if let Some(limb) = nearest {
+                    let stem = stem_at(&model, limb.start[1]);
+                    let start: [f32; 3] = std::array::from_fn(|i| p.position[i] + stem[i]);
+                    let end = std::array::from_fn(|i| p.position[i] + crown.center[i]);
+                    let width = tree_radius(p) * 0.38;
+                    for side in [[width, 0., 0.], [0., 0., width]] {
+                        mesh.triangle(
+                            std::array::from_fn(|i| start[i] - side[i]),
+                            std::array::from_fn(|i| start[i] + side[i]),
+                            end,
+                            model.bark,
+                            3.,
+                        );
+                    }
+                }
+            }
+        }
+        if p.kind == PropKind::Birch {
+            for root in model.limbs.iter().filter(|limb| limb.start[1] < 0.01) {
+                for limb in model
+                    .limbs
+                    .iter()
+                    .filter(|limb| limb.start == root.start || limb.start == root.end)
+                {
+                    let a: [f32; 3] = std::array::from_fn(|i| p.position[i] + limb.start[i]);
+                    let b: [f32; 3] = std::array::from_fn(|i| p.position[i] + limb.end[i]);
+                    for axis in [[limb.r0, 0., 0.], [0., 0., limb.r0]] {
+                        mesh.quad(
+                            std::array::from_fn(|i| a[i] - axis[i]),
+                            std::array::from_fn(|i| a[i] + axis[i]),
+                            std::array::from_fn(|i| b[i] + axis[i] * 0.4),
+                            std::array::from_fn(|i| b[i] - axis[i] * 0.4),
+                            model.bark,
+                            3.,
+                        );
+                    }
+                }
+            }
         }
         if p.kind == PropKind::DeadTree {
             // Four tapered silhouette strokes retain the snag's spread without
@@ -4003,6 +4247,31 @@ fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
             }
         }
         return;
+    }
+    if !matches!(p.kind, PropKind::Birch | PropKind::DeadTree) {
+        let r = tree_radius(p);
+        for i in 0..4 {
+            let a = random(p.seed, 523) * TAU + i as f32 * TAU / 4.;
+            let stem = stem_at(&model, r * 1.8 + 0.25);
+            let top = std::array::from_fn(|j| p.position[j] + stem[j]);
+            let tip = [
+                p.position[0] + a.sin() * r * 1.0,
+                p.position[1] - 0.04,
+                p.position[2] + a.cos() * r * 1.0,
+            ];
+            let left = [
+                p.position[0] + (a - 0.4).sin() * r * 0.8,
+                p.position[1] - 0.04,
+                p.position[2] + (a - 0.4).cos() * r * 0.8,
+            ];
+            let right = [
+                p.position[0] + (a + 0.4).sin() * r * 0.8,
+                p.position[1] - 0.04,
+                p.position[2] + (a + 0.4).cos() * r * 0.8,
+            ];
+            mesh.triangle(left, tip, top, mul(model.bark, 0.90), 3.);
+            mesh.triangle(tip, right, top, mul(model.bark, 0.95), 3.);
+        }
     }
     if !far || p.kind == PropKind::DeadTree {
         for limb in &model.limbs {
@@ -4064,12 +4333,16 @@ fn dead_tree(mesh: &mut MeshData, p: Prop) {
 
 #[derive(Clone, Copy)]
 struct RockPiece {
+    scree: bool,
     center: [f32; 3],
     size: [f32; 3],
     yaw: f32,
     seed: u32,
 }
 fn rock_pieces(p: Prop) -> Vec<RockPiece> {
+    if p.style.formation {
+        return formation_pieces(p);
+    }
     let mut pieces = Vec::new();
     let cluster = p.style.rockiness > 0.55 && random(p.seed, 811) > 0.52;
     let river = p.style.river_stone;
@@ -4101,6 +4374,7 @@ fn rock_pieces(p: Prop) -> Vec<RockPiece> {
                 1.05 + random(p.seed, 832 + n) * 0.68
             };
         pieces.push(RockPiece {
+            scree: false,
             center: [a.cos() * offset, 0., a.sin() * offset],
             size: [
                 size * (if river { 1.1 } else { 1.0 }),
@@ -4121,7 +4395,9 @@ fn rock_pieces(p: Prop) -> Vec<RockPiece> {
 fn rock_radius(p: Prop) -> f32 {
     rock_pieces(p)
         .iter()
-        .map(|piece| piece.center[0].hypot(piece.center[2]) + piece.size[0].hypot(piece.size[2]))
+        .map(|piece| {
+            piece.center[0].hypot(piece.center[2]) + piece.size[0].hypot(piece.size[2]) * 1.14
+        })
         .fold(0., f32::max)
 }
 // Beveled polygonal slabs expose large fracture planes rather than a jittered ball.
@@ -4189,20 +4465,58 @@ fn fracture_block(
 // Broad stone masses remain visible beyond branch-level detail. These share
 // the near rock descriptors and terrain anchoring, with at most24 triangles.
 fn distant_rock(mesh: &mut MeshData, p: Prop) {
-    for piece in rock_pieces(p).into_iter().take(2) {
+    let pieces = rock_pieces(p);
+    for piece in pieces
+        .iter()
+        .filter(|p| !p.scree)
+        .take(if p.style.formation { 3 } else { 2 })
+    {
         let base: [f32; 3] = std::array::from_fn(|i| p.position[i] + piece.center[i]);
-        box_mesh(
-            mesh,
-            [base[0], base[1] + piece.size[1] * 0.34, base[2]],
-            [
-                piece.size[0] * 1.64,
-                piece.size[1] * 0.92,
-                piece.size[2] * 1.64,
-            ],
-            piece.yaw,
-            p.style.stone,
-            2.0,
-        );
+        if p.style.river_stone {
+            polyhedron(
+                mesh,
+                [base[0], base[1] + piece.size[1] * 0.52, base[2]],
+                piece.size,
+                piece.seed,
+                p.style.stone,
+                2.,
+            );
+        } else {
+            // Five exposed faces, with a skewed roof; twelve triangles including
+            // the buried base. Same descriptor widths and heights as near masses.
+            let mut footprint = [[0.; 3]; 8];
+            for i in 0..4 {
+                let sx = if i == 0 || i == 3 { -1. } else { 1. };
+                let sz = if i < 2 { -1. } else { 1. };
+                let x = sx * piece.size[0] * 0.91;
+                let z = sz * piece.size[2] * 0.91;
+                let dx = x * piece.yaw.cos() - z * piece.yaw.sin();
+                let dz = x * piece.yaw.sin() + z * piece.yaw.cos();
+                footprint[i] = [base[0] + dx, base[1] - piece.size[1] * 0.16, base[2] + dz];
+                footprint[i + 4] = [
+                    base[0] + dx * 0.88,
+                    base[1] + piece.size[1] * (0.94 + sx * 0.13 - sz * 0.09),
+                    base[2] + dz * 0.88,
+                ];
+            }
+            for face in [
+                [0, 1, 5, 4],
+                [1, 2, 6, 5],
+                [2, 3, 7, 6],
+                [3, 0, 4, 7],
+                [4, 5, 6, 7],
+                [3, 2, 1, 0],
+            ] {
+                mesh.quad(
+                    footprint[face[0]],
+                    footprint[face[1]],
+                    footprint[face[2]],
+                    footprint[face[3]],
+                    p.style.stone,
+                    2.,
+                );
+            }
+        }
     }
 }
 fn landscape_rock(mesh: &mut MeshData, p: Prop) {
@@ -4210,6 +4524,18 @@ fn landscape_rock(mesh: &mut MeshData, p: Prop) {
     for piece in rock_pieces(p) {
         let base = std::array::from_fn(|i| p.position[i] + piece.center[i]);
         let stone = mul(p.style.stone, 0.93 + random(piece.seed, 901) * 0.12);
+        if piece.scree {
+            fracture_block(
+                mesh,
+                base,
+                piece.size,
+                piece.yaw,
+                piece.seed,
+                mul(stone, 0.92),
+                false,
+            );
+            continue;
+        }
         if p.style.river_stone || p.style.geology == Geology::Alluvium {
             polyhedron(
                 mesh,
@@ -4219,6 +4545,35 @@ fn landscape_rock(mesh: &mut MeshData, p: Prop) {
                 stone,
                 2.,
             );
+        } else if p.style.formation {
+            fracture_block(
+                mesh,
+                base,
+                piece.size,
+                piece.yaw,
+                piece.seed,
+                stone,
+                p.style.geology == Geology::Basalt,
+            );
+            if p.style.geology == Geology::Granite && random(piece.seed, 924) > 0.4 {
+                fracture_block(
+                    mesh,
+                    [
+                        base[0] + piece.size[0] * 0.12,
+                        base[1] + piece.size[1] * 0.63,
+                        base[2],
+                    ],
+                    [
+                        piece.size[0] * 0.70,
+                        piece.size[1] * 0.54,
+                        piece.size[2] * 0.68,
+                    ],
+                    piece.yaw + 0.12,
+                    piece.seed ^ 925,
+                    mul(stone, 1.035),
+                    false,
+                );
+            }
         } else {
             match p.style.geology {
                 Geology::Sandstone | Geology::Chalk => {
@@ -4299,112 +4654,6 @@ fn landscape_rock(mesh: &mut MeshData, p: Prop) {
     }
 }
 
-// Recognizable flower heads keep the shared eight-triangle instance budget.
-fn meadow_flower_template(mesh: &mut MeshData, variant: u32, seed: u32) {
-    for i in 0..2 {
-        let a = random(seed, 940 + i) * TAU;
-        let x = a.sin() * 0.30;
-        let z = a.cos() * 0.30;
-        let blue = variant >= 6;
-        let y = if blue {
-            0.70 + random(seed, 950 + i) * 0.25
-        } else {
-            0.38 + random(seed, 950 + i) * 0.20
-        };
-        mesh.triangle(
-            [x - 0.018, 0., z],
-            [x + 0.018, 0., z],
-            [x, y, z],
-            [0.86; 3],
-            6.,
-        );
-        if blue {
-            let color = mix(
-                [0.31, 0.39, 0.75],
-                [0.43, 0.47, 0.83],
-                random(seed, 960 + i),
-            );
-            let tip = [x + 0.03, y + 0.30, z];
-            let r = 0.12;
-            for side in 0..3 {
-                let a = side as f32 * TAU / 3.;
-                let b = (side + 1) as f32 * TAU / 3.;
-                mesh.triangle(
-                    [x + a.sin() * r, y - 0.16, z + a.cos() * r],
-                    [x + b.sin() * r, y - 0.16, z + b.cos() * r],
-                    tip,
-                    mul(color, 0.92 + side as f32 * 0.06),
-                    6.,
-                );
-            }
-        } else {
-            let petals = if variant < 3 {
-                [0.91, 0.90, 0.76]
-            } else {
-                [0.95, 0.72, 0.18]
-            };
-            let r = 0.18 + random(seed, 960 + i) * 0.07;
-            mesh.triangle(
-                [x - r, y, z],
-                [x + r, y, z],
-                [x, y + 0.025, z - r],
-                petals,
-                6.,
-            );
-            mesh.triangle(
-                [x - r, y, z],
-                [x, y + 0.025, z + r],
-                [x + r, y, z],
-                mul(petals, 0.95),
-                6.,
-            );
-            mesh.triangle(
-                [x, y * 0.35, z],
-                [x + 0.25, y * 0.54, z + 0.08],
-                [x + 0.10, y * 0.43, z - 0.10],
-                [0.9; 3],
-                6.,
-            );
-        }
-    }
-}
-fn seedhead_template(mesh: &mut MeshData, seed: u32) {
-    for i in 0..3 {
-        let a = random(seed, 970 + i) * TAU;
-        let x = a.sin() * 0.24;
-        let z = a.cos() * 0.24;
-        mesh.triangle(
-            [x - 0.07, 0., z],
-            [x + 0.07, 0., z],
-            [
-                x + a.sin() * 0.18,
-                0.50 + random(seed, 980 + i) * 0.27,
-                z + a.cos() * 0.18,
-            ],
-            [0.92; 3],
-            6.,
-        );
-    }
-    for i in 0..2 {
-        let x = if i == 0 { -0.11 } else { 0.14 };
-        let z = if i == 0 { 0.08 } else { -0.12 };
-        let y = 0.77 + random(seed, 990 + i) * 0.21;
-        mesh.triangle(
-            [x - 0.012, 0., z],
-            [x + 0.012, 0., z],
-            [x + 0.04, y, z],
-            [0.90; 3],
-            6.,
-        );
-        mesh.triangle(
-            [x - 0.08, y - 0.13, z],
-            [x + 0.14, y - 0.09, z],
-            [x + 0.04, y + 0.19, z + 0.025],
-            [0.70, 0.54, 0.26],
-            6.,
-        );
-    }
-}
 #[cfg(test)]
 mod regional_geometry_tests {
     use super::*;
@@ -4475,8 +4724,8 @@ mod regional_geometry_tests {
                         bytemuck::cast_slice::<_, u8>(&near.vertices),
                         bytemuck::cast_slice::<_, u8>(&repeat.vertices)
                     );
-                    assert!(near.indices.len() / 3 <= 540);
-                    assert!(far.indices.len() / 3 <= 34);
+                    assert!(near.indices.len() / 3 <= 580);
+                    assert!(far.indices.len() / 3 <= 50);
                     high_near = high_near.max(near.indices.len() / 3);
                     high_far = high_far.max(far.indices.len() / 3);
                     // Both detail levels use identical crown centers/trunk skeleton; their
@@ -4627,7 +4876,7 @@ mod regional_geometry_tests {
             for kind in [3, 5] {
                 let mesh = cover_template(kind, variant);
                 valid(&mesh);
-                assert!(mesh.vertices.len() <= 24);
+                assert!(mesh.vertices.len() <= (crate::plants::TRIANGLES * 3) as usize);
                 assert!(mesh
                     .vertices
                     .iter()
@@ -4652,11 +4901,13 @@ fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
     if model.crowns.is_empty() {
         return Vec::new();
     }
-    let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
+    let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir)
+        && !(p.kind == PropKind::Pine && tree_age(p) == TreeAge::Windswept);
     let groups = match p.kind {
         PropKind::Pine => 3,
         PropKind::Fir => 2,
-        PropKind::Birch => 1,
+        PropKind::Birch => 2,
+        PropKind::Broadleaf => 3,
         _ => 2,
     };
     let mut crowns = model.crowns.clone();
@@ -4713,4 +4964,354 @@ fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
         });
     }
     result
+}
+
+// One nominated candidate in half the 48 m cells: a coherent landform accent,
+// never an oversized rock on every ordinary 12 m vegetation candidate.
+fn formation_cell(seed: u32, gx: i32, gz: i32) -> bool {
+    let h = hash(seed ^ 0x544f5253, gx.div_euclid(4), gz.div_euclid(4));
+    h & 1 == 0
+        && gx.rem_euclid(4) == ((h >> 3) & 3) as i32
+        && gz.rem_euclid(4) == ((h >> 7) & 3) as i32
+}
+fn formation_pieces(p: Prop) -> Vec<RockPiece> {
+    use crate::regions::Geology;
+    let axis = p.style.stone_axis;
+    let scale = p.scale.min(1.38);
+    let mut pieces = Vec::with_capacity(7);
+    for i in 0..3u32 {
+        let along = (i as f32 - 1.) * 3.6 * scale;
+        let side = (random(p.seed, 1101 + i) - 0.5) * 2.2 * scale;
+        let size = (2.9 + random(p.seed, 1111 + i) * 1.3) * scale;
+        let proportions = match p.style.geology {
+            Geology::Sandstone | Geology::Chalk => [1.40, 0.58, 0.66],
+            Geology::Basalt => [0.95, 0.82, 0.83],
+            _ => [0.87, 1.08, 0.81],
+        };
+        pieces.push(RockPiece {
+            scree: false,
+            center: [
+                axis.cos() * along - axis.sin() * side,
+                0.,
+                axis.sin() * along + axis.cos() * side,
+            ],
+            size: proportions.map(|v| size * v),
+            yaw: axis + (random(p.seed, 1121 + i) - 0.5) * 0.16,
+            seed: hash(p.seed, i as i32, 1131),
+        });
+    }
+    // Small detached chips collect along one side of the shared geological strike.
+    for i in 0..4u32 {
+        let along = (i as f32 - 1.5) * 2.3 * scale;
+        let side = (3.2 + random(p.seed, 1141 + i) * 1.1) * scale;
+        let size = (0.30 + random(p.seed, 1151 + i) * 0.66) * scale;
+        pieces.push(RockPiece {
+            scree: true,
+            center: [
+                axis.cos() * along - axis.sin() * side,
+                0.,
+                axis.sin() * along + axis.cos() * side,
+            ],
+            size: [
+                size,
+                size * (0.50 + random(p.seed, 1161 + i) * 0.38),
+                size * 0.73,
+            ],
+            yaw: axis + (random(p.seed, 1171 + i) - 0.5) * 0.8,
+            seed: hash(p.seed, i as i32, 1181),
+        });
+    }
+    pieces
+}
+fn rock_blocks(p: Prop, x: f32, z: f32, padding: f32) -> bool {
+    rock_pieces(p)
+        .iter()
+        .filter(|piece| !piece.scree)
+        .any(|piece| {
+            let dx = x - p.position[0] - piece.center[0];
+            let dz = z - p.position[2] - piece.center[2];
+            let a = dx * piece.yaw.cos() + dz * piece.yaw.sin();
+            let b = -dx * piece.yaw.sin() + dz * piece.yaw.cos();
+            // The bevel blocks have almost rectangular fracture faces. A rounded
+            // rectangle encloses their real footprint without filling cluster gaps.
+            let ex = (a.abs() - piece.size[0] * 1.07).max(0.);
+            let ez = (b.abs() - piece.size[2] * 1.07).max(0.);
+            ex * ex + ez * ez <= padding * padding
+        })
+}
+
+#[cfg(test)]
+mod character_asset_tests {
+    use super::*;
+    #[test]
+    fn narrow_analytic_banks_cannot_spawn_submerged_tree_trunks() {
+        let w = World::new(1337);
+        let mut checked = 0;
+        for z in 2920..2950 {
+            for x in 535..560 {
+                if let Some(p) = prop_at(&w, x, z) {
+                    if matches!(
+                        p.kind,
+                        PropKind::Pine
+                            | PropKind::Fir
+                            | PropKind::Broadleaf
+                            | PropKind::Birch
+                            | PropKind::Willow
+                            | PropKind::DeadTree
+                    ) {
+                        let s = w.natural_sample(p.position[0], p.position[2]);
+                        if s.water_height > -999. {
+                            assert!(p.position[1] >= s.water_height + 0.299);
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 3);
+    }
+    #[test]
+    fn enlarged_formations_remain_grounded_bounded_and_deterministic() {
+        use crate::regions::Geology;
+        let w = World::new(1337);
+        let mut max_near = 0;
+        let mut max_far = 0;
+        let mut max_radius = 0.0_f32;
+        for geology in [
+            Geology::Granite,
+            Geology::Sandstone,
+            Geology::Chalk,
+            Geology::Basalt,
+        ] {
+            for seed in 0..16 {
+                for lod in 0..=3 {
+                    let [x, z] = [-16704.1, -12288.1];
+                    let p = Prop {
+                        position: [x, terrain_surface_height_lod(&w, x, z, lod) - 0.08, z],
+                        scale: 1.52,
+                        canopy: 1.,
+                        seed,
+                        kind: PropKind::Boulder,
+                        biome: Biome::Moor,
+                        style: PropStyle {
+                            formation: true,
+                            geology,
+                            rockiness: 1.,
+                            stone_axis: 0.71,
+                            ..PropStyle::default()
+                        },
+                    };
+                    let mut near = MeshData::default();
+                    let mut far = MeshData::default();
+                    landscape_rock(&mut near, p);
+                    distant_rock(&mut far, p);
+                    let before = near.vertices.clone();
+                    let far_before = far.vertices.clone();
+                    anchor_prop(&w, &mut near, 0, p, lod);
+                    anchor_prop(&w, &mut far, 0, p, lod);
+                    let radius = rock_radius(p);
+                    assert!(radius < 20.0);
+                    max_radius = max_radius.max(radius);
+                    max_near = max_near.max(near.indices.len() / 3);
+                    max_far = max_far.max(far.indices.len() / 3);
+                    assert!(near.indices.len() / 3 <= 280);
+                    assert!(far.indices.len() / 3 <= 36);
+                    for (raw, mesh) in [(&before, &near), (&far_before, &far)] {
+                        assert!(mesh
+                            .indices
+                            .iter()
+                            .all(|&i| (i as usize) < mesh.vertices.len()));
+                        for (a, b) in raw.iter().zip(&mesh.vertices) {
+                            assert!(b
+                                .position
+                                .iter()
+                                .chain(b.normal.iter())
+                                .chain(b.color.iter())
+                                .all(|v| v.is_finite()));
+                            assert!((b.position[0] - x).hypot(b.position[2] - z) <= radius + 0.01);
+                            if a.position[1] <= p.position[1] {
+                                let height = terrain_surface_height_lod(
+                                    &w,
+                                    b.position[0],
+                                    b.position[2],
+                                    lod,
+                                );
+                                assert!(
+                                    b.position[1] < height - 0.07,
+                                    "formation foot floats at LOD{lod}"
+                                );
+                            }
+                        }
+                    }
+                    let mut repeat = MeshData::default();
+                    landscape_rock(&mut repeat, p);
+                    anchor_prop(&w, &mut repeat, 0, p, lod);
+                    assert_eq!(
+                        bytemuck::cast_slice::<Vertex, u8>(&near.vertices),
+                        bytemuck::cast_slice::<Vertex, u8>(&repeat.vertices)
+                    );
+                    for piece in rock_pieces(p).iter().filter(|p| !p.scree) {
+                        let cx = x + piece.center[0];
+                        let cz = z + piece.center[2];
+                        assert!(rock_blocks(p, cx, cz, 0.35));
+                        for i in 0..8 {
+                            let angle = i as f32 * TAU / 8.;
+                            let a = piece.size[0] * 0.9 * angle.cos();
+                            let b = piece.size[2] * 0.9 * angle.sin();
+                            assert!(rock_blocks(
+                                p,
+                                cx + a * piece.yaw.cos() - b * piece.yaw.sin(),
+                                cz + a * piece.yaw.sin() + b * piece.yaw.cos(),
+                                0.35
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        println!("formation budgets: near {max_near}, far {max_far}, max enclosing radius {max_radius:.2}m");
+    }
+    #[test]
+    fn actual_formations_clear_water_and_roads_and_are_found_across_cells() {
+        let w = World::new(1337);
+        let mut formations = 0;
+        let mut neighbor_probes = 0;
+        let mut first = None;
+        for (x, z) in [
+            (-74669., 70019.),
+            (50031., 26519.),
+            (-60169., 162819.),
+            (-10869., 58419.),
+        ] {
+            let gx = (x / PROP_GRID).floor() as i32;
+            let gz = (z / PROP_GRID).floor() as i32;
+            for iz in gz - 48..=gz + 48 {
+                for ix in gx - 48..=gx + 48 {
+                    if !formation_cell(w.seed, ix, iz) {
+                        continue;
+                    }
+                    let Some(p) = prop_at(&w, ix, iz) else {
+                        continue;
+                    };
+                    if !p.style.formation {
+                        continue;
+                    }
+                    let sites = w.sites_near(p.position[0], p.position[2], 70.);
+                    let landmarks = w.landmarks_near(p.position[0], p.position[2], 40.);
+                    if sites
+                        .iter()
+                        .any(|s| (s.x - p.position[0]).hypot(s.z - p.position[2]) < 45.)
+                        || landmarks
+                            .iter()
+                            .any(|s| (s.x - p.position[0]).hypot(s.z - p.position[2]) < 15.)
+                    {
+                        continue;
+                    }
+                    formations += 1;
+                    for piece in rock_pieces(p).iter().filter(|p| !p.scree) {
+                        let x = p.position[0] + piece.center[0];
+                        let z = p.position[2] + piece.center[2];
+                        let sample = w.sample(x, z);
+                        assert!(!sample.ocean && sample.water_height < sample.height - 0.8);
+                        assert!(sample.road < 0.07, "formation blocks a road");
+                        assert!(
+                            blocks_player(&w, x, z),
+                            "enlarged rock collider omitted its neighbor cell"
+                        );
+                        if (x / PROP_GRID).floor() as i32 != ix
+                            || (z / PROP_GRID).floor() as i32 != iz
+                        {
+                            neighbor_probes += 1;
+                        }
+                    }
+                    if first.is_none() {
+                        first = Some([p.position[0], p.position[2]]);
+                    }
+                }
+            }
+        }
+        assert!(
+            formations > 10 && neighbor_probes > 10,
+            "insufficient actual placement/collision coverage"
+        );
+        let [x, z] = first.unwrap();
+        let now = std::time::Instant::now();
+        for i in 0..100 {
+            std::hint::black_box(blocks_player(&w, x + (i as f32 * 0.031), z));
+        }
+        println!("{formations} real formations, {neighbor_probes} neighboring-cell collider probes; representative [{x},{z}]; repeated collision mean {:.3}ms",now.elapsed().as_secs_f64()*10.);
+    }
+    #[test]
+    fn broad_canopies_have_layers_and_birch_stems_stay_connected() {
+        let p = Prop {
+            position: [0.; 3],
+            scale: 1.2,
+            canopy: 1.,
+            seed: 71,
+            kind: PropKind::Broadleaf,
+            biome: Biome::Forest,
+            style: PropStyle {
+                ancient: 1.,
+                ..PropStyle::default()
+            },
+        };
+        let model = tree_model(p);
+        assert!(model.crowns.len() >= 6);
+        assert!(model.crowns.iter().all(|c| c.radii[1] < c.radii[0] * 0.70));
+        assert!(model
+            .limbs
+            .iter()
+            .any(|l| l.start[1] < model.height * 0.3 && l.r0 > tree_radius(p) * 0.5));
+        let birch = tree_model(Prop {
+            kind: PropKind::Birch,
+            ..p
+        });
+        let roots: Vec<_> = birch.limbs.iter().filter(|l| l.start[1] == 0.).collect();
+        assert_eq!(roots.len(), 2);
+        for root in roots {
+            let continuation = birch
+                .limbs
+                .iter()
+                .find(|l| l.start == root.end)
+                .expect("clump trunk must continue to its crown");
+            assert!(birch.crowns.iter().any(|c| c.center == continuation.end));
+        }
+    }
+}
+
+/// Actual generated outcrop centers for read-only camera/verification tools.
+/// Uses the same placement and settlement exclusions as the rendered prop layer;
+/// callers should query a local region, rather than scanning the whole continent.
+pub fn formation_locations(world: &World, x: f32, z: f32, radius: f32) -> Vec<[f32; 3]> {
+    let radius = radius.max(0.0);
+    let sites = world.sites_near(x, z, radius + 50.);
+    let landmarks = world.landmarks_near(x, z, radius + 20.);
+    let mut found = Vec::new();
+    for gz in ((z - radius) / PROP_GRID).floor() as i32..=((z + radius) / PROP_GRID).floor() as i32
+    {
+        for gx in
+            ((x - radius) / PROP_GRID).floor() as i32..=((x + radius) / PROP_GRID).floor() as i32
+        {
+            if !formation_cell(world.seed, gx, gz) {
+                continue;
+            }
+            let Some(p) = prop_at(world, gx, gz) else {
+                continue;
+            };
+            if !p.style.formation || (p.position[0] - x).hypot(p.position[2] - z) > radius {
+                continue;
+            }
+            if sites
+                .iter()
+                .any(|s| (s.x - p.position[0]).hypot(s.z - p.position[2]) < 45.)
+                || landmarks
+                    .iter()
+                    .any(|s| (s.x - p.position[0]).hypot(s.z - p.position[2]) < 15.)
+            {
+                continue;
+            }
+            found.push(p.position);
+        }
+    }
+    found
 }

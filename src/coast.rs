@@ -417,6 +417,19 @@ pub fn regional_elevation(
         * smooth(40., 130., d)
         * (1. - smooth(320., 750., d))
         * sediment;
-    let rock = region.height * (0.22 * smooth(0., 65., d) + 0.78 * smooth(300., 4400., d));
+    // An exposed shore has a low wave-cut rock platform before its cliff face.
+    // Width changes along the coast, making shelves and protected indentations
+    // visible from the ground without moving the actual land/ocean boundary.
+    let joints = noise(
+        seed ^ 0x6693,
+        (x * 0.78 + z * 0.625) / 740.,
+        (z * 0.78 - x * 0.625) / 740.,
+    );
+    let shelf_width = 28. + cliff * 45. + (1. - sediment) * joints * 62.;
+    let platform = 0.7 * smooth(0., 15., d) + (1.7 + cliff * 2.2) * smooth(18., shelf_width, d);
+    let cliff_rise = 30. + (1. - cliff) * 75. + joints * 38.;
+    let rock = platform
+        + region.height * 0.22 * smooth(shelf_width, shelf_width + cliff_rise, d)
+        + (region.height * 0.78 - platform) * smooth(350., 4400., d);
     lerp(beach + dune, rock, cliff)
 }

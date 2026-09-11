@@ -6,6 +6,7 @@ export class Game {
     free(): void;
     [Symbol.dispose](): void;
     static create(canvas: HTMLCanvasElement, seed: number): Promise<Game>;
+    face(yaw: number, pitch: number): void;
     features(cx: number, cz: number, span: number): any;
     is_ready(): boolean;
     landscape_destinations(): any;
@@ -42,6 +43,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_game_free: (a: number, b: number) => void;
     readonly game_create: (a: any, b: number) => any;
+    readonly game_face: (a: number, b: number, c: number) => void;
     readonly game_features: (a: number, b: number, c: number, d: number) => any;
     readonly game_is_ready: (a: number) => number;
     readonly game_landscape_destinations: (a: number) => any;

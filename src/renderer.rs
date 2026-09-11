@@ -24,6 +24,8 @@ struct Globals {
     shadow_origin: [f32; 4],
     shadow_params: [f32; 4],
     distant: [f32; 4],
+    climate: [f32; 4],
+    air: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -70,6 +72,9 @@ pub struct Renderer {
     quality: u32,
     resolution: u32,
     elapsed: f32,
+    climate: [f32; 4],
+    air: [f32; 4],
+    atmosphere_position: Option<Vec3>,
     cover: CoverLayer,
     ground_cover_density: f32,
     cover_drawn_instances: u32,
@@ -342,6 +347,9 @@ impl Renderer {
             quality: 1,
             resolution: 0,
             elapsed: 0.0,
+            climate: [0.; 4],
+            air: [0., 0.4, 0.5, 0.],
+            atmosphere_position: None,
             cover,
             ground_cover_density: 4.0,
             cover_drawn_instances: 0,
@@ -533,6 +541,7 @@ impl Renderer {
         }
     }
     pub fn clear_chunks(&mut self) {
+        self.atmosphere_position = None;
         self.cover.clear();
         self.cover_drawn_instances = 0;
         self.horizon.clear();
@@ -635,7 +644,67 @@ impl Renderer {
         }
         true
     }
+    fn update_atmosphere(&mut self, world: &World, position: Vec3) {
+        let travel = self.atmosphere_position.map_or(f32::INFINITY, |p| {
+            (position.x - p.x).hypot(position.z - p.z)
+        });
+        if travel < 3.0 {
+            return;
+        }
+        let sample = world.natural_sample(position.x, position.z);
+        let region = crate::regions::sample(world.seed, position.x, position.z, &sample);
+        let substrate = crate::regions::base(world.seed, position.x, position.z);
+        let mut forest =
+            world.vegetation_density_from_sample(position.x, position.z, &sample) * 2.0;
+        let mut reference = sample.height.max(sample.water_height);
+        for (dx, dz) in [(-120., 0.), (120., 0.), (0., -120.), (0., 120.)] {
+            let s = world.natural_sample(position.x + dx, position.z + dz);
+            forest += world.vegetation_density_from_sample(position.x + dx, position.z + dz, &s);
+            reference = reference.min(s.height.max(s.water_height));
+        }
+        if sample.ocean {
+            reference = 0.;
+        }
+        let wet = (region.wetness
+            * if sample.biome == crate::world::Biome::Wetland {
+                1.0
+            } else {
+                0.42
+            })
+        .max(
+            if sample.water_height > sample.height - 6. && !sample.ocean {
+                0.75
+            } else {
+                0.0
+            },
+        );
+        let climate = [
+            (forest / 6.).clamp(0., 1.),
+            wet,
+            substrate.weights[2],
+            region.exposure,
+        ];
+        let air = [
+            reference,
+            (0.23 + region.exposure * 0.62).clamp(0., 1.),
+            sample.moisture,
+            0.,
+        ];
+        // Distance-based blending is stable at different frame rates. Teleports
+        // adopt their destination immediately; walking changes air gradually.
+        let blend = if travel > 300. {
+            1.
+        } else {
+            1. - (-travel / 55.).exp()
+        };
+        for i in 0..4 {
+            self.climate[i] += (climate[i] - self.climate[i]) * blend;
+            self.air[i] += (air[i] - self.air[i]) * blend;
+        }
+        self.atmosphere_position = Some(position);
+    }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
+        self.update_atmosphere(world, position);
         let clock = StreamClock::new();
         let limit_ms = if force { 12.0 } else { 4.0 };
         self.prepare_horizon(position);
@@ -763,7 +832,7 @@ impl Renderer {
                 .flatten()
                 .map(|m| m.count as usize / 3)
                 .sum::<usize>()
-            + self.cover.stats().loaded_instances as usize * 8
+            + self.cover.stats().loaded_instances as usize * crate::plants::TRIANGLES as usize
     }
     pub fn pending_count(&self) -> usize {
         self.pending.len()
@@ -798,7 +867,9 @@ impl Renderer {
         let fog_color = [0.48 * brightness, 0.64 * brightness, 0.76 * brightness];
         let view_projection = projection * view;
         let frustum = frustum_planes(view_projection);
-        let shadow_matrix = self.shadow.update(&self.queue, eye, sun, self.elapsed);
+        let shadow_matrix = self
+            .shadow
+            .update(&self.queue, eye, sun, self.elapsed, self.air[1]);
         let shadow_active = self.shadows_enabled && sun.y > 0.035;
         let globals = Globals {
             view_projection: view_projection.to_cols_array_2d(),
@@ -831,6 +902,8 @@ impl Renderer {
                 300.,
                 0.,
             ],
+            climate: self.climate,
+            air: self.air,
         };
         self.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&globals));

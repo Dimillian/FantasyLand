@@ -27,6 +27,13 @@ export class Game {
         return ret;
     }
     /**
+     * @param {number} yaw
+     * @param {number} pitch
+     */
+    face(yaw, pitch) {
+        wasm.game_face(this.__wbg_ptr, yaw, pitch);
+    }
+    /**
      * @param {number} cx
      * @param {number} cz
      * @param {number} span

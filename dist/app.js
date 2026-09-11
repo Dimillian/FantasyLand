@@ -83,7 +83,7 @@ function loadLandscapeDestinations() {
     // Query lazily when this control is used, not during boot or every Settings visit.
     const destinations = game.landscape_destinations();
     if (!Array.isArray(destinations)) throw new Error('Invalid landscape destinations');
-    landscapeDestinations = destinations.filter((d) => d && typeof d.name === 'string' && d.name.trim() && Number.isFinite(d.x) && Number.isFinite(d.z) && Math.abs(d.x) < worldSize / 2 && Math.abs(d.z) < worldSize / 2).map((d) => ({ name: d.name.trim(), x: d.x, z: d.z, kind: 'landscape' }));
+    landscapeDestinations = destinations.filter((d) => d && typeof d.name === 'string' && d.name.trim() && Number.isFinite(d.x) && Number.isFinite(d.z) && Math.abs(d.x) < worldSize / 2 && Math.abs(d.z) < worldSize / 2).map((d) => ({ name: d.name.trim(), x: d.x, z: d.z, yaw: Number.isFinite(d.yaw) ? d.yaw : 0, pitch: Number.isFinite(d.pitch) ? d.pitch : -0.04, kind: 'landscape' }));
     for (const [index, destination] of landscapeDestinations.entries()) {
       const option = document.createElement('option');
       option.value = String(index); option.textContent = destination.name;
@@ -703,6 +703,7 @@ $('landscape-travel-form').addEventListener('submit', (event) => {
   const destination = selectedLandscapeDestination();
   if (!destination || !game || !initialReady) return;
   game.teleport(destination.x, destination.z);
+  game.face?.(destination.yaw, destination.pitch);
   state = game.state(); waypoint = { ...destination };
   saveProgress(); closeModal();
   toast(`Arrived at ${destination.name}.`);

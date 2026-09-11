@@ -16,6 +16,9 @@ pub struct Ecology {
     pub ferns: f32,
     pub heather: f32,
     pub seedheads: f32,
+    pub shrubs: f32,
+    pub litter: f32,
+    pub reeds: f32,
     /// Stable community pigment and flower group: cream0, gold1, blue2.
     pub cover_color: [f32; 3],
     pub flower_group: u32,
@@ -109,6 +112,9 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
             ferns: 0.0,
             heather: 0.0,
             seedheads: 0.0,
+            shrubs: 0.0,
+            litter: 0.0,
+            reeds: 0.0,
             cover_color: mix([0.42, 0.49, 0.25], [0.59, 0.61, 0.34], clump),
             flower_group: 0,
         };
@@ -120,6 +126,12 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
     let fern_patch = smooth(0.30, 0.68, field(seed ^ 0x4645524e, x / 29.0, z / 29.0));
     let wet_bank = smooth(0.28, 0.70, region.wetness) * (0.65 + region.soil * 0.35);
     let dry = (1.0 - smooth(0.25, 0.62, region.wetness)) * open;
+    let bank = if terrain.water_height > -999.0 {
+        (1.0 - smooth(0.6, 5.5, terrain.height - terrain.water_height))
+            * (1.0 - smooth(0.20, 0.55, region.slope))
+    } else {
+        0.0
+    };
     let temperate = !matches!(terrain.biome, Biome::Desert | Biome::Alpine | Biome::Moor);
     // Dense stands deliberately leave quiet litter between fern colonies, while
     // open meadows carry grasses punctuated by whole patches of flowering plants.
@@ -153,11 +165,28 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
     } else {
         0.0
     };
-    let normalize = (0.94 / (flowers + ferns + heather + seedheads).max(0.94)).min(1.0);
+    let edge = smooth(0.02, 0.22, trees) * (1.0 - smooth(0.55, 0.9, trees));
+    let mut shrubs = if temperate || terrain.biome == Biome::Moor {
+        (edge * 0.28 + dry * 0.10) * smooth(0.26, 0.68, clump)
+    } else {
+        0.0
+    };
+    let mut litter = if temperate {
+        trees * (0.12 + (1.0 - fern_patch) * 0.28)
+    } else {
+        0.0
+    };
+    let mut reeds = bank * (0.35 + wet_bank * 0.44) * smooth(0.25, 0.64, clump);
+    let normalize = (0.97
+        / (flowers + ferns + heather + seedheads + shrubs + litter + reeds).max(0.97))
+    .min(1.0);
     flowers *= normalize;
     ferns *= normalize;
     heather *= normalize;
     seedheads *= normalize;
+    shrubs *= normalize;
+    litter *= normalize;
+    reeds *= normalize;
     let colony = field(seed ^ 0x50455441, x / 170.0, z / 170.0);
     let flower_group = if region.wetness > 0.55 && colony > 0.57 {
         2
@@ -187,6 +216,9 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         ferns,
         heather,
         seedheads,
+        shrubs,
+        litter,
+        reeds,
         cover_color: mix(grass_color, [0.58, 0.49, 0.25], dry * 0.30),
         flower_group,
     }
@@ -214,9 +246,9 @@ pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
         Biome::Desert => [0.71, 0.57, 0.36],
     };
     let forest_floor = if terrain.biome == Biome::PineForest {
-        [0.30, 0.33, 0.22]
+        [0.31, 0.29, 0.18]
     } else {
-        [0.29, 0.37, 0.18]
+        [0.28, 0.34, 0.15]
     };
     let substrate = mix(
         open_color,
@@ -227,12 +259,22 @@ pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
     // than a uniformly green alpine or sandstone surface.
     let exposed = smooth(0.35, 0.82, region.rockiness) * (0.62 + patch * 0.32);
     let substrate = mix(substrate, region.rock_color, exposed);
+    let moss = field(seed ^ 0x4645524e, x / 29., z / 29.);
     let soil = mix(
+        [0.34, 0.27, 0.16],
         forest_floor,
-        [0.33, 0.29, 0.19],
-        smooth(0.40, 0.75, patch) * 0.42,
+        smooth(0.25, 0.71, moss) * (0.6 + region.wetness * 0.4),
     );
-    mix(substrate, soil, cover * 0.76)
+    let mut ground = mix(substrate, soil, cover * 0.82);
+    if terrain.water_height > -999.0 {
+        let clearance = terrain.height - terrain.water_height;
+        let margin =
+            (1.0 - smooth(0.35, 5.0, clearance)) * (1.0 - smooth(0.14, 0.50, region.slope));
+        let gravel = mix(region.rock_color, [0.47, 0.43, 0.31], 0.52);
+        let mud = mix([0.26, 0.29, 0.20], gravel, smooth(0.35, 0.72, patch));
+        ground = mix(ground, mud, margin * 0.85);
+    }
+    ground
 }
 
 #[cfg(test)]
@@ -375,7 +417,16 @@ mod tests {
                     ] {
                         assert!(value.is_finite() && (0.0..=1.0).contains(&value));
                     }
-                    assert!(a.flowers + a.ferns + a.heather + a.seedheads <= 0.941);
+                    assert!(
+                        a.flowers
+                            + a.ferns
+                            + a.heather
+                            + a.seedheads
+                            + a.shrubs
+                            + a.litter
+                            + a.reeds
+                            <= 0.971
+                    );
                     assert!(a.grass_height > 0.0 && a.grass_height < 1.4);
                     assert!(a.flower_group <= 2);
                     let color = ground_color(1337, x, z, &terrain);

@@ -3,6 +3,7 @@ pub mod ecology;
 pub mod exploration;
 pub mod geometry;
 mod horizon;
+mod plants;
 mod player;
 mod postprocess;
 pub mod regions;
@@ -113,6 +114,12 @@ impl Game {
         self.renderer.clear_chunks();
         self.renderer
             .update_chunks(&self.world, self.player.position, true);
+    }
+    pub fn face(&mut self, yaw: f32, pitch: f32) {
+        if yaw.is_finite() && pitch.is_finite() {
+            self.player.yaw = yaw.rem_euclid(std::f32::consts::TAU);
+            self.player.pitch = pitch.clamp(-1.45, 1.45);
+        }
     }
     pub fn state(&self) -> JsValue {
         let p = &self.player;

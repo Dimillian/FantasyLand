@@ -58,5 +58,6 @@ console.log('WASM regional checks passed: landscape fields, retained lake surfac
 const destinations = inspect_landscapes(1337);
 assert.equal(destinations.length, 7, 'landscape tour finds all seven generated families');
 assert.equal(new Set(destinations.map(d => d.name)).size, 7);
-assert.ok(destinations.every(d => Number.isFinite(d.x) && Number.isFinite(d.z)));
+assert.ok(destinations.every(d => Number.isFinite(d.x) && Number.isFinite(d.z) && Number.isFinite(d.yaw) && Number.isFinite(d.pitch)));
+assert.equal(typeof Game.prototype.face, 'function');
 console.log('WASM landscape tour passed: seven distinct finite destinations.');

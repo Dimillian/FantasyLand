@@ -92,6 +92,151 @@ fn main() {
         verify_lakes(&world, &mut renderer, &dir);
         return;
     }
+    if check.as_deref() == Some("portraits") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_filter(1, 0.85);
+        renderer.set_ground_cover_density(4.);
+        let views = fantasy_land::exploration::destinations(&world);
+        for view in &views {
+            let eye = glam::Vec3::new(
+                view.x,
+                geometry::walk_height(&world, view.x, view.z) + 1.72,
+                view.z,
+            );
+            renderer.clear_chunks();
+            renderer.update_chunks(&world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye, false);
+            }
+            let label = view.name.to_lowercase().replace(' ', "-");
+            let hour = if label.contains("woodland") {
+                15.0
+            } else {
+                9.5
+            };
+            renderer.render(eye, view.yaw, view.pitch, hour).unwrap();
+            save_png(
+                &format!("{dir}/{label}.png"),
+                1280,
+                720,
+                &renderer.capture_rgba().unwrap(),
+            );
+            println!(
+                "Portrait {} at {},{} yaw{} mesh{}MB",
+                label,
+                view.x,
+                view.z,
+                view.yaw,
+                renderer.mesh_bytes() as f64 / 1e6
+            );
+        }
+        fs::write(
+            format!("{dir}/views.json"),
+            serde_json::to_string_pretty(&views).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    if check.as_deref() == Some("formations") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_filter(1, 0.85);
+        renderer.set_ground_cover_density(4.);
+        let mut views = Vec::new();
+        for (name, x, z) in [
+            ("granite-tors", -74414., 70544.),
+            ("sandstone-ledges", 49881., 27098.),
+            ("coastal-rocks", 47049., 124785.),
+        ] {
+            let mut best: Option<(f32, glam::Vec3, f32, f32)> = None;
+            for p in geometry::formation_locations(&world, x, z, 420.)
+                .iter()
+                .take(24)
+            {
+                for i in 0..16 {
+                    let a = i as f32 * std::f32::consts::TAU / 16.;
+                    let cx = p[0] + a.sin() * 32.;
+                    let cz = p[2] + a.cos() * 32.;
+                    let s = world.sample(cx, cz);
+                    if s.ocean
+                        || s.water_height > s.height - 0.4
+                        || geometry::blocks_player(&world, cx, cz)
+                    {
+                        continue;
+                    }
+                    let y = geometry::walk_height(&world, cx, cz) + 1.72;
+                    let grade = (world.height(cx + 3., cz) - world.height(cx - 3., cz))
+                        .hypot(world.height(cx, cz + 3.) - world.height(cx, cz - 3.))
+                        / 6.;
+                    if grade > 0.65 {
+                        continue;
+                    }
+                    let yaw = (p[0] - cx).atan2(-(p[2] - cz));
+                    let pitch = ((p[1] + 3. - y) / 32.).atan().clamp(-0.16, 0.16);
+                    let back = world.natural_sample(cx + yaw.sin() * 1600., cz - yaw.cos() * 1600.);
+                    let background = ((back.height.max(back.water_height) - y) / 1600.).atan();
+                    let score = 4. - (p[1] + 3. - y).abs() * 0.22 - grade * 5.
+                        + background.clamp(-0.2, 0.24) * 7.
+                        - world.vegetation_density_from_sample(cx, cz, &s) * 3.;
+                    if best.as_ref().is_none_or(|v| score > v.0) {
+                        best = Some((score, glam::Vec3::new(cx, y, cz), yaw, pitch));
+                    }
+                }
+            }
+            if let Some((_, eye, yaw, pitch)) = best {
+                renderer.clear_chunks();
+                renderer.update_chunks(&world, eye, true);
+                while renderer.pending_count() > 0 {
+                    renderer.update_chunks(&world, eye, false);
+                }
+                renderer.render(eye, yaw, pitch, 9.5).unwrap();
+                save_png(
+                    &format!("{dir}/{name}.png"),
+                    1280,
+                    720,
+                    &renderer.capture_rgba().unwrap(),
+                );
+                views.push(
+                    serde_json::json!({"name":name,"eye":eye.to_array(),"yaw":yaw,"pitch":pitch}),
+                );
+                println!("Formation portrait {name} at {eye:?} yaw{yaw} pitch{pitch}");
+            }
+        }
+        fs::write(
+            format!("{dir}/views.json"),
+            serde_json::to_string_pretty(&views).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    if check.as_deref() == Some("shot") {
+        let args: Vec<String> = std::env::args().collect();
+        let read =
+            |i: usize, default: f32| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(default);
+        let x = read(4, spawn[0]);
+        let z = read(5, spawn[1]);
+        let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_filter(1, 0.85);
+        renderer.set_ground_cover_density(4.);
+        renderer.update_chunks(&world, eye, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(&world, eye, false);
+        }
+        renderer
+            .render(eye, read(6, yaw), read(7, -0.04), read(8, 9.5))
+            .unwrap();
+        save_png(
+            &format!("{dir}/shot.png"),
+            1280,
+            720,
+            &renderer.capture_rgba().unwrap(),
+        );
+        println!("Shot ground eye {:?}", eye);
+        return;
+    }
     if regions_only {
         verify_regions(&world, &mut renderer, &dir);
         return;

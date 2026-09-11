@@ -1,4 +1,5 @@
 // Append to world.wgsl. Shares Globals, VertexIn/Out, transform_vertex and fs_main.
+// Root contract: eight kinds x eight variants, 72 vertices per padded template.
 struct CoverTemplateVertex { position:vec4<f32>, normal:vec4<f32>, color:vec4<f32> };
 struct CoverTile { origin:vec4<f32>, grid:vec4<u32> };
 @group(1) @binding(0) var<storage,read> cover_templates:array<CoverTemplateVertex>;
@@ -32,7 +33,7 @@ fn cover_surface(local:vec2<f32>)->vec3<f32> {
 }
 @vertex
 fn vs_cover(input:CoverIn,@builtin(vertex_index) vertex:u32)->VertexOut {
-    let plant=cover_templates[input.data.y*24u+vertex];
+    let plant=cover_templates[input.data.y*72u+vertex];
     let p=plant.position.xyz*input.placement.z;
     let sine=input.rotation.x;let cosine=input.rotation.y;
     let local=vec2<f32>(p.x*cosine-p.z*sine,p.x*sine+p.z*cosine)+input.placement.xy;

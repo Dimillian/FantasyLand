@@ -123,7 +123,7 @@ impl ShadowMap {
             uniform,
         }
     }
-    pub fn update(&self, queue: &wgpu::Queue, eye: Vec3, sun: Vec3, time: f32) -> Mat4 {
+    pub fn update(&self, queue: &wgpu::Queue, eye: Vec3, sun: Vec3, time: f32, wind: f32) -> Mat4 {
         let matrix = shadow_matrix(eye, sun);
         queue.write_buffer(
             &self.uniform,
@@ -131,7 +131,7 @@ impl ShadowMap {
             bytemuck::bytes_of(&ShadowUniform {
                 matrix: matrix.to_cols_array_2d(),
                 origin: eye.extend(1.).to_array(),
-                time: [time, 0., 0., 0.],
+                time: [time, wind, 0., 0.],
             }),
         );
         matrix

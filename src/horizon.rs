@@ -46,6 +46,7 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
                     .normalize_or_zero()
                     .to_array();
                 let ocean = points.iter().all(|p| p.2);
+                let freshwater = points.iter().all(|p| !p.2 && p.3 > 0.0);
                 let color = std::array::from_fn(|i| {
                     (points[0].1[i] + points[1].1[i] + points[2].1[i]) / 3.
                 });
@@ -56,10 +57,12 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
                         normal,
                         color: if ocean {
                             [0.0, 0.0, depth + 1.0]
+                        } else if freshwater {
+                            [0.0, 0.0, -(depth + 1.0)]
                         } else {
                             color
                         },
-                        material: if ocean { 8.0 } else { 7.0 },
+                        material: if ocean || freshwater { 8.0 } else { 7.0 },
                     });
                 }
                 mesh.indices.extend([start, start + 1, start + 2]);
