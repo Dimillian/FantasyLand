@@ -60,6 +60,346 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("lightning") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_filter(1, 1.0);
+        let x = -8909.148;
+        let z = -77660.938;
+        let hour = 18.7;
+        let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+        renderer.set_weather_mode(5);
+        renderer.update_weather(&world, eye, hour, 0.0);
+        for _ in 0..6000 {
+            renderer.update_weather(&world, eye, hour, 0.025);
+            if renderer.weather_state().lightning > 0.90 {
+                break;
+            }
+        }
+        assert!(
+            renderer.weather_state().lightning > 0.90,
+            "a real scheduled storm strike must occur"
+        );
+        renderer.update_chunks(&world, eye, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(&world, eye, false);
+        }
+        for i in 0..8 {
+            let yaw = i as f32 * std::f32::consts::FRAC_PI_4;
+            renderer.render(eye, yaw, 0.18, hour).unwrap();
+            save_png(
+                &format!("{dir}/strike-{i}.png"),
+                1280,
+                720,
+                &renderer.capture_rgba().unwrap(),
+            );
+        }
+        fs::write(
+            format!("{dir}/strike.json"),
+            serde_json::to_string_pretty(renderer.weather_state()).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    if check.as_deref() == Some("climate") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_ground_cover_density(4.0);
+        renderer.set_filter(1, 1.0);
+        let views = [
+            (
+                "forest-lake",
+                -8909.148,
+                -77660.938,
+                -0.2618038,
+                -0.0438113,
+                9.3,
+                2,
+                25,
+            ),
+            (
+                "lake-storm",
+                -8909.148,
+                -77660.938,
+                -0.2618038,
+                -0.0438113,
+                15.0,
+                5,
+                45,
+            ),
+            (
+                "lake-winter",
+                -8909.148,
+                -77660.938,
+                -0.2618038,
+                -0.0438113,
+                10.0,
+                6,
+                540,
+            ),
+            (
+                "mountain-water",
+                -56764.645,
+                -42213.234,
+                -2.0944018,
+                -0.0126998,
+                8.0,
+                2,
+                25,
+            ),
+            (
+                "sunrise-arches",
+                23512.3,
+                63468.41,
+                -1.9067289,
+                0.27,
+                7.2,
+                2,
+                25,
+            ),
+            (
+                "winter-arches",
+                23512.3,
+                63468.41,
+                -1.9067289,
+                0.27,
+                10.3,
+                7,
+                540,
+            ),
+            (
+                "ancient-spires",
+                -10503.36,
+                -46323.387,
+                0.7956443,
+                0.26,
+                15.4,
+                2,
+                25,
+            ),
+            (
+                "basalt-organ",
+                -150293.66,
+                57163.99,
+                0.0805893,
+                0.30,
+                15.8,
+                2,
+                25,
+            ),
+            (
+                "copper-moons",
+                -93242.0,
+                43300.0,
+                2.493867,
+                0.36,
+                19.4,
+                1,
+                25,
+            ),
+            (
+                "sea-cliffs",
+                -82546.12,
+                -92297.91,
+                0.16122533,
+                0.22,
+                8.1,
+                2,
+                25,
+            ),
+        ];
+        let mut reports = Vec::new();
+        for (label, x, z, yaw, pitch, hour, mode, seconds) in views {
+            let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+            renderer.clear_chunks();
+            renderer.set_weather_mode(mode);
+            renderer.set_weather_speed(1.0);
+            renderer.set_weather_paused(false);
+            renderer.update_weather(&world, eye, hour, 0.0);
+            for _ in 0..seconds {
+                renderer.update_weather(&world, eye, hour, 1.0);
+            }
+            renderer.update_chunks(&world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye, false);
+            }
+            renderer.advance_time(0.1);
+            renderer.render(eye, yaw, pitch, hour).unwrap();
+            save_png(
+                &format!("{dir}/{label}.png"),
+                1280,
+                720,
+                &renderer.capture_rgba().unwrap(),
+            );
+            reports.push(serde_json::json!({"label":label,"eye":eye.to_array(),"yaw":yaw,"pitch":pitch,"hour":hour,"weather":renderer.weather_state(),"meshMB":renderer.mesh_bytes() as f64/1e6}));
+            if label == "forest-lake" || label == "lake-storm" {
+                renderer.set_render_resolution(450);
+                let mut timings = Vec::new();
+                for i in 0..70 {
+                    renderer.advance_time(1.0 / 60.0);
+                    renderer.update_weather(&world, eye, hour, 1.0 / 60.0);
+                    let start = Instant::now();
+                    renderer
+                        .render(eye, yaw + (i as f32 * 0.001), pitch, hour)
+                        .unwrap();
+                    renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                    if i >= 10 {
+                        timings.push(start.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+                timings.sort_by(f64::total_cmp);
+                let mean = timings.iter().sum::<f64>() / timings.len() as f64;
+                let report = serde_json::json!({"nativeGpuCompletedFrameMeanMs":mean,"p95Ms":timings[56],"internal":[800,450],"output":[1280,720],"groundCover":4.0,"reflections":true,"camera":"slow pan", "browserFps":null});
+                println!("{label} native timing: {report}");
+                reports.push(report);
+                renderer.set_render_resolution(720);
+            }
+            println!("Captured {label}");
+        }
+        fs::write(
+            format!("{dir}/climate-report.json"),
+            serde_json::to_string_pretty(&reports).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    if check.as_deref() == Some("weather") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_ground_cover_density(4.0);
+        renderer.set_filter(1, 1.0);
+        // Native photographs use the same ground height, mesh and shader as WASM.
+        let views = [
+            (
+                "high-lake",
+                -38055.543,
+                -11834.824,
+                -0.58905,
+                -0.041625,
+                9.2,
+            ),
+            (
+                "whisper-arch",
+                23552.793,
+                63454.277,
+                -1.9067289,
+                0.34824243,
+                16.3,
+            ),
+            ("woodland", -10869.0, 58539.0, 1.9634955, -0.035, 15.0),
+            (
+                "river-cascade",
+                -45970.496,
+                63174.215,
+                -0.26180425,
+                0.18912803,
+                10.5,
+            ),
+        ];
+        let mut reports = Vec::new();
+        for (label, x, z, yaw, pitch, hour) in views {
+            let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+            renderer.clear_chunks();
+            renderer.update_chunks(&world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye, false);
+            }
+            for (mode, name) in [
+                (1, "clear"),
+                (2, "cloudy"),
+                (3, "rain"),
+                (5, "tempest"),
+                (6, "snow"),
+                (7, "blizzard"),
+            ] {
+                if label == "river-cascade" && ![1, 3].contains(&mode) {
+                    continue;
+                }
+                renderer.set_weather_paused(false);
+                renderer.set_weather_speed(1.0);
+                renderer.set_weather_mode(mode);
+                for _ in 0..24 {
+                    renderer.update_weather(&world, eye, hour, 1.0);
+                }
+                if mode >= 6 {
+                    for _ in 0..420 {
+                        renderer.update_weather(&world, eye, hour, 1.0);
+                    }
+                }
+                renderer.advance_time(0.1);
+                renderer.render(eye, yaw, pitch, hour).unwrap();
+                let pixels = renderer.capture_rgba().unwrap();
+                assert!(pixels.chunks_exact(4).all(|p| p[3] == 255));
+                save_png(&format!("{dir}/{label}-{name}.png"), 1280, 720, &pixels);
+                reports.push(serde_json::json!({"place":label,"weather":renderer.weather_state(),"eye":eye.to_array(),"yaw":yaw,"pitch":pitch,"hour":hour,"reflectionDraws":renderer.reflection_draws(),"meshMB":renderer.mesh_bytes() as f64 /1e6}));
+                if label == "high-lake" && mode == 1 {
+                    renderer.set_reflections(false);
+                    renderer.render(eye, yaw, pitch, hour).unwrap();
+                    let off = renderer.capture_rgba().unwrap();
+                    let changed = pixels
+                        .chunks_exact(4)
+                        .zip(off.chunks_exact(4))
+                        .filter(|(a, b)| a != b)
+                        .count();
+                    assert!(
+                        changed > 500,
+                        "actual water reflection should affect a visible lake: {changed}"
+                    );
+                    save_png(
+                        &format!("{dir}/{label}-reflections-off.png"),
+                        1280,
+                        720,
+                        &off,
+                    );
+                    renderer.set_reflections(true);
+                    println!("Actual lake reflection changes {changed} pixels");
+                }
+                if mode == 5 && label == "whisper-arch" {
+                    // Find an actual scheduled pulse; do not force a fake flash.
+                    for _ in 0..6000 {
+                        renderer.update_weather(&world, eye, hour, 0.025);
+                        if renderer.weather_state().lightning > 0.80 {
+                            break;
+                        }
+                    }
+                    renderer.render(eye, yaw, pitch, hour).unwrap();
+                    save_png(
+                        &format!("{dir}/{label}-lightning.png"),
+                        1280,
+                        720,
+                        &renderer.capture_rgba().unwrap(),
+                    );
+                    println!(
+                        "Actual scheduled flash {}",
+                        renderer.weather_state().lightning
+                    );
+                }
+                println!(
+                    "Captured {label} / {name}: {}",
+                    renderer.weather_state().label
+                );
+            }
+            if label == "high-lake" {
+                renderer.set_weather_mode(1);
+                for _ in 0..120 {
+                    renderer.update_weather(&world, eye, 21.0, 1.0);
+                }
+                renderer.render(eye, yaw, 0.2, 21.0).unwrap();
+                save_png(
+                    &format!("{dir}/{label}-moonlight.png"),
+                    1280,
+                    720,
+                    &renderer.capture_rgba().unwrap(),
+                );
+            }
+        }
+        fs::write(
+            format!("{dir}/weather-report.json"),
+            serde_json::to_string_pretty(&reports).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     if check.as_deref() == Some("epic") {
         renderer.set_quality(1);
         renderer.set_render_resolution(720);
@@ -402,6 +742,11 @@ fn main() {
         renderer.set_render_resolution(720);
         renderer.set_filter(1, 0.85);
         renderer.set_ground_cover_density(4.);
+        renderer.set_weather_mode(read(9, 0.0) as u32);
+        renderer.update_weather(&world, eye, read(8, 9.5), 0.0);
+        for _ in 0..read(10, 0.0).clamp(0.0, 3600.0) as u32 {
+            renderer.update_weather(&world, eye, read(8, 9.5), 1.0);
+        }
         renderer.update_chunks(&world, eye, true);
         while renderer.pending_count() > 0 {
             renderer.update_chunks(&world, eye, false);

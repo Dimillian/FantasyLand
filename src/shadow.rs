@@ -20,14 +20,18 @@ pub struct ShadowMap {
     pub pipeline: wgpu::RenderPipeline,
     pub group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
+    size: u32,
 }
 impl ShadowMap {
     pub fn new(device: &wgpu::Device) -> Self {
+        Self::with_size(device, SHADOW_SIZE)
+    }
+    pub fn with_size(device: &wgpu::Device, size: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Nearby sunlight depth"),
             size: wgpu::Extent3d {
-                width: SHADOW_SIZE,
-                height: SHADOW_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -121,23 +125,35 @@ impl ShadowMap {
             pipeline,
             group,
             uniform,
+            size,
         }
     }
-    pub fn update(&self, queue: &wgpu::Queue, eye: Vec3, sun: Vec3, time: f32, wind: f32) -> Mat4 {
-        let matrix = shadow_matrix(eye, sun);
+    pub fn update(
+        &self,
+        queue: &wgpu::Queue,
+        eye: Vec3,
+        sun: Vec3,
+        time: f32,
+        wind: f32,
+        wind_dir: glam::Vec2,
+    ) -> Mat4 {
+        let matrix = shadow_matrix_size(eye, sun, self.size);
         queue.write_buffer(
             &self.uniform,
             0,
             bytemuck::bytes_of(&ShadowUniform {
                 matrix: matrix.to_cols_array_2d(),
                 origin: eye.extend(1.).to_array(),
-                time: [time, wind, 0., 0.],
+                time: [time, wind, wind_dir.x, wind_dir.y],
             }),
         );
         matrix
     }
 }
 fn shadow_matrix(eye: Vec3, sun: Vec3) -> Mat4 {
+    shadow_matrix_size(eye, sun, SHADOW_SIZE)
+}
+fn shadow_matrix_size(eye: Vec3, sun: Vec3, size: u32) -> Mat4 {
     let up = if sun.dot(Vec3::Y).abs() > 0.98 {
         Vec3::Z
     } else {
@@ -145,7 +161,7 @@ fn shadow_matrix(eye: Vec3, sun: Vec3) -> Mat4 {
     };
     let view = Mat4::look_at_rh(sun * 1000.0, Vec3::ZERO, up);
     let absolute = view.transform_vector3(eye);
-    let texel = SHADOW_RADIUS * 2.0 / SHADOW_SIZE as f32;
+    let texel = SHADOW_RADIUS * 2.0 / size as f32;
     let offset = (absolute / texel).round() * texel - absolute;
     Mat4::orthographic_rh(
         -SHADOW_RADIUS + offset.x,

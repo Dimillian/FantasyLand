@@ -15,6 +15,7 @@ pub mod regions;
 pub mod renderer;
 mod shadow;
 pub mod traversal;
+pub mod weather;
 pub mod world;
 
 use player::Player;
@@ -57,6 +58,8 @@ struct GameState {
     sun_shadows: bool,
     cover_instances: u32,
     mesh_megabytes: f32,
+    weather: weather::WeatherState,
+    reflection_draws: u32,
 }
 
 #[wasm_bindgen]
@@ -99,6 +102,8 @@ impl Game {
             .update(&self.world, dt, forward, strafe, sprint, jump);
         self.hour = (self.hour + dt / 120.0) % 24.0;
         self.renderer.advance_time(dt);
+        self.renderer
+            .update_weather(&self.world, self.player.eye(), self.hour, dt);
         self.renderer
             .update_chunks(&self.world, self.player.position, false);
         self.renderer
@@ -190,6 +195,8 @@ impl Game {
             sun_shadows: self.renderer.shadows_enabled(),
             cover_instances: self.renderer.cover_drawn_instances(),
             mesh_megabytes: self.renderer.mesh_bytes() as f32 / 1_000_000.0,
+            weather: *self.renderer.weather_state(),
+            reflection_draws: self.renderer.reflection_draws(),
         })
         .unwrap_or(JsValue::NULL)
     }
@@ -295,6 +302,21 @@ impl Game {
     }
     pub fn spawn(&self) -> Vec<f32> {
         self.world.spawn().to_vec()
+    }
+    pub fn set_weather_mode(&mut self, mode: u32) {
+        self.renderer.set_weather_mode(mode);
+    }
+    pub fn set_weather_speed(&mut self, speed: f32) {
+        self.renderer.set_weather_speed(speed);
+    }
+    pub fn set_weather_paused(&mut self, paused: bool) {
+        self.renderer.set_weather_paused(paused);
+    }
+    pub fn set_reflections(&mut self, enabled: bool) {
+        self.renderer.set_reflections(enabled);
+    }
+    pub fn set_enclosure(&mut self, enabled: bool) {
+        self.renderer.set_enclosure(enabled);
     }
     pub fn set_ascii(&mut self, cell_scale: u32, palette: u32) {
         self.renderer.set_ascii(cell_scale, palette);

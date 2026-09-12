@@ -20,7 +20,7 @@ fn luma(c: vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
     var vertical = 0.;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
-            let c = textureSampleLevel(source, linear_sampler, uv + vec2<f32>(f32(x), f32(y)) * step, 0.).rgb;
+            let c = filmic_display(textureSampleLevel(source, linear_sampler, uv + vec2<f32>(f32(x), f32(y)) * step, 0.).rgb);
             let weight = select(1., 2., x == 0) * select(1., 2., y == 0);
             color += c * weight / 16.;
             horizontal += luma(c) * f32(x) * select(1., 2., y == 0) / 4.;

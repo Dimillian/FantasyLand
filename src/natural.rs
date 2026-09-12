@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 
 pub const CELL_SIZE: f32 = 768.;
-pub const MAX_RADIUS: f32 = 76.;
+pub const MAX_RADIUS: f32 = 112.;
 const EMBED: f32 = 0.65;
 thread_local! {
     static CACHE: RefCell<BTreeMap<(u32,i32,i32), Option<NaturalLandmark>>> = RefCell::new(BTreeMap::new());
@@ -44,6 +44,52 @@ impl NaturalKind {
             Self::CoastalStacks => "Sentinels of the tide",
             Self::Hoodoos => "The weathered spires",
         }
+    }
+}
+
+/// Rarity changes structure and footprint, not just a display label. These are
+/// candidate proportions; broad terrain/road/water rejection changes the census.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NaturalRarity {
+    Common,
+    Rare,
+    Monumental,
+}
+impl NaturalRarity {
+    pub fn from_id(id: u32) -> Self {
+        let p = random(id, 3201);
+        if p < 0.86 {
+            Self::Common
+        } else if p < 0.98 {
+            Self::Rare
+        } else {
+            Self::Monumental
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            Self::Common => 0,
+            Self::Rare => 1,
+            Self::Monumental => 2,
+        }
+    }
+    fn scale(self, id: u32) -> f32 {
+        let (low, span) = match self {
+            Self::Common => (0.64, 0.34),
+            Self::Rare => (1.04, 0.32),
+            Self::Monumental => (1.42, 0.28),
+        };
+        low + random(id, 100) * span
+    }
+    fn count(self, id: u32, salt: u32, ranges: [(u32, u32); 3]) -> u32 {
+        let (lo, hi) = ranges[self.index()];
+        lo + (random(id, salt) * (hi - lo + 1) as f32).floor() as u32
+    }
+}
+impl NaturalLandmark {
+    pub fn rarity(&self) -> NaturalRarity {
+        NaturalRarity::from_id(self.id)
     }
 }
 
@@ -709,6 +755,217 @@ impl Builder<'_> {
         });
     }
 }
+impl Builder<'_> {
+    /// Offset, narrowing upper courses make a leaning silhouette while retaining
+    /// exact individual solids. Broken variants end in a sloping fracture face.
+    fn spire(
+        &mut self,
+        c: [f32; 2],
+        size: [f32; 2],
+        height: f32,
+        angle: f32,
+        variant: u32,
+        broken: bool,
+    ) {
+        let body = height
+            * if broken {
+                0.55 + random(self.seed, variant + 201) * 0.24
+            } else {
+                0.67
+            };
+        self.column(c, size, body, angle, variant, false);
+        let lower = self.solids.last_mut().unwrap();
+        let base = lower
+            .bottom
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max)
+            + EMBED;
+        if broken {
+            for (i, y) in lower.top.iter_mut().enumerate() {
+                *y = base
+                    + body
+                        * (0.73
+                            + (i as f32 * 0.77).sin() * 0.22
+                            + random(self.seed, variant + 210 + i as u32) * 0.21);
+            }
+        } else {
+            let contact = lower.top.iter().copied().fold(f32::INFINITY, f32::min) - 0.38;
+            let tilt = rotated(
+                size[0] * (0.09 + random(self.seed, variant + 220) * 0.10),
+                size[1] * (random(self.seed, variant + 221) - 0.5) * 0.15,
+                angle,
+            );
+            self.cap(
+                [c[0] + tilt[0], c[1] + tilt[1]],
+                [size[0] * 0.66, size[1] * 0.65],
+                contact,
+                height * 0.32,
+                angle,
+                variant + 230,
+            );
+        }
+    }
+    fn arch_span(
+        &mut self,
+        cx: f32,
+        half: f32,
+        depth: f32,
+        scale: f32,
+        baseline: f32,
+        rise: f32,
+        spring: f32,
+        window: bool,
+        collapsed: bool,
+        skip_support: i32,
+        variant: u32,
+    ) {
+        let leg = (2.6 + random(self.seed, variant + 1) * 0.7) * scale;
+        for side in [-1., 1.] {
+            if side as i32 == skip_support {
+                continue;
+            }
+            let salt = variant + (side + 1.) as u32 * 53;
+            let c = [cx + side * half, side * 0.22 * depth];
+            let h = (baseline + spring + 4.6 * scale - self.local_ground(c)).max(5.);
+            self.column(c, [leg, depth * 1.14], h, side * 0.17, salt + 10, false);
+            self.talus(
+                [c[0] + side * 1.8 * scale, c[1]],
+                [5.8 * scale, depth * 1.85],
+                h * 0.83,
+                side * 0.18,
+                salt + 40,
+            );
+            self.talus(
+                [c[0] + side * 4.7 * scale, c[1] - depth * 0.65],
+                [5.7 * scale, depth * 1.52],
+                h * 0.39,
+                side * 0.35,
+                salt + 70,
+            );
+        }
+        let slabs = 5 + (random(self.seed, variant + 130) * 4.) as usize;
+        let weights: Vec<f32> = (0..slabs)
+            .map(|i| 0.6 + random(self.seed, variant + 140 + i as u32) * 0.9)
+            .collect();
+        let total: f32 = weights.iter().sum();
+        let mut left = -1.;
+        let profile = |u: f32| baseline + spring + rise * (1. - u * u).max(0.).sqrt() + u * scale;
+        for (i, w) in weights.iter().enumerate() {
+            let right = if i + 1 == slabs {
+                1.
+            } else {
+                left + 2. * w / total
+            };
+            if !collapsed || !(i == slabs / 2 || i + 1 == slabs / 2) {
+                self.beam(
+                    cx + left * half * 0.95 - 0.30 * scale,
+                    cx + right * half * 0.95 + 0.30 * scale,
+                    (random(self.seed, variant + 160 + i as u32) - 0.5) * 0.30 * depth,
+                    depth * (0.90 + random(self.seed, variant + 180 + i as u32) * 0.28),
+                    profile(left),
+                    profile(right),
+                    (2.3 + random(self.seed, variant + 200 + i as u32) * 1.9) * scale,
+                );
+            }
+            left = right;
+        }
+        if window {
+            let parts = if random(self.seed, variant + 240) < 0.45 {
+                1
+            } else {
+                2
+            };
+            for i in 0..parts {
+                let x0 = -half + 2. * half * i as f32 / parts as f32;
+                let x1 = -half + 2. * half * (i + 1) as f32 / parts as f32;
+                self.beam(
+                    cx + x0 - 0.2 * scale,
+                    cx + x1 + 0.2 * scale,
+                    0.,
+                    depth,
+                    baseline + (5.1 + 1.0 * i as f32) * scale,
+                    baseline + (5.9 - 0.25 * i as f32) * scale,
+                    3.0 * scale,
+                );
+            }
+        }
+        if collapsed {
+            // Fallen pieces collect beside the cleft; neither entrance becomes a dam.
+            for i in 0..2 {
+                self.talus(
+                    [cx + half + 3. * scale, (i as f32 - 0.5) * 6. * scale],
+                    [4.5 * scale, 3.5 * scale],
+                    (2.2 + i as f32) * scale,
+                    0.3 + i as f32,
+                    variant + 260 + i * 23,
+                );
+            }
+        }
+    }
+    /// Extend the parent rock fabric along geological strike. These connected low
+    /// shelves and broken fins bridge the main mass into its actual hillside.
+    fn landform_skirt(&mut self, rarity: NaturalRarity, scale: f32, kind: NaturalKind) {
+        let mut left = (f32::INFINITY, 0.);
+        let mut right = (f32::NEG_INFINITY, 0.);
+        for solid in self.solids.iter().filter(|s| !s.detail) {
+            for p in &solid.footprint {
+                let local = rotated(p[0] - self.x, p[1] - self.z, -self.yaw);
+                if local[0] < left.0 {
+                    left = (local[0], local[1]);
+                }
+                if local[0] > right.0 {
+                    right = (local[0], local[1]);
+                }
+            }
+        }
+        let layers = match rarity {
+            NaturalRarity::Common => 2,
+            NaturalRarity::Rare => 3,
+            NaturalRarity::Monumental => 4,
+        };
+        let reach = scale.min(1.35);
+        for (side, edge) in [(-1., left), (1., right)] {
+            for i in 0..layers {
+                let salt = 3700 + (side + 1.) as u32 * 80 + i * 19;
+                let decay = 1. - i as f32 * 0.16;
+                let center = [
+                    edge.0 + side * (i as f32 * 5.5 - 2.) * reach,
+                    edge.1 + (random(self.seed, salt) - 0.5) * 5. * reach,
+                ];
+                let width = (9. + random(self.seed, salt + 1) * 4.) * reach * decay;
+                let depth = (5. + random(self.seed, salt + 2) * 3.) * reach * decay;
+                let h = (3.1 + random(self.seed, salt + 3) * 3.8) * scale * decay;
+                self.talus(
+                    center,
+                    [width, depth],
+                    h,
+                    if side > 0. { 0.12 } else { PI - 0.12 },
+                    salt + 4,
+                );
+                if i == 0
+                    && rarity != NaturalRarity::Common
+                    && matches!(
+                        kind,
+                        NaturalKind::GraniteTor
+                            | NaturalKind::BrokenEscarpment
+                            | NaturalKind::CoastalStacks
+                    )
+                {
+                    self.column(
+                        [center[0], center[1] + depth * 0.1],
+                        [width * 0.55, depth * 0.32],
+                        h * 1.25,
+                        0.08,
+                        salt + 14,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn recipe(
     world: &World,
     seed: u32,
@@ -718,7 +975,8 @@ fn recipe(
     yaw: f32,
     color: [f32; 3],
 ) -> NaturalLandmark {
-    let scale = 0.78 + random(seed, 100) * 0.54;
+    let rarity = NaturalRarity::from_id(seed);
+    let scale = rarity.scale(seed);
     let mut b = Builder {
         w: world,
         seed,
@@ -731,346 +989,394 @@ fn recipe(
     match kind {
         NaturalKind::Arch | NaturalKind::StoneWindow => {
             let half = (9. + random(seed, 101) * 4.) * scale;
-            let depth = (3. + random(seed, 102) * 1.4) * scale;
-            let leg = 3.0 * scale;
-            let baseline = [[-half, 0.], [half, 0.], [0., 0.]]
-                .map(|p| b.local_ground(p))
-                .into_iter()
-                .fold(f32::NEG_INFINITY, f32::max);
-            let spring = baseline
-                + (if kind == NaturalKind::StoneWindow {
-                    13.
-                } else {
-                    6.4
-                }) * scale;
+            let depth = (2.7 + random(seed, 102) * 1.6) * scale;
             let rise = (8. + random(seed, 103) * 6.) * scale;
-            for side in [-1., 1.] {
-                let variation = (side + 1.) as u32 * 45;
-                let c = [side * half, side * 0.30 * depth];
-                let h = (spring + 4. * scale - b.local_ground(c)).max(5.);
-                b.column(
-                    c,
-                    [
-                        leg * (0.91 + random(seed, 110 + variation) * 0.20),
-                        depth * 1.18,
-                    ],
+            let spring = (if kind == NaturalKind::StoneWindow {
+                12.7
+            } else {
+                6.5
+            }) * scale;
+            let extra = match rarity {
+                NaturalRarity::Common => 0,
+                NaturalRarity::Rare => usize::from(random(seed, 3210) < 0.62),
+                NaturalRarity::Monumental => 1 + usize::from(random(seed, 3210) < 0.35),
+            };
+            let mut spans: Vec<(f32, f32, bool, i32)> = vec![(0., half, false, 0)];
+            for i in 0..extra {
+                let side = if i == 0 {
+                    if random(seed, 3211) < 0.5 {
+                        -1.
+                    } else {
+                        1.
+                    }
+                } else {
+                    -spans[1].0.signum()
+                };
+                let secondary = half * (0.57 + random(seed, 3212 + i as u32) * 0.28);
+                spans.push((
+                    side * (half + secondary),
+                    secondary,
+                    random(seed, 3215 + i as u32) < 0.38,
+                    -side as i32,
+                ));
+            }
+            let baseline = spans
+                .iter()
+                .flat_map(|&(cx, h, _, _)| [[cx - h, 0.], [cx + h, 0.], [cx, 0.]])
+                .map(|p| b.local_ground(p))
+                .fold(f32::NEG_INFINITY, f32::max);
+            for (i, &(cx, h, collapsed, skip)) in spans.iter().enumerate() {
+                b.arch_span(
+                    cx,
                     h,
-                    0.16 * side,
-                    120 + variation,
-                    false,
-                );
-                // Unequal buttresses merge the columns into a weathered rock fin;
-                // both through-entrances and the center corridor remain empty.
-                b.talus(
-                    [c[0] + side * 2.0 * scale, c[1]],
-                    [6.8 * scale, depth * 1.90],
-                    h * 0.90,
-                    side * 0.15,
-                    150 + variation,
-                );
-                b.talus(
-                    [c[0] + side * 4.7 * scale, c[1] + depth * 0.65],
-                    [6.2 * scale, depth * 1.70],
-                    h * 0.53,
-                    side * 0.4,
-                    180 + variation,
-                );
-                b.talus(
-                    [c[0] + side * 3.2 * scale, c[1] - depth * 1.2],
-                    [4.7 * scale, depth * 1.22],
-                    h * 0.40,
-                    -side * 0.3,
-                    210 + variation,
+                    depth * (if i == 0 { 1. } else { 0.85 }),
+                    scale,
+                    baseline,
+                    rise * (h / half),
+                    spring,
+                    kind == NaturalKind::StoneWindow
+                        && (i == 0 || random(seed, 3220 + i as u32) < 0.5),
+                    collapsed,
+                    skip,
+                    1000 + i as u32 * 400,
                 );
             }
-            let span = half * 0.94;
-            // Unequal fracture spans and an asymmetric arch profile avoid an
-            // architectural keystone/radial-block rhythm.
-            let cuts = [-1.0, -0.84, -0.57, -0.23, 0.15, 0.43, 0.79, 1.0];
-            let profile = |u: f32| spring + rise * (1. - u * u).max(0.).sqrt() + u * 1.0 * scale;
-            for i in 0..7 {
-                b.beam(
-                    cuts[i] * span - 0.30 * scale,
-                    cuts[i + 1] * span + 0.30 * scale,
-                    (random(seed, 270 + i as u32) - 0.5) * 0.38 * depth,
-                    depth * (0.90 + random(seed, 290 + i as u32) * 0.32),
-                    profile(cuts[i]),
-                    profile(cuts[i + 1]),
-                    (2.1 + random(seed, 310 + i as u32) * 2.1) * scale,
-                );
-            }
-            if kind == NaturalKind::StoneWindow {
-                b.beam(
-                    -half,
-                    half * 0.17,
-                    0.,
-                    depth * 1.09,
-                    baseline + 4.9 * scale,
-                    baseline + 6.5 * scale,
-                    3.4 * scale,
-                );
-                b.beam(
-                    half * 0.13,
-                    half,
-                    0.,
-                    depth * 0.95,
-                    baseline + 6.3 * scale,
-                    baseline + 5.4 * scale,
-                    2.8 * scale,
+            // Even a common arch can retain a short detached shoulder of an older
+            // collapsed span; the main opening is always an intact usable passage.
+            if extra == 0 && random(seed, 3229) < 0.30 {
+                let side = if random(seed, 3230) < 0.5 { -1. } else { 1. };
+                b.spire(
+                    [side * (half + 9. * scale), depth * 0.4],
+                    [3.0 * scale, depth],
+                    9. * scale,
+                    0.2,
+                    3240,
+                    true,
                 );
             }
         }
         NaturalKind::Pinnacles => {
-            for i in 0..7 {
-                let a = i as f32 * 2.39996;
-                let r = if i == 0 {
-                    0.
+            let count = rarity.count(seed, 3301, [(3, 6), (5, 9), (8, 12)]);
+            let pattern = random(seed, 3302);
+            for i in 0..count {
+                let a = i as f32 * 2.39996 + random(seed, 201 + i) * 0.42;
+                let spread = (6. + (i as f32).sqrt() * 6.) * scale;
+                let c = if pattern < 0.48 {
+                    [
+                        (i as f32 - (count - 1) as f32 * 0.5) * 5.6 * scale,
+                        (random(seed, 221 + i) - 0.5) * 12. * scale,
+                    ]
                 } else {
-                    (13. + random(seed, 201 + i) * 13.) * scale
+                    [a.cos() * spread, a.sin() * spread * 0.66]
                 };
-                let height = (15. + random(seed, 221 + i) * 25.) * scale;
-                let size = (2.0 + random(seed, 241 + i) * 2.4) * scale;
-                let c = [a.cos() * r, a.sin() * r];
-                b.column(
+                let height = (15. + random(seed, 241 + i) * 25.) * scale;
+                let size = (2.0 + random(seed, 261 + i) * 2.3) * scale;
+                b.spire(
                     c,
-                    [size * 0.76, size * 0.62],
+                    [size * 0.86, size * 0.65],
                     height,
                     a,
-                    261 + i * 90,
-                    false,
+                    4000 + i * 300,
+                    random(seed, 281 + i) < 0.28,
                 );
-                let top = b
-                    .solids
-                    .last()
-                    .unwrap()
-                    .top
-                    .iter()
-                    .copied()
-                    .fold(f32::INFINITY, f32::min);
-                b.cap(
-                    c,
-                    [size * 0.50, size * 0.43],
-                    top - 0.5,
-                    height * 0.24,
-                    a,
-                    281 + i * 90,
-                );
-                b.talus(
-                    [c[0] + a.cos() * size * 0.20, c[1] + a.sin() * size * 0.20],
-                    [size * 1.85, size * 1.30],
-                    height * 0.48,
-                    a + 0.45,
-                    298 + i * 90,
-                );
+                if i % 2 == 0 {
+                    b.talus(
+                        [c[0] + size * 0.2, c[1]],
+                        [size * 1.65, size * 1.35],
+                        height * 0.32,
+                        a + 0.35,
+                        4200 + i * 300,
+                    );
+                }
             }
         }
         NaturalKind::GraniteTor => {
-            for i in 0..5 {
+            let count = rarity.count(seed, 3310, [(3, 5), (5, 7), (6, 9)]);
+            let curved = random(seed, 3311) > 0.45;
+            for i in 0..count {
+                let along = (i as f32 - (count - 1) as f32 * 0.5) * 8.3 * scale;
                 let c = [
-                    (i as f32 - 2.) * 10. * scale,
-                    ((i % 2) as f32 - 0.5) * 7. * scale,
+                    along,
+                    if curved {
+                        (along / 17. / scale).sin() * 7. * scale
+                    } else {
+                        (random(seed, 301 + i) - 0.5) * 9. * scale
+                    },
                 ];
-                let h = (8. + random(seed, 301 + i) * 12.) * scale;
+                let h = (7. + random(seed, 321 + i) * 12.) * scale;
                 let size = [
-                    (5.3 + random(seed, 321 + i) * 1.5) * scale,
-                    (4.2 + random(seed, 341 + i)) * scale,
+                    (4.6 + random(seed, 341 + i) * 1.4) * scale,
+                    (3.7 + random(seed, 361 + i)) * scale,
                 ];
-                b.column(c, size, h, 0.17 * (i as f32 - 2.), 360 + i * 20, false);
-                let y = b
-                    .solids
-                    .last()
-                    .unwrap()
-                    .top
-                    .iter()
-                    .copied()
-                    .fold(f32::INFINITY, f32::min);
-                b.cap(
-                    c,
-                    [size[0] * 1.1, size[1] * 1.12],
-                    y - 1.0,
-                    4. * scale,
-                    0.18,
-                    480 + i * 11,
-                );
-                if i == 2 {
-                    b.cap(
-                        [c[0] + 0.5 * scale, c[1]],
-                        [size[0] * 0.73, size[1] * 0.84],
-                        y + 2.6 * scale,
-                        5.3 * scale,
-                        -0.12,
-                        560,
-                    );
-                }
-            }
-        }
-        NaturalKind::BoulderRing => {
-            // Broken natural amphitheatre: irregular arcs, two generous entrances.
-            for i in 0..8 {
-                let a = TAU * i as f32 / 8. + 0.18;
-                if i == 2 || i == 6 {
-                    continue;
-                }
-                let r = (19. + random(seed, 601 + i) * 6.) * scale;
                 b.column(
-                    [a.cos() * r, a.sin() * r],
-                    [(4.2 + random(seed, 621 + i) * 2.3) * scale, 4.0 * scale],
-                    (5.0 + random(seed, 641 + i) * 7.) * scale,
-                    a,
-                    660 + i * 20,
+                    c,
+                    size,
+                    h,
+                    0.2 * (random(seed, 381 + i) - 0.5),
+                    5000 + i * 100,
                     false,
                 );
-            }
-        }
-        NaturalKind::BrokenEscarpment => {
-            // Two banks of layered walls, an actual central cleft and side alcoves.
-            for side in [-1., 1.] {
-                for i in 0..3 {
-                    let c = [
-                        side * (9. + i as f32 * 9.) * scale,
-                        (if i == 1 { 4. } else { 0. }) * scale,
-                    ];
-                    let side_salt = (side + 1.) as u32 * 71;
-                    let h = (10. + i as f32 * 3. + random(seed, 701 + i + side_salt) * 9.) * scale;
-                    let size = [
-                        (4.7 + random(seed, 713 + i + side_salt) * 1.2) * scale,
-                        (2.5 + random(seed, 719 + i + side_salt) * 1.8) * scale,
-                    ];
-                    b.column(
-                        c,
-                        size,
-                        h,
-                        side * 0.08,
-                        730 + i * 20 + (side + 1.) as u32 * 200,
-                        false,
-                    );
-                    let y = b
+                if random(seed, 391 + i) < 0.72 {
+                    let contact = b
                         .solids
                         .last()
                         .unwrap()
                         .top
                         .iter()
                         .copied()
-                        .fold(f32::INFINITY, f32::min);
+                        .fold(f32::INFINITY, f32::min)
+                        - 0.7;
                     b.cap(
-                        [c[0], c[1] - 0.4 * scale],
-                        [size[0] * 1.08, size[1] * 1.16],
-                        y - 0.6,
-                        2.2 * scale,
-                        0.,
-                        880 + i * 13,
+                        [c[0] + scale * 0.25, c[1]],
+                        [size[0] * 1.04, size[1] * 0.98],
+                        contact,
+                        (2.4 + random(seed, 401 + i) * 3.5) * scale,
+                        0.17,
+                        5060 + i * 100,
                     );
-                    b.talus(
-                        [c[0] + side * 1.7 * scale, c[1] - size[1] * 0.80],
-                        [size[0] * 1.18, size[1] * 1.9],
-                        h * 0.46,
-                        side * 0.28,
-                        2310 + i * 17 + side_salt,
-                    );
+                }
+            }
+        }
+        NaturalKind::BoulderRing => {
+            let count = rarity.count(seed, 3320, [(6, 8), (8, 11), (11, 14)]);
+            let open = (0.20 + random(seed, 3321) * 0.14) * PI;
+            for i in 0..count {
+                let a = TAU * i as f32 / count as f32 + (random(seed, 601 + i) - 0.5) * 0.13;
+                // Both N/S approaches remain open, even when the broken ring is asymmetric.
+                if a.cos().abs() < open.sin() {
+                    continue;
+                }
+                let r = (15. + random(seed, 621 + i) * 8.) * scale;
+                let c = [
+                    a.cos() * r,
+                    a.sin() * r * (0.72 + random(seed, 641 + i) * 0.34),
+                ];
+                b.spire(
+                    c,
+                    [(3.4 + random(seed, 661 + i) * 1.5) * scale, 3.0 * scale],
+                    (5. + random(seed, 681 + i) * 8.) * scale,
+                    a,
+                    6000 + i * 100,
+                    random(seed, 691 + i) < 0.66,
+                );
+            }
+        }
+        NaturalKind::BrokenEscarpment => {
+            for side in [-1., 1.] {
+                let ss = (side + 1.) as u32 * 81;
+                let count = rarity.count(seed, 3330 + ss, [(2, 3), (3, 4), (4, 5)]);
+                for i in 0..count {
+                    let c = [
+                        side * (8.6 + i as f32 * 8.0) * scale,
+                        (random(seed, 701 + i + ss) - 0.5) * 8. * scale,
+                    ];
+                    let h = (10. + i as f32 * 2. + random(seed, 721 + i + ss) * 8.) * scale;
+                    let size = [
+                        (4.7 + random(seed, 741 + i + ss)) * scale,
+                        (2.5 + random(seed, 761 + i + ss) * 1.6) * scale,
+                    ];
+                    b.column(c, size, h, side * 0.08, 7000 + i * 200 + ss, false);
+                    if random(seed, 781 + i + ss) < 0.63 {
+                        let contact = b
+                            .solids
+                            .last()
+                            .unwrap()
+                            .top
+                            .iter()
+                            .copied()
+                            .fold(f32::INFINITY, f32::min)
+                            - 0.6;
+                        b.cap(
+                            c,
+                            [size[0] * 1.07, size[1] * 1.13],
+                            contact,
+                            2.0 * scale,
+                            0.1,
+                            7060 + i * 200 + ss,
+                        );
+                    }
+                    if i % 2 == 0 {
+                        b.talus(
+                            [c[0] + side * scale, c[1] - size[1]],
+                            [size[0] * 1.16, size[1] * 1.8],
+                            h * 0.38,
+                            side * 0.22,
+                            7100 + i * 200 + ss,
+                        );
+                    }
                 }
             }
         }
         NaturalKind::BasaltPipes => {
-            for row in 0..3 {
-                for i in 0..7 {
-                    let c = [
-                        (i as f32 - 3.) * 3.8 * scale,
-                        (row as f32 - 1.) * 3.3 * scale,
-                    ];
-                    let h = (8.
-                        + row as f32 * 6.
-                        + (3. - (i as f32 - 3.).abs()) * 3.
-                        + random(seed, 901 + i + row * 7) * 4.)
-                        * scale;
-                    b.column(
-                        c,
-                        [2.30 * scale, 2.12 * scale],
-                        h,
-                        PI / 6.,
-                        940 + (i + row * 7) * 13,
-                        false,
-                    );
+            let count = rarity.count(seed, 3340, [(9, 16), (16, 24), (24, 34)]);
+            let lobes = 1 + (random(seed, 3341) * (rarity.index() + 2) as f32) as u32;
+            let sweep = (0.8 + random(seed, 3342) * 1.5) * PI;
+            for i in 0..count {
+                let lobe = i % lobes;
+                let k = i / lobes;
+                let a = k as f32 * 2.39996 + random(seed, 901 + i) * 0.45;
+                let r = (1.5 + (k as f32).sqrt() * 2.25) * scale;
+                let bend =
+                    (lobe as f32 - (lobes - 1) as f32 * 0.5) * sweep / (lobes as f32).max(1.);
+                let c = [
+                    bend.sin() * 10. * scale + a.cos() * r,
+                    bend.cos() * 5. * scale + a.sin() * r * 0.83,
+                ];
+                let h = (9. + random(seed, 921 + i) * 15. + (1. - k as f32 / count as f32) * 5.)
+                    * scale;
+                let width = (1.50 + random(seed, 941 + i) * 0.57) * scale;
+                b.column(
+                    c,
+                    [width, width * 0.91],
+                    h,
+                    PI / 6. + random(seed, 961 + i) * 0.18,
+                    8000 + i * 41,
+                    false,
+                );
+                // Different broken roof planes retain true basalt columns while
+                // removing the old identical row/column silhouette.
+                if random(seed, 981 + i) < 0.32 {
+                    let p = b.solids.last_mut().unwrap();
+                    let base = p.bottom.iter().copied().fold(f32::NEG_INFINITY, f32::max) + EMBED;
+                    for (j, y) in p.top.iter_mut().enumerate() {
+                        *y = base + h * (0.49 + j as f32 * 0.045);
+                    }
                 }
             }
         }
         NaturalKind::SplitMonolith => {
-            let h = (24. + random(seed, 1201) * 15.) * scale;
+            let h = (22. + random(seed, 1201) * 14.) * scale;
             for side in [-1., 1.] {
-                let c = [side * 6.7 * scale, side * 0.8 * scale];
-                b.column(
+                let c = [
+                    side * (6.4 + random(seed, 1202 + (side + 1.) as u32) * 0.8) * scale,
+                    side * 1.3 * scale,
+                ];
+                b.spire(
                     c,
-                    [4.1 * scale, 6.5 * scale],
-                    h * (if side < 0. { 1. } else { 0.89 }),
-                    side * 0.04,
-                    1220 + (side + 1.) as u32 * 80,
+                    [3.6 * scale, 5.5 * scale],
+                    h * (if side < 0. { 1. } else { 0.82 }),
+                    side * 0.06,
+                    10000 + (side + 1.) as u32 * 200,
                     false,
                 );
+                if random(seed, 1207 + (side + 1.) as u32) < 0.66 {
+                    b.talus(
+                        [c[0] + side * 4. * scale, c[1]],
+                        [5.6 * scale, 4.8 * scale],
+                        h * 0.34,
+                        side * 0.2,
+                        10400 + (side + 1.) as u32 * 80,
+                    );
+                }
             }
         }
         NaturalKind::CoastalStacks => {
-            for i in 0..4 {
-                let c = [
-                    (i as f32 - 1.5) * 14. * scale,
-                    (i as f32 * 1.8).sin() * 9. * scale,
+            let count = rarity.count(seed, 3350, [(2, 4), (3, 5), (5, 7)]);
+            let curve = (random(seed, 3351) - 0.5) * 1.9;
+            for i in 0..count {
+                let t = i as f32 - (count - 1) as f32 * 0.5;
+                let c = [t * 10.8 * scale, (t * 0.57 + curve).sin() * 7. * scale];
+                let h = (14. + random(seed, 1401 + i) * 19.) * scale;
+                let size = [
+                    (3.4 + random(seed, 1421 + i) * 1.5) * scale,
+                    (2.8 + random(seed, 1441 + i)) * scale,
                 ];
-                let h = (17. + random(seed, 1401 + i) * 19.) * scale;
-                b.column(
+                b.spire(
                     c,
-                    [
-                        (4. + random(seed, 1421 + i) * 2.) * scale,
-                        (3.4 + random(seed, 1441 + i)) * scale,
-                    ],
+                    size,
                     h,
                     0.15 * i as f32,
-                    1460 + i * 20,
-                    false,
+                    11000 + i * 300,
+                    random(seed, 1461 + i) < 0.24,
                 );
             }
         }
         NaturalKind::Hoodoos => {
-            for i in 0..7 {
-                let a = i as f32 * 2.39996;
-                let r = if i == 0 {
-                    0.
+            let count = rarity.count(seed, 3360, [(3, 6), (6, 9), (8, 12)]);
+            let wandering = random(seed, 3361) < 0.45;
+            for i in 0..count {
+                let a = i as f32 * 2.39996 + random(seed, 1601 + i) * 0.3;
+                let r = (5. + (i as f32).sqrt() * 5.0) * scale;
+                let c = if wandering {
+                    [
+                        (i as f32 - (count - 1) as f32 * 0.5) * 4.4 * scale,
+                        (i as f32 * 0.9).sin() * 7. * scale,
+                    ]
                 } else {
-                    (10. + random(seed, 1601 + i) * 12.) * scale
+                    [a.cos() * r, a.sin() * r * 0.77]
                 };
-                let c = [a.cos() * r, a.sin() * r];
-                let width = (1.9 + random(seed, 1621 + i)) * scale;
-                let h = (10. + random(seed, 1641 + i) * 13.) * scale;
-                b.column(c, [width, width * 0.9], h, a, 1660 + i * 20, false);
-                let y = b
-                    .solids
-                    .last()
-                    .unwrap()
-                    .top
-                    .iter()
-                    .copied()
-                    .fold(f32::INFINITY, f32::min);
-                b.cap(
-                    c,
-                    [width * 1.72, width * 1.47],
-                    y - 0.5,
-                    2.5 * scale,
-                    a + 0.2,
-                    1800 + i * 13,
-                );
+                let width = (1.7 + random(seed, 1621 + i)) * scale;
+                let h = (8. + random(seed, 1641 + i) * 13.) * scale;
+                b.column(c, [width, width * 0.83], h, a, 12000 + i * 90, false);
+                if random(seed, 1661 + i) > 0.18 {
+                    let contact = b
+                        .solids
+                        .last()
+                        .unwrap()
+                        .top
+                        .iter()
+                        .copied()
+                        .fold(f32::INFINITY, f32::min)
+                        - 0.5;
+                    b.cap(
+                        [c[0] + width * 0.14, c[1]],
+                        [width * (1.25 + random(seed, 1681 + i) * 0.55), width * 1.34],
+                        contact,
+                        2.2 * scale,
+                        a + 0.13,
+                        12050 + i * 90,
+                    );
+                }
             }
         }
     }
-    // Loose angular stones hint at erosion; the far LOD omits only these small chips.
-    for i in 0..5 {
-        let side = if i % 2 == 0 { -1. } else { 1. };
+    b.landform_skirt(rarity, scale, kind);
+    let debris = rarity.count(seed, 3380, [(3, 6), (5, 8), (7, 10)]);
+    // Scattered chips stay close to actual supports and terminate the parent rock
+    // fabric, rather than describing the same arbitrary ring around every family.
+    let anchors: Vec<[f32; 2]> = b
+        .solids
+        .iter()
+        .filter(|s| s.grounded)
+        .map(|s| {
+            let p = s
+                .footprint
+                .iter()
+                .fold([0.; 2], |a, p| [a[0] + p[0], a[1] + p[1]]);
+            rotated(
+                p[0] / s.footprint.len() as f32 - x,
+                p[1] / s.footprint.len() as f32 - z,
+                -yaw,
+            )
+        })
+        .collect();
+    for i in 0..debris {
+        let anchor =
+            anchors[(random(seed, 2001 + i) * anchors.len() as f32) as usize % anchors.len()];
+        let a = random(seed, 2021 + i) * TAU;
         let c = [
-            side * (16. + random(seed, 2001 + i) * 13.) * scale,
-            (random(seed, 2021 + i) - 0.5) * 27. * scale,
+            anchor[0] + a.cos() * (2. + random(seed, 2041 + i) * 4.) * scale,
+            anchor[1] + a.sin() * (2. + random(seed, 2061 + i) * 4.) * scale,
         ];
+        // Central passages remain intentionally free of loose collider debris.
+        if c[0].abs() < 3.5 * scale
+            && matches!(
+                kind,
+                NaturalKind::Arch
+                    | NaturalKind::StoneWindow
+                    | NaturalKind::BoulderRing
+                    | NaturalKind::BrokenEscarpment
+                    | NaturalKind::SplitMonolith
+            )
+        {
+            continue;
+        }
         b.column(
             c,
-            [1.4 * scale, 0.95 * scale],
-            (0.8 + random(seed, 2041 + i)) * scale,
-            random(seed, 2061 + i) * TAU,
-            2080 + i * 13,
+            [(0.8 + random(seed, 2081 + i)) * scale, 0.9 * scale],
+            (0.5 + random(seed, 2101 + i)) * scale,
+            a,
+            13000 + i * 23,
             true,
         );
     }
@@ -1250,22 +1556,41 @@ mod tests {
     fn every_family_is_finite_grounded_bounded_and_preserves_major_lod_envelopes() {
         let w = World::new(1337);
         let p = w.spawn();
-        let mut max_near = 0;
-        let mut max_far = 0;
+        let mut max_near = [0; 3];
+        let mut max_far = [0; 3];
+        let mut max_radius = [0.0_f32; 3];
+        let mut seeds = [Vec::new(), Vec::new(), Vec::new()];
+        for seed in 0..10000 {
+            let k = NaturalRarity::from_id(seed).index();
+            if seeds[k].len() < 8 {
+                seeds[k].push(seed);
+            }
+        }
         for kind in KINDS {
-            for seed in [5, 36, 901] {
+            for &seed in seeds.iter().flatten() {
+                let rarity = NaturalRarity::from_id(seed);
+                let k = rarity.index();
                 let n = recipe(&w, seed, kind, p[0], p[1], 0.47, [0.5, 0.45, 0.35]);
                 assert!(n.radius <= MAX_RADIUS, "{:?} {}", kind, n.radius);
-                assert!(n.solids.len() <= 28);
+                assert!(n.solids.len() <= 80);
                 let mut near = MeshData::default();
                 let mut far = MeshData::default();
                 n.append_mesh(&w, &mut near, false, 0);
                 n.append_mesh(&w, &mut far, true, 0);
                 assert!(!near.indices.is_empty() && !far.indices.is_empty());
-                assert!(near.indices.len() / 3 <= 1300);
-                assert!(far.indices.len() / 3 <= 400);
-                max_near = max_near.max(near.indices.len() / 3);
-                max_far = max_far.max(far.indices.len() / 3);
+                assert!(
+                    near.indices.len() / 3 <= if k == 0 { 1800 } else { 3500 },
+                    "{kind:?} {rarity:?} near{}",
+                    near.indices.len() / 3
+                );
+                assert!(
+                    far.indices.len() / 3 <= if k == 0 { 600 } else { 1000 },
+                    "{kind:?} {rarity:?} far{}",
+                    far.indices.len() / 3
+                );
+                max_near[k] = max_near[k].max(near.indices.len() / 3);
+                max_far[k] = max_far[k].max(far.indices.len() / 3);
+                max_radius[k] = max_radius[k].max(n.radius);
                 for v in &near.vertices {
                     assert!(v.position.iter().chain(&v.normal).all(|v| v.is_finite()));
                 }
@@ -1284,8 +1609,127 @@ mod tests {
                 }
             }
         }
-        println!("natural landmark triangle limits: near {max_near}, far {max_far}");
+        println!(
+            "natural landmark tier budgets: near{max_near:?},far{max_far:?},radius{max_radius:?}"
+        );
     }
+    #[test]
+    fn topology_changes_with_seed_and_rarity_is_not_only_a_scale_label() {
+        let w = World::new(1337);
+        let p = w.spawn();
+        let mut frequencies = [0; 3];
+        let mut seeds = [Vec::new(), Vec::new(), Vec::new()];
+        for seed in 0..10000 {
+            let k = NaturalRarity::from_id(seed).index();
+            frequencies[k] += 1;
+            if seeds[k].len() < 12 {
+                seeds[k].push(seed);
+            }
+        }
+        assert!((frequencies[0] as i32 - 8600).abs() < 250);
+        assert!((frequencies[1] as i32 - 1200).abs() < 150);
+        assert!((frequencies[2] as i32 - 200).abs() < 75);
+        for kind in KINDS {
+            let mut variants = std::collections::HashSet::new();
+            let mut component_counts = [Vec::new(), Vec::new(), Vec::new()];
+            for (k, tier_seeds) in seeds.iter().enumerate() {
+                for &seed in tier_seeds {
+                    let n = recipe(&w, seed, kind, p[0], p[1], 0.41, [0.5; 3]);
+                    let solids: Vec<_> = n.solids.iter().filter(|s| !s.detail).collect();
+                    variants.insert((solids.len(), solids.iter().filter(|s| !s.grounded).count()));
+                    component_counts[k].push(solids.len());
+                    if matches!(kind, NaturalKind::Arch | NaturalKind::StoneWindow) {
+                        for along in -4..=4 {
+                            let q = rotated(0., along as f32 * 1.5, n.yaw);
+                            let (x, z) = (n.x + q[0], n.z + q[1]);
+                            assert!(
+                                !n.blocks(x, ground(&w, x, z), z, 0.4, 2.15),
+                                "primary passage lost in{kind:?} seed{seed}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(
+                variants.len() >= 4,
+                "{kind:?} topology repeated across tiers"
+            );
+            if !matches!(kind, NaturalKind::SplitMonolith) {
+                assert!(
+                    component_counts[2].iter().max() > component_counts[0].iter().max(),
+                    "{kind:?} monumental tier never gains structure"
+                );
+            }
+        }
+        println!("candidate rarity census over10000 ids:{frequencies:?}");
+    }
+
+    #[test]
+    fn structural_roofs_connect_back_to_grounded_supports() {
+        let w = World::new(1337);
+        let p = w.spawn();
+        let seeds = [Vec::new(), Vec::new(), Vec::new()];
+        let mut seeds = seeds;
+        for seed in 0..10000 {
+            let k = NaturalRarity::from_id(seed).index();
+            if seeds[k].len() < 6 {
+                seeds[k].push(seed);
+            }
+        }
+        for kind in KINDS {
+            for &seed in seeds.iter().flatten() {
+                let n = recipe(&w, seed, kind, p[0], p[1], 0.41, [0.5; 3]);
+                let solids: Vec<_> = n.solids.iter().filter(|s| !s.detail).collect();
+                let mut connected: Vec<_> = solids.iter().map(|s| s.grounded).collect();
+                for _ in 0..solids.len() {
+                    let mut changed = false;
+                    for (i, a) in solids.iter().enumerate() {
+                        if connected[i] {
+                            continue;
+                        }
+                        for (j, b) in solids.iter().enumerate() {
+                            if !connected[j] {
+                                continue;
+                            }
+                            let mut probes = Vec::new();
+                            for s in [*a, *b] {
+                                let center = s
+                                    .footprint
+                                    .iter()
+                                    .fold([0.; 2], |a, p| [a[0] + p[0], a[1] + p[1]])
+                                    .map(|v| v / s.footprint.len() as f32);
+                                probes.push(center);
+                                for k in 0..s.footprint.len() {
+                                    let x = s.footprint[k];
+                                    let y = s.footprint[(k + 1) % s.footprint.len()];
+                                    probes.push(x);
+                                    probes.push([(x[0] + y[0]) * 0.5, (x[1] + y[1]) * 0.5]);
+                                }
+                            }
+                            if probes.into_iter().any(|p| {
+                                a.contains_xz(p[0], p[1], 0.03)
+                                    && b.contains_xz(p[0], p[1], 0.03)
+                                    && a.height_at(p, &a.bottom).max(b.height_at(p, &b.bottom))
+                                        <= a.height_at(p, &a.top).min(b.height_at(p, &b.top)) + 0.07
+                            }) {
+                                connected[i] = true;
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                assert!(
+                    connected.iter().all(|v| *v),
+                    "unsupported roof piece in{kind:?},seed{seed},connected{connected:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn overhead_wedge_allows_walking_below_but_blocks_its_actual_solid() {
         let s = Solid {

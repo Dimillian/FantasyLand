@@ -111,6 +111,12 @@ export class Game {
         wasm.game_set_ascii(this.__wbg_ptr, cell_scale, palette);
     }
     /**
+     * @param {boolean} enabled
+     */
+    set_enclosure(enabled) {
+        wasm.game_set_enclosure(this.__wbg_ptr, enabled);
+    }
+    /**
      * @param {number} mode
      * @param {number} strength
      */
@@ -130,6 +136,12 @@ export class Game {
         wasm.game_set_quality(this.__wbg_ptr, q);
     }
     /**
+     * @param {boolean} enabled
+     */
+    set_reflections(enabled) {
+        wasm.game_set_reflections(this.__wbg_ptr, enabled);
+    }
+    /**
      * @param {number} height
      */
     set_render_resolution(height) {
@@ -146,6 +158,24 @@ export class Game {
      */
     set_time(hour) {
         wasm.game_set_time(this.__wbg_ptr, hour);
+    }
+    /**
+     * @param {number} mode
+     */
+    set_weather_mode(mode) {
+        wasm.game_set_weather_mode(this.__wbg_ptr, mode);
+    }
+    /**
+     * @param {boolean} paused
+     */
+    set_weather_paused(paused) {
+        wasm.game_set_weather_paused(this.__wbg_ptr, paused);
+    }
+    /**
+     * @param {number} speed
+     */
+    set_weather_speed(speed) {
+        wasm.game_set_weather_speed(this.__wbg_ptr, speed);
     }
     /**
      * @returns {Float32Array}

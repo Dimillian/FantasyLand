@@ -67,11 +67,11 @@ fn ascii_color(pixel: vec2<f32>) -> vec4<f32> {
     if settings.controls.x > 2.5 { return ascii_color(o.clip.xy); }
     let strength = settings.controls.y;
     if settings.controls.x < 0.5 || strength <= 0. {
-        return vec4<f32>(nearest(o.uv), 1.);
+        return vec4<f32>(retro_display(nearest(o.uv), o.clip.xy), 1.);
     }
     if settings.controls.x < 1.5 {
         // Keep the sharp pixel source. Only the extracted light is softened.
-        return vec4<f32>(display(linear(nearest(o.uv)) + glow(o.uv) * strength * 0.78), 1.);
+        return vec4<f32>(retro_display(nearest(o.uv) + glow(o.uv) * strength * 0.55, o.clip.xy), 1.);
     }
     // Stationary CRT optics: no random jitter or temporal flicker.
     let q = o.uv * 2. - 1.;
@@ -85,7 +85,7 @@ fn ascii_color(pixel: vec2<f32>) -> vec4<f32> {
     let green = textureSampleLevel(scene, linear_sampler, uv, 0.).g;
     let blue = textureSampleLevel(scene, linear_sampler, uv - fringe, 0.).b;
     let beam_color = vec3<f32>(red, green, blue);
-    var color = display(linear(mix(nearest(uv), beam_color, min(strength * 0.72, 1.))) + glow(uv) * strength * 0.28);
+    var color = retro_display(mix(nearest(uv), beam_color, min(strength * 0.72, 1.)) + glow(uv) * strength * 0.22, o.clip.xy);
     // Limit line density at small viewports to keep beams above the pixel grid.
     let lines = min(scene_size.y, settings.output.y / 3.);
     let beam = pow(max(sin(fract(uv.y * lines) * 3.14159265), 0.), 0.65);

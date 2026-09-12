@@ -31,6 +31,14 @@ struct Globals {
     vey: [f32; 4],
     direct: [f32; 4],
     ambient: [f32; 4],
+    weather: [f32; 4],
+    storm: [f32; 4],
+    surface: [f32; 4],
+    reflection_matrix: [[f32; 4]; 4],
+    reflection_params: [f32; 4],
+    shelter_matrix: [[f32; 4]; 4],
+    shelter_origin: [f32; 4],
+    shelter_params: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -47,6 +55,47 @@ struct Chunk {
     water: Option<GpuMesh>,
 }
 
+struct ReflectionTarget {
+    _color: wgpu::Texture,
+    view: wgpu::TextureView,
+    _depth: wgpu::Texture,
+    depth: wgpu::TextureView,
+}
+impl ReflectionTarget {
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let make = |format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Quarter-area landscape reflection"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let color = make(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let depth = make(
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        Self {
+            view: color.create_view(&Default::default()),
+            depth: depth.create_view(&Default::default()),
+            _color: color,
+            _depth: depth,
+        }
+    }
+}
+
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -57,6 +106,36 @@ pub struct Renderer {
     post: PostProcess,
     shadow: ShadowMap,
     shadows_enabled: bool,
+    shelter: ShadowMap,
+    shelter_origin: Vec3,
+    shelter_matrix: Mat4,
+    shelter_elapsed: f32,
+    shelter_valid: bool,
+    reflections_enabled: bool,
+    enclosure_enabled: bool,
+    reflection: ReflectionTarget,
+    _reflection_fallback: ReflectionTarget,
+    reflection_sampler: wgpu::Sampler,
+    uniform_layout: wgpu::BindGroupLayout,
+    reflected_uniform: wgpu::Buffer,
+    reflected_group: wgpu::BindGroup,
+    reflection_plane: Option<f32>,
+    reflection_eye: Vec3,
+    reflection_yaw: f32,
+    reflection_pitch: f32,
+    reflection_hour: f32,
+    reflection_elapsed: f32,
+    reflection_projection: Mat4,
+    reflection_origin: Vec3,
+    reflection_valid: bool,
+    reflection_draws: u32,
+    precip_pipeline: wgpu::RenderPipeline,
+    weather_system: Option<crate::weather::WeatherSystem>,
+    weather_state: crate::weather::WeatherState,
+    weather_seed: u32,
+    weather_mode: u32,
+    weather_speed: f32,
+    weather_paused: bool,
     uniform: wgpu::Buffer,
     uniform_group: wgpu::BindGroup,
     scene: wgpu::Texture,
@@ -171,7 +250,9 @@ impl Renderer {
                     "\n",
                     include_str!("cover.wgsl"),
                     "\n",
-                    include_str!("lighting.wgsl")
+                    include_str!("lighting.wgsl"),
+                    "\n",
+                    include_str!("environment.wgsl")
                 )
                 .into(),
             ),
@@ -182,6 +263,20 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let shadow = ShadowMap::new(&device);
+        let shelter = ShadowMap::with_size(&device, 512);
+        let reflection = ReflectionTarget::new(&device, 320, 180);
+        let reflection_fallback = ReflectionTarget::new(&device, 1, 1);
+        let reflection_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Water reflection sampler"),
+            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let reflected_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mirrored water camera"),
+            contents: bytemuck::bytes_of(&Globals::zeroed()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World uniforms"),
             entries: &[
@@ -211,26 +306,52 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
-        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &uniform_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&shadow.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
-                },
-            ],
-        });
+        let uniform_group = Self::environment_group(
+            &device,
+            &uniform_layout,
+            &uniform,
+            &shadow,
+            &shelter,
+            &reflection.view,
+            &reflection_sampler,
+        );
+        let reflected_group = Self::environment_group(
+            &device,
+            &uniform_layout,
+            &reflected_uniform,
+            &shadow,
+            &shelter,
+            &reflection_fallback.view,
+            &reflection_sampler,
+        );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
             bind_group_layouts: &[&uniform_layout],
@@ -256,7 +377,7 @@ impl Renderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format: wgpu::TextureFormat::Rgba16Float,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -290,7 +411,7 @@ impl Renderer {
                 entry_point: Some("fs_sky"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format: wgpu::TextureFormat::Rgba16Float,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -320,8 +441,42 @@ impl Renderer {
             &device,
             &uniform_layout,
             &shader,
-            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba16Float,
         );
+        let precip_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("World-space rain and snow"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_precip"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_precip"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
         Ok(Self {
             device,
             queue,
@@ -332,6 +487,36 @@ impl Renderer {
             post,
             shadow,
             shadows_enabled: true,
+            shelter,
+            shelter_origin: Vec3::ZERO,
+            shelter_matrix: Mat4::IDENTITY,
+            shelter_elapsed: -100.0,
+            shelter_valid: false,
+            reflections_enabled: true,
+            enclosure_enabled: true,
+            reflection,
+            _reflection_fallback: reflection_fallback,
+            reflection_sampler,
+            uniform_layout,
+            reflected_uniform,
+            reflected_group,
+            reflection_plane: None,
+            reflection_eye: Vec3::ZERO,
+            reflection_yaw: 0.,
+            reflection_pitch: 0.,
+            reflection_hour: 0.,
+            reflection_elapsed: -100.,
+            reflection_projection: Mat4::IDENTITY,
+            reflection_origin: Vec3::ZERO,
+            reflection_valid: false,
+            reflection_draws: 0,
+            precip_pipeline,
+            weather_system: None,
+            weather_state: crate::weather::WeatherState::default(),
+            weather_seed: 0,
+            weather_mode: 0,
+            weather_speed: 1.,
+            weather_paused: false,
             uniform,
             uniform_group,
             scene,
@@ -398,9 +583,9 @@ impl Renderer {
             })
         };
         let scene = make(
-            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            "Low resolution world",
+            "Linear HDR world",
         );
         let depth = make(
             wgpu::TextureFormat::Depth32Float,
@@ -410,6 +595,63 @@ impl Renderer {
         let sv = scene.create_view(&Default::default());
         let dv = depth.create_view(&Default::default());
         (scene, sv, depth, dv)
+    }
+    fn environment_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        uniform: &wgpu::Buffer,
+        shadow: &ShadowMap,
+        shelter: &ShadowMap,
+        reflection: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Shared landscape environment"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&shadow.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shelter.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(reflection),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    }
+    fn resize_reflections(&mut self) {
+        let longest = self.scene.width().max(self.scene.height()) as f32;
+        let scale = (640.0 / longest).min(0.5);
+        let width = (self.scene.width() as f32 * scale).round().max(1.0) as u32;
+        let height = (self.scene.height() as f32 * scale).round().max(1.0) as u32;
+        self.reflection = ReflectionTarget::new(&self.device, width, height);
+        self.uniform_group = Self::environment_group(
+            &self.device,
+            &self.uniform_layout,
+            &self.uniform,
+            &self.shadow,
+            &self.shelter,
+            &self.reflection.view,
+            &self.reflection_sampler,
+        );
+        self.reflection_valid = false;
     }
     fn capture_target(
         device: &wgpu::Device,
@@ -456,6 +698,7 @@ impl Renderer {
             [self.scene.width(), self.scene.height()],
             [self.width, self.height],
         );
+        self.resize_reflections();
         (self.capture, self.capture_view) =
             Self::capture_target(&self.device, width, height, self.config.format);
     }
@@ -497,6 +740,57 @@ impl Renderer {
             self.render_resolution(),
             [self.width, self.height],
         );
+        self.resize_reflections();
+    }
+    pub fn set_reflections(&mut self, enabled: bool) {
+        self.reflections_enabled = enabled;
+        self.reflection_valid = false;
+    }
+    pub fn set_enclosure(&mut self, enabled: bool) {
+        self.enclosure_enabled = enabled;
+    }
+    pub fn reflection_draws(&self) -> u32 {
+        self.reflection_draws
+    }
+    pub fn set_weather_mode(&mut self, mode: u32) {
+        self.weather_mode = mode.min(8);
+        if let Some(w) = &mut self.weather_system {
+            w.set_mode(self.weather_mode);
+        }
+    }
+    pub fn set_weather_speed(&mut self, speed: f32) {
+        self.weather_speed = if speed.is_finite() {
+            speed.clamp(0.25, 20.)
+        } else {
+            1.
+        };
+        if let Some(w) = &mut self.weather_system {
+            w.set_speed(self.weather_speed);
+        }
+    }
+    pub fn set_weather_paused(&mut self, paused: bool) {
+        self.weather_paused = paused;
+        if let Some(w) = &mut self.weather_system {
+            w.set_paused(paused);
+        }
+    }
+    pub fn weather_state(&self) -> &crate::weather::WeatherState {
+        &self.weather_state
+    }
+    pub fn update_weather(&mut self, world: &World, position: Vec3, hour: f32, dt: f32) {
+        if self.weather_system.is_none() || self.weather_seed != world.seed {
+            let mut w = crate::weather::WeatherSystem::new(world.seed);
+            w.set_mode(self.weather_mode);
+            w.set_speed(self.weather_speed);
+            w.set_paused(self.weather_paused);
+            self.weather_system = Some(w);
+            self.weather_seed = world.seed;
+        }
+        self.weather_state = self
+            .weather_system
+            .as_mut()
+            .unwrap()
+            .update(dt, world, position.x, position.y, position.z, hour);
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.post.set_filter(mode, strength);
@@ -547,6 +841,8 @@ impl Renderer {
     }
     pub fn clear_chunks(&mut self) {
         self.atmosphere_position = None;
+        self.shelter_valid = false;
+        self.reflection_valid = false;
         self.cover.clear();
         self.cover_drawn_instances = 0;
         self.horizon.clear();
@@ -706,10 +1002,32 @@ impl Renderer {
             self.climate[i] += (climate[i] - self.climate[i]) * blend;
             self.air[i] += (air[i] - self.air[i]) * blend;
         }
+        let mut nearest = f32::INFINITY;
+        let mut plane = None;
+        for lake in world.lakes() {
+            let dx = (position.x - position.x.clamp(lake.bounds[0], lake.bounds[2])).abs();
+            let dz = (position.z - position.z.clamp(lake.bounds[1], lake.bounds[3])).abs();
+            let distance = dx.hypot(dz);
+            if distance < nearest && distance < 2200. && position.y > lake.surface - 1.0 {
+                nearest = distance;
+                plane = Some(lake.surface);
+            }
+        }
+        let coast_distance = world.coast_info(position.x, position.z).distance;
+        if coast_distance < 5000. && coast_distance.max(0.) < nearest {
+            plane = Some(0.);
+        }
+        if plane != self.reflection_plane {
+            self.reflection_valid = false;
+        }
+        self.reflection_plane = plane;
         self.atmosphere_position = Some(position);
     }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
         self.update_atmosphere(world, position);
+        if self.weather_system.is_none() || self.weather_seed != world.seed {
+            self.update_weather(world, position, 9.0, 0.0);
+        }
         let clock = StreamClock::new();
         let limit_ms = if force { 12.0 } else { 4.0 };
         self.prepare_horizon(position);
@@ -850,7 +1168,10 @@ impl Renderer {
             }
     }
     pub fn advance_time(&mut self, dt: f32) {
-        self.elapsed = (self.elapsed + dt.clamp(0.0, 0.1)).rem_euclid(86400.0);
+        let dt = dt.clamp(0.0, 0.1);
+        self.elapsed = (self.elapsed + dt).rem_euclid(86400.0);
+        self.shelter_elapsed += dt;
+        self.reflection_elapsed += dt;
     }
     pub fn render(&mut self, eye: Vec3, yaw: f32, pitch: f32, hour: f32) -> Result<(), String> {
         let dir = Vec3::new(
@@ -871,9 +1192,49 @@ impl Renderer {
         let fog_color = [0.50, 0.64, 0.76];
         let view_projection = projection * view;
         let frustum = frustum_planes(view_projection);
+        let weather = self.weather_state;
+        let wind = (weather.wind_x.hypot(weather.wind_z) / 11.0).clamp(0.10, 2.5);
+        let wind_dir = glam::Vec2::new(weather.wind_x, weather.wind_z);
+        let mut air = self.air;
+        air[1] = wind;
         let shadow_matrix = self
             .shadow
-            .update(&self.queue, eye, sun, self.elapsed, self.air[1]);
+            .update(&self.queue, eye, sun, self.elapsed, wind, wind_dir);
+        // This cached overhead view serves both local sky occlusion and shelter.
+        // Unlike a screen-space effect it also covers roofs outside the view.
+        let update_shelter = !self.shelter_valid
+            || self.shelter_elapsed > 0.25
+            || eye.distance_squared(self.shelter_origin) > 16.0;
+        if update_shelter {
+            self.shelter_origin = eye;
+            self.shelter_matrix =
+                self.shelter
+                    .update(&self.queue, eye, Vec3::Y, self.elapsed, wind, wind_dir);
+            self.shelter_elapsed = 0.0;
+            self.shelter_valid = true;
+        }
+        let reflection_active =
+            self.reflections_enabled && self.reflection_plane.is_some() && self.quality > 0;
+        let update_reflection = reflection_active
+            && (!self.reflection_valid
+                || eye.distance_squared(self.reflection_eye) > 0.09
+                || (yaw - self.reflection_yaw).abs() > 0.003
+                || (pitch - self.reflection_pitch).abs() > 0.003
+                || (hour - self.reflection_hour).abs() > 0.01
+                || self.reflection_elapsed > 0.08);
+        let plane_y = self.reflection_plane.unwrap_or(0.0);
+        if update_reflection {
+            self.reflection_origin = Vec3::new(eye.x, 2.0 * plane_y - eye.y, eye.z);
+            let reflected_dir = Vec3::new(dir.x, -dir.y, dir.z);
+            self.reflection_projection =
+                projection * Mat4::look_to_rh(Vec3::ZERO, reflected_dir, Vec3::Y);
+            self.reflection_eye = eye;
+            self.reflection_yaw = yaw;
+            self.reflection_pitch = pitch;
+            self.reflection_hour = hour;
+            self.reflection_elapsed = 0.0;
+            self.reflection_valid = true;
+        }
         let shadow_active = self.shadows_enabled && sky.shadow_strength > 0.001;
         let globals = Globals {
             view_projection: view_projection.to_cols_array_2d(),
@@ -889,8 +1250,8 @@ impl Renderer {
             settings: [
                 [8., 12., 16.][self.quality as usize],
                 crate::cover::COVER_DISTANCE,
-                0.,
-                0.,
+                self.scene.width() as f32,
+                self.scene.height() as f32,
             ],
             shadow_matrix: shadow_matrix.to_cols_array_2d(),
             shadow_origin: eye.extend(1.).to_array(),
@@ -907,15 +1268,48 @@ impl Renderer {
                 0.,
             ],
             climate: self.climate,
-            air: self.air,
+            air,
             solenne: sky.sun.extend(sky.daylight).to_array(),
             aster: sky.aster.extend(crate::celestial::ASTER_RADIUS).to_array(),
             vey: sky.vey.extend(crate::celestial::VEY_RADIUS).to_array(),
             direct: sky.direct_color.extend(sky.direct_strength).to_array(),
             ambient: sky.ambient_color.extend(sky.stars).to_array(),
+            weather: weather.weather,
+            storm: weather.storm,
+            surface: weather.surface,
+            reflection_matrix: (self.reflection_projection
+                * Mat4::from_translation(eye - self.reflection_origin))
+            .to_cols_array_2d(),
+            reflection_params: [
+                plane_y,
+                (reflection_active && self.reflection_valid) as u32 as f32,
+                0.0,
+                self.quality as f32,
+            ],
+            shelter_matrix: self.shelter_matrix.to_cols_array_2d(),
+            shelter_origin: self.shelter_origin.extend(1.0).to_array(),
+            shelter_params: [
+                1.0 / 512.0,
+                SHADOW_RADIUS,
+                (self.shelter_valid && self.enclosure_enabled) as u32 as f32,
+                self.shelter_valid as u32 as f32,
+            ],
         };
         self.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&globals));
+        if update_reflection {
+            let mut reflected = globals;
+            reflected.view_projection = self.reflection_projection.to_cols_array_2d();
+            reflected.camera = self.reflection_origin.extend(globals.camera[3]).to_array();
+            reflected.params[2] = -pitch;
+            reflected.settings[2] = self.reflection._color.width() as f32;
+            reflected.settings[3] = self.reflection._color.height() as f32;
+            reflected.reflection_params[2] = 1.0;
+            // The fallback bind group contains a separate texture, never the
+            // attachment being rendered, even when the shader does not sample it.
+            self.queue
+                .write_buffer(&self.reflected_uniform, 0, bytemuck::bytes_of(&reflected));
+        }
         let frame = if let Some(surface) = &self.surface {
             match surface.get_current_texture() {
                 Ok(f) => Some(f),
@@ -970,6 +1364,86 @@ impl Renderer {
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..mesh.count, 0, 0..1);
                 }
+            }
+        }
+        if update_shelter {
+            let planes = frustum_planes(self.shelter_matrix);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Cached overhead enclosure and precipitation shelter"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shelter.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.shelter.pipeline);
+            pass.set_bind_group(0, &self.shelter.group, &[]);
+            for chunk in self.chunks.values() {
+                for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
+                    if !bounds_visible(&planes, mesh.bounds, eye) {
+                        continue;
+                    }
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+            }
+        }
+        self.reflection_draws = 0;
+        if update_reflection {
+            let planes = frustum_planes(self.reflection_projection);
+            let reflected_eye = self.reflection_origin;
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Actual landscape mirrored in the nearest water plane"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.reflection.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.reflection.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_bind_group(0, &self.reflected_group, &[]);
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&self.world_pipeline);
+            for mesh in self
+                .horizon
+                .values()
+                .chain(self.canopies.values().flatten())
+                .chain(
+                    self.chunks
+                        .values()
+                        .flat_map(|c| [&c.terrain, &c.props].into_iter().flatten()),
+                )
+            {
+                if mesh.bounds[1].y < plane_y
+                    || !bounds_visible(&planes, mesh.bounds, reflected_eye)
+                {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+                self.reflection_draws += 1;
             }
         }
         {
@@ -1039,6 +1513,11 @@ impl Renderer {
             self.cover_drawn_instances =
                 self.cover
                     .draw(&mut pass, eye, view_projection, self.ground_cover_density);
+            if weather.rain > 0.01 || weather.snow > 0.01 {
+                pass.set_pipeline(&self.precip_pipeline);
+                pass.set_bind_group(0, &self.uniform_group, &[]);
+                pass.draw(0..6, 0..20480);
+            }
         }
         self.post
             .render(&self.queue, &mut encoder, output, [self.width, self.height]);

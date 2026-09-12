@@ -122,11 +122,15 @@ impl PostProcess {
         });
         let ascii_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ASCII cell encoder"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("ascii.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("tonemap.wgsl"), include_str!("ascii.wgsl")).into(),
+            ),
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Bloom, CRT and ASCII presentation"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("tonemap.wgsl"), include_str!("blit.wgsl")).into(),
+            ),
         });
         let pipeline =
             |label, shader: &wgpu::ShaderModule, layout: &wgpu::BindGroupLayout, entry, format| {

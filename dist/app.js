@@ -34,6 +34,11 @@ let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(save
 let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
+// Weather preferences extend the same save; position, atlas and filters stay intact.
+let weatherMode = [0, 1, 2, 3, 4, 5, 6, 7, 8].includes(Number(saved.weatherMode ?? 0)) ? Number(saved.weatherMode ?? 0) : 0;
+let weatherSpeed = Number.isFinite(Number(saved.weatherSpeed ?? 1)) ? clamp(Number(saved.weatherSpeed ?? 1), .25, 20) : 1;
+let weatherPaused = saved.weatherPaused === true;
+let reflections = saved.reflections !== false, enclosure = saved.enclosure !== false;
 let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 4)) ? clamp(Number(saved.groundCoverDensity ?? 4), 0, 4) : 4;
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
@@ -54,6 +59,7 @@ $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
 $('render-resolution').value = String(renderResolution);
 $('sun-shadows').value = sunShadows ? 'on' : 'off';
+updateWeatherControls();
 updateGroundCoverControls();
 updateFilterControls();
 updateAsciiControls();
@@ -68,7 +74,7 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, sunShadows, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -146,6 +152,45 @@ function updateWalk() {
   if (j.next >= j.points.length) { toast(`${j.name} completed.`); activeJourney = null; waypoint = null; saveProgress(); return; }
   const point = j.points[j.next];
   waypoint = { name: j.name, x: point[0], z: point[1], kind: 'walk' };
+}
+
+function updateWeatherControls() {
+  $('weather-mode').value = String(weatherMode);
+  $('weather-speed').value = String(weatherSpeed);
+  const speed = Number(weatherSpeed.toFixed(2));
+  $('weather-speed-value').textContent = `${speed}×${weatherPaused ? ' · paused' : ''}`;
+  $('weather-speed').setAttribute('aria-valuetext', `${speed} times speed${weatherPaused ? ', paused' : ''}`);
+  $('weather-paused').value = weatherPaused ? 'paused' : 'running';
+  $('water-reflections').value = reflections ? 'on' : 'off';
+  $('enclosure-shading').value = enclosure ? 'on' : 'off';
+  $('weather-mode-help').textContent = weatherMode === 0
+    ? 'Moving fronts follow the local climate.'
+    : 'A gradual override. Choose Automatic to return to local weather.';
+}
+
+function applyWeatherPreferences() {
+  updateWeatherControls();
+  if (!game) return;
+  game.set_weather_mode(weatherMode);
+  game.set_weather_speed(weatherSpeed);
+  game.set_weather_paused(weatherPaused);
+  game.set_reflections(reflections);
+  game.set_enclosure(enclosure);
+}
+
+function updateWeatherStatus() {
+  const weather = state.weather;
+  if (!weather || typeof weather.label !== 'string') return;
+  const temperature = Number.isFinite(weather.temperature) ? `${Math.round(weather.temperature)}°C` : '—';
+  const summary = `${weather.label} · ${temperature}`;
+  $('weather-hud').textContent = summary;
+  if (modal !== 'settings') return;
+  const percent = value => Number.isFinite(value) ? `${Math.round(clamp(value, 0, 1) * 100)}%` : '—';
+  const wind = Math.hypot(Number(weather.windX), Number(weather.windZ));
+  const windLabel = !Number.isFinite(wind) ? '—' : wind < 2 ? 'calm' : wind < 6 ? 'light' : wind < 12 ? 'brisk' : wind < 22 ? 'strong' : 'fierce';
+  $('weather-current').textContent = `${summary} · ${weather.modeLabel || (weatherMode === 0 ? 'Automatic' : 'Override')}${weatherPaused ? ' · paused' : ''}`;
+  $('weather-air').textContent = `Wind ${windLabel} · cloud ${percent(weather.cloudCover)} · rain ${percent(weather.rain)} · snow ${percent(weather.snow)}`;
+  $('weather-ground').textContent = `Ground wetness ${percent(weather.wetness)} · snow cover ${percent(weather.snowCover)}`;
 }
 
 function updateGroundCoverControls() {
@@ -276,6 +321,7 @@ function openModal(type) {
   if (type === 'settings') {
     $('time-setting').value = Number(state.dayTime ?? 9);
     $('time-setting-label').textContent = formatTime(state.dayTime);
+    updateWeatherStatus();
   }
   if (type === 'character') updateCharacter();
   $(type + '-modal').querySelector('[data-close]').focus({ preventScroll: true });
@@ -554,6 +600,7 @@ function updateHUD(now) {
   $('biome-label').textContent = biome;
   $('place-name').textContent = state.siteName || 'The Wilds';
   $('clock').textContent = formatTime(state.dayTime);
+  updateWeatherStatus();
   for (const name of ['health', 'mana', 'stamina']) {
     const amount = Math.round(resource(name));
     $(name + '-fill').style.width = `${amount}%`;
@@ -580,7 +627,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -631,8 +678,8 @@ async function boot() {
   try {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
     $('loading-label').textContent = 'Preparing the world engine…';
-    const { default: init, Game } = await import('./pkg/fantasy_land.js');
-    await init();
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=climate-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=climate-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -643,11 +690,12 @@ async function boot() {
     applyFilter();
     applyGroundCoverDensity();
     game.set_shadows(sunShadows);
+    applyWeatherPreferences();
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'wilderness-4' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'climate-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -707,6 +755,33 @@ $('ground-cover-density').addEventListener('input', (event) => {
 $('sun-shadows').addEventListener('change', (event) => {
   sunShadows = event.target.value !== 'off';
   game?.set_shadows(sunShadows);
+  saveProgress();
+});
+$('weather-mode').addEventListener('change', (event) => {
+  const mode = Number(event.target.value);
+  weatherMode = Number.isInteger(mode) && mode >= 0 && mode <= 8 ? mode : 0;
+  game?.set_weather_mode(weatherMode);
+  updateWeatherControls(); saveProgress();
+});
+$('weather-speed').addEventListener('input', (event) => {
+  const speed = Number(event.target.value);
+  weatherSpeed = Number.isFinite(speed) ? clamp(speed, .25, 20) : 1;
+  game?.set_weather_speed(weatherSpeed);
+  updateWeatherControls(); saveProgress();
+});
+$('weather-paused').addEventListener('change', (event) => {
+  weatherPaused = event.target.value === 'paused';
+  game?.set_weather_paused(weatherPaused);
+  updateWeatherControls(); saveProgress();
+});
+$('water-reflections').addEventListener('change', (event) => {
+  reflections = event.target.value !== 'off';
+  game?.set_reflections(reflections);
+  saveProgress();
+});
+$('enclosure-shading').addEventListener('change', (event) => {
+  enclosure = event.target.value !== 'off';
+  game?.set_enclosure(enclosure);
   saveProgress();
 });
 $('filter-select').addEventListener('change', (event) => {

@@ -10,6 +10,9 @@ assert.equal(typeof a.suitability.dryGround, 'boolean');
 for (const field of ['buildable', 'freshWater', 'shelter', 'fertility', 'crossing', 'harbor', 'habitation']) {
   assert.ok(Number.isFinite(a.suitability[field]) && a.suitability[field] >= 0 && a.suitability[field] <= 1, `${field} suitability is bounded in compiled WASM`);
 }
+for (const name of ['set_weather_mode', 'set_weather_speed', 'set_weather_paused', 'set_reflections', 'set_enclosure']) {
+  assert.equal(typeof Game.prototype[name], 'function', `${name} is exposed in the actual WASM bindings`);
+}
 assert.equal(typeof Game.prototype.walking_journeys, 'function');
 assert.equal(typeof Game.prototype.natural_destinations, 'function');
 assert.ok(a.hydrology.confluences > 100, 'the compiled drainage network joins tributaries');

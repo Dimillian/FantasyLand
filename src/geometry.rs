@@ -290,8 +290,103 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
             v.color[1] = flow[1];
         }
     }
+    append_drop_sheets(world, &mut mesh, lod);
     mesh
 }
+/// Local whitewater lives strictly inside already-clipped, steep freshwater
+/// triangles. This decorates actual profile drops; it never invents a vertical
+/// waterfall or water over dry ground. At most48 small fans (144 triangles) per
+/// detailed water chunk; distant LODs keep the ordinary velocity-driven shader.
+fn append_drop_sheets(world: &World, mesh: &mut MeshData, lod: u32) {
+    if lod > 1 {
+        return;
+    }
+    let count = mesh.vertices.len() / 3;
+    let mut emitted = 0;
+    for i in 0..count {
+        if emitted >= 48 {
+            break;
+        }
+        let source = [
+            mesh.vertices[i * 3],
+            mesh.vertices[i * 3 + 1],
+            mesh.vertices[i * 3 + 2],
+        ];
+        if source.iter().any(|v| v.color[2] >= -1.) {
+            continue;
+        }
+        let center: [f32; 3] =
+            std::array::from_fn(|a| source.iter().map(|v| v.position[a]).sum::<f32>() / 3.);
+        let seed = hash(
+            world.seed ^ 0x7a92,
+            (center[0] / 9.).floor() as i32,
+            (center[2] / 9.).floor() as i32,
+        );
+        if seed % 4 != 0 {
+            continue;
+        }
+        let u = sub(source[1].position, source[0].position);
+        let v = sub(source[2].position, source[0].position);
+        let normal = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        if normal[1].abs() < 0.0001 {
+            continue;
+        }
+        let grade = normal[0].hypot(normal[2]) / normal[1].abs();
+        let min_y = source
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = source
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let speed = source[0].color[0].hypot(source[0].color[1]);
+        let center_depth = source.iter().map(|v| -v.color[2] - 1.).sum::<f32>() / 3.;
+        if grade < 0.24 || max_y - min_y < 1.5 || speed < 1.8 || center_depth < 0.75 {
+            continue;
+        }
+        let sample = world.natural_sample(center[0], center[2]);
+        if sample.ocean
+            || (sample.water_height - center[1]).abs() > 0.45
+            || sample.water_height
+                < terrain_surface_height_lod(world, center[0], center[2], lod) + 0.35
+        {
+            continue;
+        }
+        let direction = [source[0].color[0] / speed, source[0].color[1] / speed];
+        let signed_depth = -(center_depth + 1.);
+        let mut middle = source[0];
+        middle.position = [center[0], center[1] + 0.020, center[2]];
+        middle.color = [direction[0] * 8., direction[1] * 8., signed_depth];
+        // Outer speed is the exact zero of the sheet-only shader mask; the
+        // middle carries full coverage. Perspective interpolation fades the
+        // small fan into the underlying current without transparent sorting.
+        let edge: [Vertex; 3] = std::array::from_fn(|j| {
+            let mut v = source[j];
+            for a in 0..3 {
+                v.position[a] = center[a] + (v.position[a] - center[a]) * 0.72;
+            }
+            v.position[1] += 0.020;
+            v.color = [
+                direction[0] * 5.6,
+                direction[1] * 5.6,
+                signed_depth + (v.color[2] - signed_depth) * 0.72,
+            ];
+            v
+        });
+        for j in 0..3 {
+            let start = mesh.vertices.len() as u32;
+            mesh.vertices.extend([middle, edge[j], edge[(j + 1) % 3]]);
+            mesh.indices.extend([start, start + 1, start + 2]);
+        }
+        emitted += 1;
+    }
+}
+
 fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f32) {
     let points = triangle.map(|p| {
         let level = if p.water > -999.0 { p.water } else { fallback };
@@ -324,10 +419,23 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
         let ocean = [polygon[0], polygon[i], polygon[i + 1]]
             .iter()
             .all(|p| p.0[1] <= crate::world::SEA_LEVEL + 0.01);
+        let a = sub(polygon[i].0, polygon[0].0);
+        let b = sub(polygon[i + 1].0, polygon[0].0);
+        let n = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        let normal = if length > 0.000001 {
+            [n[0] / length, n[1] / length, n[2] / length]
+        } else {
+            [0., 1., 0.]
+        };
         for (position, depth) in [polygon[0], polygon[i], polygon[i + 1]] {
             mesh.vertices.push(Vertex {
                 position,
-                normal: [0.0, 1.0, 0.0],
+                normal,
                 color: [
                     0.0,
                     0.0,

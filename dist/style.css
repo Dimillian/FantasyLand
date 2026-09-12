@@ -142,3 +142,11 @@ body.mouse-focused #world { cursor: none; }
 .map-legend i.route-trail { border-top-style: dashed; border-color: #a8ad8770; }
 
 .sky-presets { display:flex; gap:8px; padding-top:14px; flex-wrap:wrap; }.sky-presets .plain-button { flex:1; font-size:13px; min-height:36px; }.sky-lore { color:#a7b4a0; font-size:13px; line-height:1.6; margin:12px 0 18px; }
+
+/* Weather stays in the existing terminal HUD and Settings flow. */
+.weather-hud { color: #d3c493; font-size: 12px; opacity: .85; }
+.weather-conditions { display: grid; gap: 6px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.6; }
+.weather-conditions strong { color: #dedfc7; font-size: 13px; font-weight: 400; }
+.weather-conditions > span:not(.overline) { color: #a7b4a0; }
+#weather-speed-value { color: #c4cbb0; font-variant-numeric: tabular-nums; }
+#weather-mode, #weather-paused, #water-reflections, #enclosure-shading { flex-shrink: 0; }

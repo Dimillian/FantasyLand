@@ -24,8 +24,9 @@ document.pointerLockElement=null;
 document.exitPointerLock=()=>{document.pointerLockElement=null;document.fire('pointerlockchange');};
 const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,sensitivity:1.4,x:900,z:800,waypoint:{x:5,z:8,name:'Old'},atlas:{x:9,z:8,span:700}}) };
 let calls=0, looks=[], rejected;
+const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -40,11 +41,17 @@ function filterHarness(snapshot, destinations = []) {
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [];
+  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [];
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
   const engine = {
+    // Keep these separate: existing renderer boot-order assertions stay strict.
+    set_weather_mode:value=>{weatherCalls.push(['mode',value]);},
+    set_weather_speed:value=>{weatherCalls.push(['speed',value]);},
+    set_weather_paused:value=>{weatherCalls.push(['paused',value]);},
+    set_reflections:value=>{weatherCalls.push(['reflections',value]);},
+    set_enclosure:value=>{weatherCalls.push(['enclosure',value]);},
     set_time:hour=>{rendererEvents.push(['time',hour]);playerState.dayTime=hour;},
     landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
@@ -62,9 +69,9 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=climate-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -202,6 +209,71 @@ async function verifyGroundCoverSettings() {
   console.log('PASS: accessible ground-cover slider; old-save default; immediate GPU input calls; boot order; 0/Off and reload persistence; multiplier labels; finite validation/clamping; independence of quality; all existing v4 progress and preferences preserved.');
 }
 
+async function verifyWeatherSettings() {
+  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:1,filterStrength:.8,renderResolution:720,asciiScale:3,asciiPalette:2,groundCoverDensity:4,sunShadows:false,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
+  const slider = html.match(/<input id="weather-speed"[^>]+>/)?.[0];
+  assert.ok(slider,'The weather speed slider must exist in the actual HTML.');
+  for (const attr of ['type="range"','min="0.25"','max="20"','step="0.25"','value="1"','aria-describedby="weather-speed-help"']) assert.ok(slider.includes(attr),attr);
+  const modeSelect = html.match(/<select id="weather-mode"[^>]*>([\s\S]*?)<\/select>/)?.[1];
+  assert.ok(modeSelect);
+  const modeOptions = Object.fromEntries([...modeSelect.matchAll(/<option value="(\d+)"[^>]*>([^<]+)<\/option>/g)].map(match=>[match[1],match[2]]));
+  assert.deepEqual(modeOptions,{0:'Automatic',1:'Clear',2:'Cloudy',3:'Rain',4:'Storm',5:'Tempest',6:'Snow',7:'Blizzard',8:'Overcast'},'Every visible mode must use the WASM mode number.');
+  const h=filterHarness(existing); await h.run('boot()'); h.run('initialReady=true;');
+  assert.equal(h.run('fatal'),false,'Boot must support the five environment APIs.');
+  assert.deepEqual(h.weatherCalls,[['mode',0],['speed',1],['paused',false],['reflections',true],['enclosure',true]],'Old v4 saves receive the environment defaults.');
+  assert.equal(h.ids['weather-mode'].value,'0'); assert.equal(h.ids['weather-speed'].value,'1');
+  assert.equal(h.ids['weather-paused'].value,'running'); assert.equal(h.ids['water-reflections'].value,'on'); assert.equal(h.ids['enclosure-shading'].value,'on');
+  const rendererBefore=JSON.stringify(h.rendererEvents), teleportBefore=JSON.stringify(h.teleports);
+  const change=(id,value,event='change')=>{h.ids[id].value=String(value);h.ids[id].fire(event);};
+  for (let mode=0;mode<=8;mode++) {
+    change('weather-mode',mode); assert.deepEqual(h.weatherCalls.at(-1),['mode',mode]); assert.equal(h.saved().weatherMode,mode);
+  }
+  assert.match(h.ids['weather-mode-help'].textContent,/gradual override/);
+  change('weather-speed',.25,'input'); assert.deepEqual(h.weatherCalls.at(-1),['speed',.25]);
+  assert.equal(h.ids['weather-speed-value'].textContent,'0.25×'); assert.equal(h.ids['weather-speed'].attributes['aria-valuetext'],'0.25 times speed');
+  change('weather-speed',20,'input'); change('weather-paused','paused');
+  assert.deepEqual(h.weatherCalls.at(-1),['paused',true]); assert.equal(h.ids['weather-speed-value'].textContent,'20× · paused');
+  change('water-reflections','off'); assert.deepEqual(h.weatherCalls.at(-1),['reflections',false]);
+  change('enclosure-shading','off'); assert.deepEqual(h.weatherCalls.at(-1),['enclosure',false]);
+  assert.equal(JSON.stringify(h.rendererEvents),rendererBefore,'Weather controls must not change quality, filters, shadows, time, cover, or size.');
+  assert.equal(JSON.stringify(h.teleports),teleportBefore,'Weather controls must not move the player.');
+  const persisted=h.saved();
+  for(const key of Object.keys(existing)) assert.deepEqual(persisted[key],existing[key],`Weather must preserve existing ${key}.`);
+  assert.equal(persisted.weatherMode,8);assert.equal(persisted.weatherSpeed,20);assert.equal(persisted.weatherPaused,true);assert.equal(persisted.reflections,false);assert.equal(persisted.enclosure,false);
+  const restored=filterHarness(persisted); await restored.run('boot()');restored.run('initialReady=true;');
+  assert.deepEqual(restored.weatherCalls,[['mode',8],['speed',20],['paused',true],['reflections',false],['enclosure',false]],'Saved weather and false toggles must reach WASM on reload.');
+  assert.equal(restored.ids['weather-paused'].value,'paused');assert.equal(restored.ids['water-reflections'].value,'off');assert.equal(restored.ids['enclosure-shading'].value,'off');
+  for(const [id,value,expected] of [['weather-paused','running',['paused',false]],['water-reflections','on',['reflections',true]],['enclosure-shading','on',['enclosure',true]]]) {
+    restored.ids[id].value=value;restored.ids[id].fire('change');assert.deepEqual(restored.weatherCalls.at(-1),expected);
+  }
+  for(const [value,expected] of [[-3,.25],[0,.25],[99,20],['invalid',1],['Infinity',1],['-Infinity',1]]) {
+    change('weather-speed',value,'input');assert.deepEqual(h.weatherCalls.at(-1),['speed',expected]);assert.equal(h.ids['weather-speed'].value,String(expected));assert.equal(h.saved().weatherSpeed,expected);
+  }
+  for(const value of [-1,9,1.5,'invalid','Infinity']) {
+    change('weather-mode',value);assert.deepEqual(h.weatherCalls.at(-1),['mode',0]);assert.equal(h.ids['weather-mode'].value,'0');assert.equal(h.saved().weatherMode,0);
+  }
+  assert.match(h.ids['weather-mode-help'].textContent,/local climate/);
+  for(const [value,expected] of [[-3,.25],[50,20],['invalid',1],['Infinity',1],[null,1]]) {
+    const invalid=filterHarness({...existing,weatherSpeed:value});await invalid.run('boot()');
+    assert.ok(invalid.weatherCalls.some(call=>call[0]==='speed' && call[1]===expected),'Saved speeds must be finite and bounded before WASM.');
+  }
+  for(const value of [-1,9,1.5,'invalid','Infinity',null]) {
+    const invalid=filterHarness({...existing,weatherMode:value});await invalid.run('boot()');assert.deepEqual(invalid.weatherCalls[0],['mode',0]);
+  }
+  h.ids['compass-track'].parentElement={clientWidth:320};
+  h.run("modal='settings';state.dayTime=9;state.weather={label:'Blizzard',modeLabel:'Automatic',temperature:-5.7,windX:22,windZ:4,cloudCover:.9,rain:0,snow:.82,wetness:.6,snowCover:.5};state.reflectionDraws=12;updateHUD(100);");
+  assert.equal(h.ids['weather-hud'].textContent,'Blizzard · -6°C');
+  assert.match(h.ids['weather-current'].textContent,/Blizzard · -6°C · Automatic/);
+  assert.match(h.ids['weather-air'].textContent,/Wind fierce · cloud 90% · rain 0% · snow 82%/);
+  assert.equal(h.ids['weather-ground'].textContent,'Ground wetness 60% · snow cover 50%');
+  assert.match(h.ids.diagnostics.textContent,/12 reflection draws/);
+  h.run("state.weather={label:'Fair',temperature:NaN,windX:Infinity,windZ:0,cloudCover:5,rain:-2};updateHUD(200);");
+  assert.doesNotMatch(h.ids['weather-hud'].textContent+h.ids['weather-current'].textContent+h.ids['weather-air'].textContent+h.ids['weather-ground'].textContent,/NaN|Infinity|undefined/);
+  assert.match(h.ids['weather-air'].textContent,/cloud 100% · rain 0% · snow —/);
+  h.run('state.weather=undefined;updateHUD(300);'); // Early or incomplete engine state must not break the HUD.
+  console.log('PASS: weather API boot/defaults; all nine modes; live speed/pause/reflection/enclosure calls; separate renderer events; finite bounds; v4 progress and visual preferences; reload including false toggles; live weather HUD and reflection diagnostics.');
+}
+
 async function verifyLandscapeDestinations() {
   const existing={seed:1337,x:637,z:222,quality:2,sunShadows:false,groundCoverDensity:4,sensitivity:1.2,filterMode:2,filterStrength:1.1,renderResolution:720,asciiScale:3,asciiPalette:2,atlas:{x:640,z:225,span:6000}};
   const names=['Ancient woodland','Granite highlands','Windswept coast','Wet lowlands','Sandstone country','Meadowlands','Alpine heights'];
@@ -308,6 +380,7 @@ async function main(){
   await verifyFilterSettings();
   await verifyAsciiResolutionSettings();
   await verifyGroundCoverSettings();
+  await verifyWeatherSettings();
   await verifyLandscapeDestinations();
   await verifySkyAndWalkControls();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');

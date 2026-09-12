@@ -23,6 +23,14 @@ struct Globals {
     vey: vec4<f32>,     // direction, angular radius
     direct: vec4<f32>, // primary light RGB, intensity
     ambient: vec4<f32>, // hemispheric tint, star visibility
+    weather: vec4<f32>, // cloud cover, rain, snow, fog
+    storm: vec4<f32>,   // wind x/z m/s, gust, lightning
+    surface: vec4<f32>, // wetness, accumulated snow, temperature C, weather seconds
+    reflection_matrix: mat4x4<f32>,
+    reflection_params: vec4<f32>,
+    shelter_matrix: mat4x4<f32>,
+    shelter_origin: vec4<f32>,
+    shelter_params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
@@ -93,7 +101,13 @@ fn horizon_color(direction: vec3<f32>) -> vec3<f32> {
     let night_haze = vec3<f32>(0.048, 0.073, 0.12);
     let haze = mix(night_haze, day_haze, daylight());
     let twilight_haze = mix(vec3<f32>(0.245, 0.205, 0.33), vec3<f32>(0.78, 0.365, 0.16), sunward);
-    return mix(haze, twilight_haze, twilight() * (0.38 + sunward * 0.40));
+    let fair = mix(haze, twilight_haze, twilight() * (0.38 + sunward * 0.40));
+    let overcast = smoothstep(0.60, 1.0, u.weather.x);
+    let rain_air = mix(vec3<f32>(0.035, 0.056, 0.095), vec3<f32>(0.32, 0.38, 0.43), daylight());
+    let snow_air = mix(vec3<f32>(0.09, 0.125, 0.185), vec3<f32>(0.65, 0.70, 0.73), daylight());
+    let weather_air = mix(rain_air, snow_air, clamp(u.weather.z * 0.8 + u.surface.y * 0.2, 0.0, 1.0));
+    return mix(fair, weather_air, overcast * (0.43 + u.weather.w * 0.40))
+        + vec3<f32>(0.30, 0.38, 0.53) * u.storm.w;
 }
 
 fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
@@ -116,14 +130,14 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
 // east-northeast direction. Broad gusts move neighboring plants together;
 // the small crosswind oscillation prevents a rigid synchronized lean.
 fn vegetation_wind(world: vec3<f32>, time: f32, strength: f32) -> vec2<f32> {
-    let direction = vec2<f32>(0.911, -0.412);
-    let across = vec2<f32>(0.412, 0.911);
+    let direction = normalize(u.storm.xy + vec2<f32>(0.001,0.0));
+    let across = vec2<f32>(-direction.y,direction.x);
     let wave = time * 0.70 - dot(world.xz, direction) * 0.026;
     let cross_wave = time * 0.39 + dot(world.xz, across) * 0.019;
     let gust = 0.53 + sin(wave) * 0.27 + sin(cross_wave) * 0.16;
     let flutter = sin(time * 1.9 + dot(world.xz, vec2<f32>(0.31, 0.23))) * 0.08;
     return (direction * (gust + flutter) + across * sin(cross_wave) * 0.12)
-         * clamp(strength, 0.0, 1.0);
+         * clamp(strength, 0.0, 2.5);
 }
 
 fn transform_vertex(v: VertexIn) -> VertexOut {
@@ -131,7 +145,7 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
     var p = v.position;
     if v.material > 0.5 && v.material < 1.5 {
         let weight = clamp((1.4 - v.material) / 0.4, 0.0, 1.0);
-        let bend = vegetation_wind(p, u.params.x, u.air.y) * (0.14 * weight);
+        let bend = vegetation_wind(p, u.params.x, u.air.y) * (0.32 * weight);
         p.x += bend.x;
         p.z += bend.y;
     }
@@ -142,9 +156,26 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
         p.x += bend.x;
         p.z += bend.y;
     }
+    var surface_normal = v.normal;
+    if ((v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) && v.color.z > 0.5 {
+        // Broad geometric sea swells survive coarse terrain tessellation. Near
+        // shore they converge to the exact clipped coastline; fine ripples are
+        // confined to the water material, and freshwater heights stay unchanged.
+        let depth = max(v.color.z - 1.0,0.0);
+        let direction = normalize(u.storm.xy + vec2<f32>(0.001,0.0));
+        let crosswind = vec2<f32>(-direction.y,direction.x);
+        let wind = smoothstep(2.0,22.0,length(u.storm.xy));
+        let amplitude = (0.035 + wind * 0.31) * smoothstep(0.5,12.0,depth);
+        let k = 0.06981317;
+        let phase = dot(p.xz,direction) * k - u.params.x * (0.55 + wind * 0.40);
+        let cross_phase = dot(p.xz,direction * 0.62 + crosswind * 0.78) * k * 0.71 - u.params.x * 0.47;
+        p.y += (sin(phase) + sin(cross_phase) * 0.48) * amplitude;
+        let slope = (cos(phase) * direction + cos(cross_phase) * (direction * 0.62 + crosswind * 0.78) * 0.3408) * amplitude * k;
+        surface_normal = normalize(vec3<f32>(-slope.x,1.0,-slope.y));
+    }
     o.clip = u.view_projection * vec4<f32>(p - u.camera.xyz, 1.0);
     o.world = p;
-    o.normal = v.normal;
+    o.normal = surface_normal;
     o.color = v.color;
     o.material = v.material;
     return o;
@@ -154,77 +185,154 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
     return transform_vertex(v);
 }
 
-fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32) -> vec3<f32> {
-    let t = u.params.x;
+// Water inputs: color.xy is downstream velocity in metres/second, zero for
+// ocean/retained lakes. color.z retains signed depth (+sea,-freshwater), biased1.
+// Optional geometry-owned foam sheets reserve speed6..8; normal currents≤4.5.
+// No displacement: clipping, beaches and the walking-ground contract stay exact.
+fn water_unit(v: vec2<f32>, fallback: vec2<f32>) -> vec2<f32> {
+    let n = length(v);
+    if n < 0.001 { return fallback; }
+    return v / n;
+}
+
+fn water_rain_slope(p: vec2<f32>, time: f32, rain: f32, detail: f32) -> vec2<f32> {
+    if rain * detail < 0.015 { return vec2<f32>(0.0); }
+    // Four neighboring deterministic rain cells, each a growing finite ring.
+    // Detail vanishes before the ring becomes subpixel or reaches the horizon.
+    let grid = p / 3.0;
+    let base = floor(grid - vec2<f32>(0.5));
+    var slope = vec2<f32>(0.0);
+    for (var i = 0u; i < 4u; i += 1u) {
+        let cell = base + vec2<f32>(f32(i & 1u), f32(i >> 1u));
+        let seed = hash21(cell + vec2<f32>(17.3, 81.1));
+        let jitter = vec2<f32>(seed, hash21(cell + vec2<f32>(41.2, 6.7))) - vec2<f32>(0.5);
+        let center = (cell + vec2<f32>(0.5) + jitter * 0.35) * 3.0;
+        let delta = p - center;
+        let radius = length(delta);
+        let age = fract(time * (0.62 + rain * 0.22) + seed);
+        let front = 0.09 + age * 1.24;
+        let band = radius - front;
+        let envelope = (1.0 - smoothstep(0.035, 0.19, abs(band)))
+                     * (1.0 - age) * smoothstep(0.0, 0.09, age);
+        slope += delta / max(radius, 0.035) * cos(band * 37.0) * envelope;
+    }
+    return slope * rain * detail * 0.037;
+}
+
+fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32, surface_normal: vec3<f32>) -> vec3<f32> {
+    let time = u.params.x;
     let p = world.xz;
-    // Positive payload is ocean (depth+1), negative is freshwater -(depth+1).
-    // A zero payload from old distant freshwater meshes retains a deep tone.
     let ocean = step(0.5, channel.z);
     let has_depth = step(0.5, abs(channel.z));
-    let depth = mix(4.0, max(abs(channel.z) - 1.0, 0.0), has_depth);
-    let flow = normalize(channel.xy + vec2<f32>(0.00001));
-    let velocity = mix(flow * 0.85, vec2<f32>(0.58, -0.26), ocean);
-    let moving = p - velocity * t;
-    let near_detail = 1.0 - smoothstep(90.0, 480.0, distance);
-    let wave_detail = 1.0 - smoothstep(1.2, 8.0, footprint);
-    let fine_filter = 1.0 - smoothstep(0.35, 1.7, footprint);
-    let fine_detail = near_detail * fine_filter;
-    let warp = noise(moving * 0.032);
-    let phase_a = dot(moving, vec2<f32>(0.28, 0.13)) + warp * 2.7;
-    let phase_b = dot(moving, vec2<f32>(-0.15, 0.37));
-    let phase_c = dot(moving, vec2<f32>(1.31, 0.58)) + warp * 3.8;
-    let a = sin(phase_a) * wave_detail;
-    let b = sin(phase_b) * wave_detail;
-    let c = sin(phase_c) * fine_detail;
-    let wind = 0.72 + clamp(u.air.y, 0.0, 1.0) * 0.28;
-    let slope_x = ((cos(phase_a) * 0.027 - cos(phase_b) * 0.015) * wave_detail
-                 + cos(phase_c) * 0.018 * fine_detail) * wind;
-    let slope_z = ((cos(phase_a) * 0.014 + cos(phase_b) * 0.036) * wave_detail
-                 + cos(phase_c) * 0.008 * fine_detail) * wind;
-    let normal = normalize(vec3<f32>(-slope_x, 1.0, -slope_z));
+    let depth = mix(5.0, max(abs(channel.z) - 1.0, 0.0), has_depth);
+    let speed = length(channel.xy);
+    let stream = smoothstep(0.08, 0.28, speed) * (1.0 - ocean);
+    let sheet = smoothstep(5.6, 7.7, speed) * (1.0 - ocean);
+    let river_speed = min(speed, 4.5);
+    let wind_vector = u.storm.xy;
+    let wind_speed = length(wind_vector) * (1.0 + clamp(u.storm.z, 0.0, 1.0) * 0.25);
+    let wind = smoothstep(0.4, 15.0, wind_speed);
+    let wind_direction = water_unit(wind_vector, vec2<f32>(0.91, -0.41));
+    let flow = water_unit(channel.xy, wind_direction);
+    let across = vec2<f32>(-wind_direction.y, wind_direction.x);
+    let rain = clamp(u.weather.y, 0.0, 1.0);
+    let near = 1.0 - smoothstep(110.0, 520.0, distance);
+    let fine = near * (1.0 - smoothstep(0.28, 1.5, footprint));
+    let rain_detail = (1.0 - smoothstep(36.0, 115.0, distance))
+                    * (1.0 - smoothstep(0.12, 0.48, footprint));
+    let rapids = smoothstep(1.35, 3.45, river_speed) * stream;
+    let velocity = mix(wind_direction * wind_speed * 0.14, flow * river_speed, stream);
+    let moving = p - velocity * time;
+
+    // Weather controls wavelength and amplitude. A calm lake retains readable
+    // terrain reflections; exposed seas develop broad swells and cross-ripples.
+    let wavelength = mix(4.8, 11.0 + wind * 13.0, ocean);
+    let broad = 1.0 - smoothstep(wavelength * 0.10, wavelength * 0.40, footprint);
+    let wave_k = 6.2831853 / wavelength;
+    let warp = noise(moving * 0.021) * 1.3;
+    let phase_a = dot(moving, wind_direction) * wave_k + warp;
+    let phase_b = dot(moving, wind_direction * 0.58 + across * 0.82) * wave_k * 1.72 - time * 0.22;
+    let phase_c = dot(moving, flow * 1.9 + vec2<f32>(-flow.y, flow.x) * 0.52) + warp * 2.0;
+    let amplitude = mix(0.0035, 0.016, ocean) + wind * mix(0.080, 0.145, ocean);
+    var slope = (wind_direction * cos(phase_a) + (wind_direction * 0.58 + across * 0.82) * cos(phase_b) * 0.42)
+              * amplitude * broad;
+    slope += flow * cos(phase_c) * (0.005 + rapids * 0.10 + wind * 0.023) * fine;
+    slope += water_rain_slope(p, time, rain, rain_detail);
+    let normal = normalize(normalize(surface_normal) - vec3<f32>(slope.x, 0.0, slope.y));
     let view = normalize(u.camera.xyz - world);
-    let reflection = reflect(-view, normal);
-    let fresnel = 0.06 + 0.60 * pow(1.0 - max(dot(normal, view), 0.0), 4.0);
+    let facing = clamp(dot(normal, view), 0.0, 1.0);
+    let roughness = clamp(0.035 + wind * mix(0.21, 0.31, ocean) + rain * 0.10 + rapids * 0.27, 0.035, 0.60);
+    let fresnel = 0.0204 + 0.9796 * pow(1.0 - facing, 5.0);
 
-    let broad_current = noise(moving * 0.011);
+    // Authored pigment is converted once to linear light. Clear shallows expose
+    // warm gravel; deeper channels shift through jade toward blue-green.
     let sandstone = clamp(u.climate.z, 0.0, 1.0);
-    let sediment = mix(vec3<f32>(0.35, 0.39, 0.255), vec3<f32>(0.48, 0.355, 0.195), sandstone * 0.65);
-    let river_deep = mix(vec3<f32>(0.055, 0.235, 0.255), vec3<f32>(0.105, 0.29, 0.26), clamp(u.air.z, 0.0, 1.0) * 0.35);
-    let river = mix(sediment, river_deep, 1.0 - exp(-depth * 0.62));
-    let sea_shallow = mix(vec3<f32>(0.30, 0.46, 0.37), vec3<f32>(0.10, 0.385, 0.40), smoothstep(0.0, 5.0, depth));
-    let sea = mix(sea_shallow, vec3<f32>(0.025, 0.155, 0.285), smoothstep(3.0, 42.0, depth));
-    var color = mix(river, sea, ocean) * (0.965 + broad_current * 0.07);
-    color *= u.light.w * (0.985 + (a * 0.62 + b * 0.38) * 0.035);
+    let sediment = mix(vec3<f32>(0.39, 0.43, 0.285), vec3<f32>(0.52, 0.385, 0.215), sandstone * 0.75);
+    let river_tone = mix(sediment, vec3<f32>(0.055, 0.275, 0.285), 1.0 - exp(-depth * 0.40));
+    let sea_tone = mix(vec3<f32>(0.34, 0.57, 0.47), vec3<f32>(0.025, 0.205, 0.355), 1.0 - exp(-depth * 0.085));
+    let pigment = pow(max(mix(river_tone, sea_tone, ocean), vec3<f32>(0.0)), vec3<f32>(2.2));
+    let visibility = sun_visibility(world, normal) * weather_light_visibility(world);
+    let sky_fill = u.ambient.rgb * 0.76;
+    let direct = u.direct.rgb * u.direct.w * max(dot(normal, normalize(u.light.xyz)), 0.0) * 0.34 * visibility;
+    var color = pigment * (sky_fill + direct) * (0.96 + noise(moving * 0.012) * 0.08);
 
-    var reflected_sky = sky_gradient(reflection);
-    let reflected_cloud = smoothstep(0.56, 0.78, fbm(reflection.xz / max(reflection.y, 0.12) * 1.2 + vec2<f32>(t * 0.0009, 4.1)));
-    reflected_sky = mix(reflected_sky, vec3<f32>(0.63, 0.69, 0.67) * u.light.w, reflected_cloud * 0.18 * daylight());
-    color = mix(color, reflected_sky, fresnel);
+    var reflected: vec3<f32>;
+    // A sloping river is not a planar lake: keep its cheap, physically coherent
+    // environment fallback rather than stretching unrelated terrain over it.
+    // Mutually exclusive branches avoid evaluating the procedural sky twice.
+    if stream < 0.5 {
+        reflected = reflected_environment(world, normal, view, roughness);
+    } else {
+        reflected = sky_radiance(reflect(-view, normal));
+    }
+    color = mix(color, reflected, fresnel * (1.0 - rapids * 0.30));
 
-    // A few muted strokes and refracted-looking shallow bands, never a white
-    // opaque shoreline. Their scale is filtered before it becomes subpixel.
-    let breaks = mix(0.5, smoothstep(0.35, 0.72, noise(moving * vec2<f32>(0.11, 0.28))), fine_filter);
-    let crest = smoothstep(0.71, 0.96, a * 0.72 + c * 0.28) * breaks * near_detail;
-    color += vec3<f32>(0.065, 0.080, 0.065) * crest * u.light.w;
-    let shallow = exp(-depth * 0.85) * has_depth;
-    let caustic = smoothstep(0.82, 0.97, sin(phase_c + a * 1.4));
-    color += vec3<f32>(0.028, 0.035, 0.016) * caustic * shallow * fine_detail * daylight();
-    let half_sum = normalize(u.light.xyz) + view;
+    // Shallow caustics stay gentle and disappear in rough, turbid rainwater.
+    let shallow = exp(-depth * 0.72) * has_depth;
+    let caustic_a = 1.0 - abs(sin(phase_c + sin(phase_a) * 0.74));
+    let caustic_b = 1.0 - abs(sin(phase_c * 0.73 - phase_b * 0.57));
+    let caustic = smoothstep(0.69, 0.94, min(caustic_a, caustic_b));
+    color += vec3<f32>(0.045, 0.068, 0.032) * caustic * shallow * fine * visibility
+           * daylight() * (1.0 - rain * 0.75) * (1.0 - wind * 0.58);
+
+    // Finite-width microfacet light paths bloom only where sun/moon geometry
+    // supports them. Clamp the distribution to suppress low-resolution fireflies.
+    let light = normalize(u.light.xyz);
+    let half_sum = light + view;
     let half_vector = half_sum / sqrt(max(dot(half_sum, half_sum), 0.00001));
-    let specular = pow(max(dot(normal, half_vector), 0.0), 120.0);
-    let glint = smoothstep(0.48, 0.88, specular) * (0.45 + breaks * 0.55);
-    // One reflected light path: the same sun/moon that illuminates the bank.
-    color += u.direct.rgb * 0.35 * glint * u.direct.w * (0.20 + near_detail * 0.32);
+    let nl = max(dot(normal, light), 0.0);
+    let nh = max(dot(normal, half_vector), 0.0);
+    let vh = max(dot(view, half_vector), 0.0);
+    let alpha = max(roughness * roughness, 0.009);
+    let alpha2 = alpha * alpha;
+    let denominator = nh * nh * (alpha2 - 1.0) + 1.0;
+    let distribution = min(alpha2 / max(3.14159265 * denominator * denominator, 0.000001), 90.0);
+    let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    let masking = nl / max(nl * (1.0 - k) + k, 0.0001)
+                * facing / max(facing * (1.0 - k) + k, 0.0001);
+    let specular_fresnel = 0.0204 + 0.9796 * pow(1.0 - vh, 5.0);
+    let specular = distribution * masking * specular_fresnel / max(4.0 * nl * facing, 0.025);
+    color += u.direct.rgb * u.direct.w * nl * specular * 2.8 * visibility;
 
-    // The wet contact line is subdued. Only broken, moving ocean wash gets a
-    // little reflected sky; rivers and lakes do not inherit surf foam.
-    let contact = (1.0 - smoothstep(0.025, 0.22, depth)) * has_depth;
-    color *= 1.0 - contact * 0.055;
-    let surf_phase = depth * 2.1 - t * 0.72 + warp * 3.0;
-    let surf = smoothstep(0.12, 0.32, depth) * (1.0 - smoothstep(0.55, 1.8, depth))
-             * smoothstep(0.76, 0.97, sin(surf_phase)) * breaks * ocean * fine_detail;
-    color = mix(color, reflected_sky, surf * 0.13);
-    return color;
+    let broken = smoothstep(0.32, 0.76, noise(moving * vec2<f32>(0.13, 0.23)));
+    let riffle = smoothstep(0.52, 0.91, sin(phase_c + sin(phase_b) * 0.80));
+    let turbulent = rapids * riffle * (0.20 + broken * 0.80)
+                  * (0.25 + (1.0 - smoothstep(1.2, 7.0, depth)) * 0.75) * fine;
+    let shore_zone = smoothstep(0.05, 0.23, depth) * (1.0 - smoothstep(0.65, 2.8, depth));
+    let wash = smoothstep(0.64, 0.94, sin(depth * 2.0 - time * (0.72 + wind * 0.70) + warp * 2.3));
+    let surf = ocean * shore_zone * wash * (0.12 + wind * 0.64) * broken * fine;
+    let whitecap = ocean * smoothstep(0.48, 0.90, wind) * smoothstep(0.91, 0.995, sin(phase_a))
+                 * broken * broad * (1.0 - smoothstep(900.0, 2800.0, distance));
+    let cascade = sheet * (0.48 + 0.52 * riffle) * (0.42 + broken * 0.58) * near;
+    let foam = clamp(turbulent * 0.64 + surf * 0.64 + whitecap * 0.28 + cascade * 0.84, 0.0, 0.92);
+    let foam_light = (u.ambient.rgb * 0.64 + u.direct.rgb * u.direct.w * nl * 0.48 * visibility)
+                   * vec3<f32>(0.80, 0.88, 0.84);
+    color = mix(color, foam_light, foam);
+    // Permanent contact darkening follows actual clipped depth, never a fake
+    // screen-space shoreline that leaks across the terrain or floating props.
+    let contact = (1.0 - smoothstep(0.018, 0.20, depth)) * has_depth;
+    color *= 1.0 - contact * 0.12;
+    return max(color, vec3<f32>(0.0));
 }
 
 // Sun visibility is supplied by lighting.wgsl; ambient stays lit.
@@ -373,7 +481,7 @@ fn surface_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, materia
     return mix(substrate, color, detail);
 }
 
-fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32) -> vec3<f32> {
+fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32) -> vec3<f32> {
     let sun = normalize(u.light.xyz);
     let diffuse = max(dot(normal, sun), 0.0);
     let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
@@ -410,7 +518,15 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     let pigment_luma = dot(base, vec3<f32>(0.2126, 0.7152, 0.0722));
     let nocturne = (1.0 - daylight()) * 0.72;
     let reflectance = mix(base, vec3<f32>(pigment_luma), nocturne);
-    return reflectance * (ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w);
+    ambient *= (0.58 + sky_access * 0.32) * (1.0 - u.weather.x * 0.16);
+    direct *= 1.30;
+    let illumination = ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w;
+    let albedo = pow(max(reflectance,vec3<f32>(0.0)),vec3<f32>(2.2));
+    // Illuminate linear albedo. Gamma-converting the product would darken
+    // forest shelter and moonlight twice, obscuring otherwise walkable ground.
+    return albedo * illumination * mix(0.72,0.85,daylight())
+        + albedo * vec3<f32>(0.48,0.64,0.95) * u.storm.w * sky_access;
+
 }
 
 // Mean density of a height-fog layer along the actual sightline. The integral
@@ -436,7 +552,10 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     // upper faces retain their pigment. No height bands or hard fog planes.
     let valley_air = height_column(u.camera.y, world.y, 120.0, 620.0);
     optical_depth += valley_air * min(distance / 11000.0, 0.8) * (0.10 + mountain * 0.24);
-    var result = mix(color, horizon_color(direction), clamp(1.0 - exp(-optical_depth), 0.0, 0.97));
+    // Precipitation occupies a volume, not a camera-facing grey overlay. Clear
+    // weather retains the existing long visibility; blizzard snowfall closes it.
+    optical_depth += distance * (u.weather.w * 0.0015 + u.weather.y * 0.00018 + u.weather.z * 0.0014);
+    var result = mix(color, pow(max(horizon_color(direction),vec3<f32>(0.0)),vec3<f32>(2.2)), clamp(1.0 - exp(-optical_depth), 0.0, 0.995));
 
     let wetland = clamp(u.climate.y, 0.0, 1.0);
     if wetland > 0.001 {
@@ -449,12 +568,14 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
         let mist = min(1.0 - exp(-mist_depth), 0.34);
         let mist_day = mix(vec3<f32>(0.44, 0.53, 0.55), vec3<f32>(0.52, 0.565, 0.53), twilight() * 0.30);
         let mist_color = mix(vec3<f32>(0.045, 0.075, 0.12), mist_day, daylight());
-        result = mix(result, mist_color, mist);
+        result = mix(result, pow(max(mist_color,vec3<f32>(0.0)),vec3<f32>(2.2)), mist);
     }
     return result;
 }
 
 @fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
+    if u.reflection_params.z > 0.5 && (v.world.y < u.reflection_params.x - 0.12
+        || (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
     let distance = length(v.world - u.camera.xyz);
     let water_footprint = max(length(dpdx(v.world.xz)), length(dpdy(v.world.xz)));
     let material_footprint = max(length(dpdx(v.world)), length(dpdy(v.world)));
@@ -489,20 +610,31 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     let normal = normalize(v.normal);
     var color: vec3<f32>;
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
-        color = water_color(v.world, distance, v.color, water_footprint);
+        color = water_color(v.world, distance, v.color, water_footprint, v.normal);
     } else {
-        let pigment = surface_pigment(v.color, v.world, normal, v.material, material_footprint, distance);
-        let visibility = sun_visibility(v.world, normal);
-        color = surface_lighting(pigment, normal, v.material, visibility, distance);
+        var pigment = surface_pigment(v.color, v.world, normal, v.material, material_footprint, distance);
+        let physical_sky = open_sky(v.world);
+        let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
+        let deposition = smoothstep(0.15,0.72,normal.y) * physical_sky;
+        let snow_pattern = noise(v.world.xz * 0.20) * 0.24 + 0.76;
+        let snow = smoothstep(0.02,0.80,u.surface.y) * deposition * snow_pattern;
+        pigment *= 1.0 - u.surface.x * 0.20 * physical_sky * (1.0-snow);
+        pigment = mix(pigment, vec3<f32>(0.84,0.89,0.91),snow);
+        let visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
+        color = surface_lighting(pigment, normal, v.material, visibility, distance, sky_access);
+        // Small wet-rock and soil glints follow actual surface orientation. No
+        // global glossy overlay on grass or sheltered undersides.
+        if v.material < 0.5 || (v.material > 1.5 && v.material < 3.5) {
+            let view = normalize(u.camera.xyz - v.world);
+            let halfway = normalize(view + normalize(u.light.xyz));
+            let sheen = pow(max(dot(normal,halfway),0.0),mix(80.0,28.0,u.surface.x));
+            color += u.direct.rgb * sheen * u.surface.x * deposition * visibility * u.direct.w * (1.0-snow) * 0.35;
+        }
     }
 
-    // Retain the low-poly palette while restoring rich midtones in daylight.
-    let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    color = mix(vec3<f32>(luma), color, 1.12);
-    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(0.94));
-    color = atmospheric_color(color, v.world, distance);
-    let dither = bayer(v.clip.xy) * 0.35;
-    color = floor(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)) * 64.0 + dither) / 64.0;
+    color = atmospheric_color(max(color,vec3<f32>(0.0)), v.world, distance);
+    // Preserve HDR through fog and Bloom. Palette quantization happens once at
+    // presentation, so bright sun, spray and lightning retain their energy.
     return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
 }
 
@@ -530,22 +662,82 @@ fn sky_ray(uv: vec2<f32>) -> vec3<f32> {
     return normalize(forward + right * ndc.x * max(u.camera.w, 0.1) * 0.72654253 + up * ndc.y * 0.72654253);
 }
 
-// Bounded procedural sky. Two cloud planes approximate sunlit volumes; there
-// are no textures, ray marches or temporal accumulation requirements.
-fn cloud_layer(ray: vec3<f32>, altitude: f32, scale: f32, drift: vec2<f32>, threshold: f32) -> vec3<f32> {
-    let horizon_fade = smoothstep(0.018, 0.13, ray.y);
-    let plane_distance = max(altitude - u.camera.y, 100.0) / max(ray.y, 0.015);
-    let p = (u.camera.xz + ray.xz * plane_distance) * scale + drift;
-    let weather = noise(p * 0.23 + vec2<f32>(13.4, 7.7));
-    let warp = vec2<f32>(noise(p * 0.6), noise(p * 0.6 + vec2<f32>(9.1, 2.4))) * 0.6;
-    let field = fbm(p + warp) + (weather - 0.5) * 0.17;
-    let density = smoothstep(threshold, threshold + 0.19, field);
-    let thickness = smoothstep(threshold + 0.025, threshold + 0.25, field);
-    // A cheap directional derivative gives billows a consistent illuminated side.
+// The same world-space cloud field is used by the visible sky, water reflections
+// and projected terrain shadows. It does not follow the eye or restart at a
+// streamed chunk boundary. CPU weather supplies the traveling front's local
+// coverage; this field supplies the continuous billows within it.
+fn weather_cloud_base(high: bool) -> f32 {
+    if high { return 6200.0; }
+    return 3300.0 - u.weather.y * 1250.0 - u.weather.z * 700.0;
+}
+
+fn weather_cloud_field(world_xz: vec2<f32>, high: bool) -> vec3<f32> {
+    let seconds = u.surface.w;
+    let scale = select(0.00042, 0.00020, high);
+    // A fixed advection velocity prevents variable wind*time from teleporting
+    // the whole cloud sheet when a gust or a manual transition changes wind.
+    let drift = select(vec2<f32>(14.0, -6.0), vec2<f32>(22.0, -9.0), high) * seconds;
+    let p = (world_xz - drift) * scale + select(vec2<f32>(0.0), vec2<f32>(21.0, -8.0), high);
+    let regional = noise(p * 0.22 + vec2<f32>(13.4, 7.7));
+    let warp = vec2<f32>(noise(p * 0.58), noise(p * 0.58 + vec2<f32>(9.1, 2.4))) * 0.68;
+    let field = fbm(p + warp) + (regional - 0.5) * 0.18;
+    let threshold = mix(0.86, 0.18, clamp(u.weather.x, 0.0, 1.0)) + select(0.0, 0.035, high);
+    var density = smoothstep(threshold, threshold + 0.20, field);
+    // A true overcast deck closes the holes instead of showing blue sky through
+    // the middle of a tempest. Ordinary cloudy weather still has broken edges.
+    let deck = smoothstep(0.87, 1.0, u.weather.x) * select(0.985, 0.80, high);
+    density = mix(density, max(density, deck), deck);
+    let thickness = smoothstep(threshold + 0.025, threshold + 0.30, field);
     let light_offset = normalize(u.light.xz + vec2<f32>(0.001)) * 0.25;
     let neighbor = noise((p + warp + light_offset) * 1.05);
     let facing = clamp((field - neighbor) * 2.8 + 0.5, 0.0, 1.0);
-    return vec3<f32>(density * horizon_fade, thickness, facing);
+    return vec3<f32>(density, thickness, facing);
+}
+
+fn weather_cloud_ray(ray: vec3<f32>, high: bool) -> vec3<f32> {
+    let height = weather_cloud_base(high) - u.camera.y;
+    if ray.y <= 0.008 || height <= 0.0 { return vec3<f32>(0.0); }
+    let intersection = u.camera.xz + ray.xz * (height / ray.y);
+    let cloud = weather_cloud_field(intersection, high);
+    return vec3<f32>(cloud.x * smoothstep(0.008, 0.075, ray.y), cloud.yz);
+}
+
+// Palette-space composition, shared by sky_radiance and optional cheap water
+// fallbacks. sky_radiance performs the final conversion to linear HDR once.
+fn shared_sky_weather(ray: vec3<f32>, base_color: vec3<f32>) -> vec3<f32> {
+    if ray.y <= 0.0 { return base_color; }
+    let day = daylight();
+    let severity = clamp(u.weather.y * 0.60 + u.weather.w * 0.40, 0.0, 1.0);
+    let overcast = smoothstep(0.64, 1.0, u.weather.x);
+    let high = weather_cloud_ray(ray, true);
+    let high_color = mix(vec3<f32>(0.045, 0.070, 0.12), vec3<f32>(0.73, 0.76, 0.78), day);
+    var color = mix(base_color, high_color, high.x * mix(0.27, 0.45, overcast));
+    let low = weather_cloud_ray(ray, false);
+    let alignment = max(dot(ray, normalize(u.light.xyz)), 0.0);
+    let edge_light = pow(alignment, 12.0);
+    let lit_day = mix(vec3<f32>(0.90, 0.58, 0.34), vec3<f32>(0.86, 0.87, 0.82), smoothstep(0.04, 0.55, solar_elevation()));
+    let cloud_lit = mix(vec3<f32>(0.085, 0.13, 0.215), lit_day, day);
+    let shade_day = mix(vec3<f32>(0.34, 0.43, 0.51), vec3<f32>(0.17, 0.215, 0.27), severity);
+    let cloud_shade = mix(vec3<f32>(0.018, 0.031, 0.057), shade_day, day);
+    let shading = clamp(low.y * 0.84 + (1.0 - low.z) * 0.16 + severity * 0.13, 0.0, 1.0);
+    var cloud_color = mix(cloud_lit, cloud_shade, shading);
+    let silver = edge_light * (1.0 - smoothstep(0.15, 0.80, low.y)) * u.direct.w;
+    cloud_color += u.direct.rgb * silver * mix(0.30, 0.18, day) * (1.0 - overcast * 0.75);
+    cloud_color = mix(cloud_color, vec3<f32>(0.86, 0.40, 0.20), twilight() * edge_light * (1.0 - low.y) * (1.0 - overcast) * 0.55);
+    // Snow scatters soft neutral light. Storm flashes illuminate the underside
+    // coherently with root's surface light, not the sun/moon texture itself.
+    cloud_color = mix(cloud_color, mix(vec3<f32>(0.12, 0.15, 0.21), vec3<f32>(0.58, 0.64, 0.68), day), u.weather.z * 0.34);
+    cloud_color += vec3<f32>(0.55, 0.65, 0.84) * u.storm.w * (0.35 + low.y * 0.65);
+    color = mix(color, cloud_color, low.x * mix(0.94, 0.998, overcast));
+    return color;
+}
+
+fn weather_sky_transmission(ray: vec3<f32>) -> f32 {
+    let overcast = smoothstep(0.64, 1.0, u.weather.x);
+    let high = weather_cloud_ray(ray, true);
+    let low = weather_cloud_ray(ray, false);
+    return (1.0 - high.x * mix(0.27, 0.45, overcast))
+        * (1.0 - low.x * mix(0.94, 0.998, overcast));
 }
 
 fn star_plane(direction: vec3<f32>) -> vec2<f32> {
@@ -588,7 +780,7 @@ fn night_heavens(ray: vec3<f32>, aa: f32) -> vec3<f32> {
     let band = exp(-band_distance * band_distance * 145.0);
     let filaments = fbm(direction.xz * 6.0 + direction.y * vec2<f32>(-3.0, 7.0));
     let rifts = noise(direction.xz * 19.0 + direction.y * vec2<f32>(7.0, -13.0));
-    let galaxy = vec3<f32>(0.036, 0.042, 0.077) * band * (0.23 + filaments * 0.95) * (0.55 + rifts * 0.45);
+    let galaxy = vec3<f32>(0.065, 0.078, 0.14) * band * (0.23 + filaments * 0.95) * (0.55 + rifts * 0.45);
     // Seven clustered navigational stars form the Keeper's Crown; no drawn
     // connecting lines. Each is a true angular disc, not a screen-space icon.
     let crown = array<vec3<f32>, 7>(
@@ -648,17 +840,85 @@ fn moon_disc(ray: vec3<f32>, body: vec4<f32>, copper: f32, aa: f32) -> vec4<f32>
     return vec4<f32>(color, alpha);
 }
 
-@fragment fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
-    let ray = sky_ray(v.uv);
-    let aa = max(length(dpdx(ray)), length(dpdy(ray)));
-    let day = daylight();
+// Derivative-free: water may call this from its material branch. Internal
+// dimensions live in the existing spare settings.z/w, avoiding another uniform.
+// Sparse world-anchored forks. The 11-second event id is exactly the window used
+// by weather.rs::lightning. storm.w carries both pulse envelopes; geometry never
+// re-randomizes between the leading flash and its afterstroke.
+fn lightning_segment(ray: vec3<f32>, world_a: vec3<f32>, world_b: vec3<f32>, aa: f32, thickness: f32) -> vec2<f32> {
+    let a = normalize(world_a - u.camera.xyz);
+    let b = normalize(world_b - u.camera.xyz);
+    let edge = b - a;
+    let along = clamp(dot(ray - a, edge) / max(dot(edge, edge), 0.0000001), 0.0, 1.0);
+    let distance = length(ray - normalize(mix(a, b, along)));
+    let width = thickness / max(length(mix(world_a, world_b, along) - u.camera.xyz), 1000.0);
+    let core = 1.0 - smoothstep(width, width + aa * 1.1, distance);
+    let halo_width = max(width * 10.0, aa * 2.3);
+    let halo = exp(-distance * distance / (halo_width * halo_width));
+    return vec2<f32>(core, halo);
+}
+
+fn lightning_radiance(ray: vec3<f32>, aa: f32) -> vec3<f32> {
+    if u.storm.w <= 0.0001 { return vec3<f32>(0.0); }
+    let event = floor(u.surface.w / 11.0);
+    let cell_size = 14000.0;
+    let local_cell = floor(u.camera.xz / cell_size);
+    let bolt_top = weather_cloud_base(false) - 60.0;
+    var emission = vec2<f32>(0.0);
+    // Nine bounded candidate cells let the same absolute bolt remain visible
+    // across a storm-cell boundary. Distances and a tight angular cap skip all
+    // segment work for almost every pixel, even during the brief flash.
+    for (var dz = -1; dz <= 1; dz += 1) {
+        for (var dx = -1; dx <= 1; dx += 1) {
+            let cell = local_cell + vec2<f32>(f32(dx), f32(dz));
+            let key = cell + vec2<f32>(event * 3.17, event * -5.71);
+            if hash21(key + vec2<f32>(8.7, 31.9)) < 0.35 { continue; }
+            let offset = vec2<f32>(hash21(key + vec2<f32>(13.1, 5.8)), hash21(key + vec2<f32>(-3.1, 19.4)));
+            let anchor = (cell + vec2<f32>(0.5)) * cell_size + (offset - vec2<f32>(0.5)) * 10000.0;
+            let distance = length(anchor - u.camera.xz);
+            let visibility = smoothstep(2800.0, 4400.0, distance) * (1.0 - smoothstep(17500.0, 20000.0, distance));
+            if visibility <= 0.0 { continue; }
+            let center = normalize(vec3<f32>(anchor.x, bolt_top * 0.5, anchor.y) - u.camera.xyz);
+            let cap_radius = 1800.0 / max(distance, 2800.0);
+            if length(ray - center) > cap_radius + aa * 5.0 { continue; }
+            let side = normalize(vec2<f32>(offset.y - 0.5, 0.35 + offset.x));
+            var previous = vec3<f32>(anchor.x, bolt_top, anchor.y);
+            var branch_a = previous;
+            var branch_b = previous;
+            for (var i = 1u; i <= 6u; i += 1u) {
+                let along = f32(i) / 6.0;
+                let jitter = vec2<f32>(hash21(key + vec2<f32>(f32(i) * 7.9, 9.1)), hash21(key + vec2<f32>(13.7, f32(i) * 11.3))) - vec2<f32>(0.5);
+                let p = anchor + jitter * (230.0 * sin(along * 3.14159265));
+                let point = vec3<f32>(p.x, bolt_top * (1.0 - along), p.y);
+                emission = max(emission, lightning_segment(ray, previous, point, aa, 2.2) * visibility);
+                if i == 2u { branch_a = point; }
+                if i == 3u { branch_b = point; }
+                previous = point;
+            }
+            let fork_a = branch_a + vec3<f32>(side.x * 340.0, -430.0, side.y * 340.0);
+            let tip_a = fork_a + vec3<f32>(side.x * 210.0, -580.0, side.y * 210.0);
+            let fork_b = branch_b - vec3<f32>(side.x * 310.0, 260.0, side.y * 310.0);
+            let tip_b = fork_b - vec3<f32>(side.x * 230.0, 430.0, side.y * 230.0);
+            emission = max(emission, lightning_segment(ray, branch_a, fork_a, aa, 1.3) * visibility * 0.70);
+            emission = max(emission, lightning_segment(ray, fork_a, tip_a, aa, 0.8) * visibility * 0.52);
+            emission = max(emission, lightning_segment(ray, branch_b, fork_b, aa, 1.1) * visibility * 0.65);
+            emission = max(emission, lightning_segment(ray, fork_b, tip_b, aa, 0.7) * visibility * 0.42);
+        }
+    }
+    // The sky pass is behind terrain depth: every branch disappears into the
+    // actual visible ridge/shore silhouette instead of ending above the ground.
+    return (vec3<f32>(0.78, 0.87, 1.0) * emission.x * 15.0
+        + vec3<f32>(0.25, 0.43, 0.82) * emission.y * 1.1) * u.storm.w;
+}
+
+fn sky_radiance(ray: vec3<f32>) -> vec3<f32> {
+    let render_height = select(720.0, u.settings.w, u.settings.w >= 120.0);
+    let aa = 1.453085 / render_height;
     var color = sky_gradient(ray);
     color += night_heavens(ray, aa);
 
-    // Solenne and both moons are painted before weather. Nothing shines through
-    // opaque lunar silhouettes or the substantial part of a cloud bank.
     let sun_distance = length(ray - u.solenne.xyz);
-    let sun_disk = (1.0 - smoothstep(0.0105 - aa, 0.0105 + aa, sun_distance))
+    let sun_disk = (1.0 - smoothstep(max(0.0105 - aa, 0.0), 0.0105 + aa, sun_distance))
         * smoothstep(-0.020, 0.010, ray.y);
     let sun_color = mix(vec3<f32>(1.0, 0.48, 0.14), vec3<f32>(1.0, 0.96, 0.78), smoothstep(0.02, 0.50, solar_elevation()));
     color = mix(color, sun_color, sun_disk);
@@ -666,32 +926,18 @@ fn moon_disc(ray: vec3<f32>, body: vec4<f32>, copper: f32, aa: f32) -> vec4<f32>
     color = mix(color, aster.rgb, aster.a);
     let vey = moon_disc(ray, u.vey, 1.0, aa);
     color = mix(color, vey.rgb, vey.a);
-
-    if ray.y > 0.0 {
-        let t = u.params.x;
-        let high = cloud_layer(ray, 5200.0, 0.00029, vec2<f32>(t * 0.00055 + 21.0, -t * 0.00022), 0.535);
-        let high_color = mix(vec3<f32>(0.055, 0.080, 0.13), vec3<f32>(0.72, 0.76, 0.77), day);
-        color = mix(color, high_color, high.x * 0.29);
-
-        let low = cloud_layer(ray, 2800.0, 0.00048, vec2<f32>(t * 0.00095, t * 0.00024), 0.515);
-        let alignment = max(dot(ray, normalize(u.light.xyz)), 0.0);
-        let edge_light = pow(alignment, 12.0);
-        let lit_day = mix(vec3<f32>(0.90, 0.58, 0.34), vec3<f32>(0.86, 0.87, 0.80), smoothstep(0.04, 0.55, solar_elevation()));
-        let cloud_lit = mix(vec3<f32>(0.10, 0.145, 0.235), lit_day, day);
-        let cloud_shade = mix(vec3<f32>(0.025, 0.041, 0.075), vec3<f32>(0.34, 0.43, 0.51), day);
-        let shading = clamp(low.y * 0.86 + (1.0 - low.z) * 0.15, 0.0, 1.0);
-        var cloud_color = mix(cloud_lit, cloud_shade, shading);
-        let silver = edge_light * (1.0 - smoothstep(0.15, 0.80, low.y)) * u.direct.w;
-        cloud_color += u.direct.rgb * silver * mix(0.32, 0.19, day);
-        // Low sunlight paints cloud rims amber; their undersides keep a cool hue.
-        cloud_color = mix(cloud_color, vec3<f32>(0.86, 0.40, 0.20), twilight() * edge_light * (1.0 - low.y) * 0.55);
-        color = mix(color, cloud_color, low.x * 0.94);
+    color = shared_sky_weather(ray, color);
+    var radiance = pow(max(color, vec3<f32>(0.0)), vec3<f32>(2.2));
+    // Preserve true bright sunlight until the HDR tone map/Bloom stage. Stars
+    // remain quiet. The extra radiance is occluded by both moons and the same
+    // clouds used for the ordinary sky, rather than leaking through an overcast.
+    if sun_disk > 0.0 {
+        let transmission = weather_sky_transmission(ray) * (1.0 - aster.a) * (1.0 - vey.a);
+        radiance += pow(sun_color, vec3<f32>(2.2)) * sun_disk * transmission * 7.0;
     }
+    return radiance + lightning_radiance(ray, aa);
+}
 
-    let dither = bayer(v.clip.xy) * 0.45;
-    // More night steps retain dim nebulae and moon phase detail without banding;
-    // the screen's final CRT/ASCII stage still controls the retro presentation.
-    let levels = mix(160.0, 96.0, day);
-    color = floor(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)) * levels + dither) / levels;
-    return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
+@fragment fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(sky_radiance(sky_ray(v.uv)), 1.0);
 }

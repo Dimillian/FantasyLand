@@ -8,11 +8,11 @@ struct Out { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 fn sample_at(uv: vec2<f32>) -> vec3<f32> { return textureSampleLevel(source, linear_sampler, uv, 0.).rgb; }
 fn highlight(uv: vec2<f32>) -> vec3<f32> {
-    // Scene colors are display-referred. Extract and blur light in linear space.
-    let color = pow(max(sample_at(uv), vec3<f32>(0.)), vec3<f32>(2.2));
+    // The scene is already linear HDR: retain radiance above display white.
+    let color = max(sample_at(uv), vec3<f32>(0.));
     let brightness = max(color.r, max(color.g, color.b));
-    let threshold = 0.32;
-    let knee = 0.13;
+    let threshold = 0.42;
+    let knee = 0.18;
     let soft = clamp(brightness - threshold + knee, 0., knee * 2.);
     let contribution = max(brightness - threshold, soft * soft / (4. * knee));
     return color * contribution / max(brightness, 0.0001);

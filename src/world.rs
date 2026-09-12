@@ -246,8 +246,23 @@ impl World {
         }
         self.hydrology.water_edge(x, z, raw)
     }
+    /// Downstream velocity for water shading, in approximate metres/second.
+    /// Retained lakes and ocean are still water driven by local weather instead.
+    /// Real channel grade controls whitewater; no speed comes from visual noise.
     pub fn water_flow(&self, x: f32, z: f32) -> [f32; 2] {
-        self.river(x, z).tangent
+        if self.coast_info(x, z).landmass_id.is_none() || self.lake_at(x, z).is_some() {
+            return [0., 0.];
+        }
+        let hit = self.river(x, z);
+        if hit.segment == u32::MAX || hit.distance > hit.width * 2.1 {
+            return [0., 0.];
+        }
+        let segment = &self.hydrology.segments[hit.segment as usize];
+        let length = distance2(segment.a, segment.b).sqrt().max(0.1);
+        let grade = ((segment.level_a - segment.level_b) / length).max(0.);
+        let speed =
+            0.40 + smooth(0.008, 0.28, grade) * 3.80 + smooth(80., 2800., segment.flow) * 0.30;
+        [hit.tangent[0] * speed, hit.tangent[1] * speed]
     }
     pub fn hydrology_stats(&self) -> HydrologyStats {
         self.hydrology.stats.clone()
@@ -1285,6 +1300,104 @@ mod terrain_character_regressions {
         eprintln!(
             "bend bank checks {considered}, lower inner shelves {lower}, mean difference {}m",
             difference / considered as f32
+        );
+    }
+}
+
+#[cfg(test)]
+mod water_profile_regression {
+    use super::*;
+    use crate::geometry::{terrain_surface_height_lod, water_chunk, CHUNK_SIZE};
+
+    #[test]
+    fn retained_lakes_and_ocean_are_still_but_rivers_follow_their_receiver() {
+        let world = World::new(1337);
+        assert!(!world.lakes().is_empty());
+        for lake in world.lakes() {
+            assert_eq!(world.water_flow(lake.center[0], lake.center[1]), [0., 0.]);
+        }
+        assert_eq!(world.water_flow(190_000., 190_000.), [0., 0.]);
+        let mut currents = 0;
+        // Deterministic, bounded coverage of actual downstream graph segments.
+        for segment in world.hydrology.segments.iter().step_by(137).take(128) {
+            let p = [
+                (segment.a[0] + segment.b[0]) * 0.5,
+                (segment.a[1] + segment.b[1]) * 0.5,
+            ];
+            let v = world.water_flow(p[0], p[1]);
+            let speed = v[0].hypot(v[1]);
+            assert!(speed.is_finite() && speed <= 4.501);
+            if speed < 0.01 {
+                continue;
+            }
+            let hit = world.river(p[0], p[1]);
+            let receiver = &world.hydrology.segments[hit.segment as usize];
+            assert!(receiver.level_a >= receiver.level_b);
+            assert!(
+                v[0] * (receiver.b[0] - receiver.a[0]) + v[1] * (receiver.b[1] - receiver.a[1])
+                    > 0.
+            );
+            currents += 1;
+        }
+        assert!(
+            currents >= 20,
+            "too few actual channel currents: {currents}"
+        );
+    }
+
+    #[test]
+    fn cascade_fans_stay_over_real_ground_and_keep_bounded_detail() {
+        let world = World::new(1337);
+        // Real steep reaches with different elevation/geological settings. Only
+        // three 192m chunks are built; no unbounded terrain scan in this test.
+        let centers = [
+            [33500.633f32, 31209.996],
+            [42074.156, 15793.199],
+            [-46014.496, 63010.008],
+        ];
+        let mut wet_chunks = 0;
+        for p in centers {
+            let cx = (p[0] / CHUNK_SIZE).floor() as i32;
+            let cz = (p[1] / CHUNK_SIZE).floor() as i32;
+            let mesh = water_chunk(&world, cx, cz, 0);
+            let mut foam_vertices = 0;
+            for v in &mesh.vertices {
+                let speed = v.color[0].hypot(v.color[1]);
+                assert!(v
+                    .position
+                    .iter()
+                    .chain(v.normal.iter())
+                    .chain(v.color.iter())
+                    .all(|x| x.is_finite()));
+                let norm = v.normal.iter().map(|x| x * x).sum::<f32>();
+                assert!((norm - 1.).abs() < 0.002 && v.normal[1] > 0.);
+                assert_eq!(v.material, 4.);
+                if speed <= 5.5 {
+                    assert!(
+                        speed <= 4.501,
+                        "ordinary water must carry physical velocity"
+                    );
+                    continue;
+                }
+                foam_vertices += 1;
+                assert!(speed <= 8.001 && v.color[2] < -1.);
+                let floor = terrain_surface_height_lod(&world, v.position[0], v.position[2], 0);
+                assert!(
+                    v.position[1] > floor,
+                    "cascade fan penetrates its exact rendered floor"
+                );
+            }
+            assert!(foam_vertices <= 48 * 9 && foam_vertices % 9 == 0);
+            wet_chunks += usize::from(foam_vertices > 0);
+            let far = water_chunk(&world, cx, cz, 2);
+            assert!(far
+                .vertices
+                .iter()
+                .all(|v| v.color[0].hypot(v.color[1]) <= 4.501));
+        }
+        assert!(
+            wet_chunks >= 2,
+            "lost supported cascade geometry at actual steep reaches"
         );
     }
 }
