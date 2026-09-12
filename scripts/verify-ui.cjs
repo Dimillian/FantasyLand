@@ -68,7 +68,7 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=water-3');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=materials-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
@@ -390,6 +390,21 @@ async function main(){
   await verifyWeatherSettings();
   await verifyLandscapeDestinations();
   await verifySkyAndWalkControls();
+  run(`var benchmarkCalls=[];game={...fakeGame,face:(...v)=>benchmarkCalls.push(['face',...v]),teleport:(...v)=>benchmarkCalls.push(['teleport',...v]),return_to_spawn:()=>benchmarkCalls.push(['spawn']),set_render_resolution:v=>benchmarkCalls.push(['resolution',v]),state:()=>({x:10,z:20,yaw:1,pitch:.1,seed:1337}),is_ready:()=>true};state=game.state();renderResolution=540;beginBenchmark(false);`);
+  assert.equal(run('benchmark.height'),420);
+  document.hidden=true;document.fire('visibilitychange');
+  assert.equal(run('benchmark'),null);
+  assert.equal(run(`benchmarkCalls.filter(c=>c[0]==='resolution').at(-1)[1]`),540);
+  document.hidden=false;run('beginBenchmark(true);');key('Escape');
+  assert.equal(run('benchmark'),null);
+  assert.deepEqual(JSON.parse(run(`JSON.stringify(benchmarkCalls.filter(c=>c[0]==='teleport').at(-1))`)),['teleport',10,20]);
+  assert.equal(ids['benchmark-start'].disabled,false);assert.equal(ids['benchmark-walk'].disabled,false);
+  document.hidden=true;
+  run('var hiddenTicks=0;game={...game,tick:()=>hiddenTicks++};renderFrame(1000);');
+  assert.equal(run('hiddenTicks'),0,'Hidden previews must submit no engine/GPU frames.');
+  assert.equal(run('lastFrame'),0,'Resume must not integrate the hidden time interval.');
+  document.hidden=false;
+  console.log('PASS: browser benchmark cancellation on hidden tab/Escape restores explicit resolution and original walk-test location.');
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

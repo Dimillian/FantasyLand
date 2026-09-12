@@ -1,4 +1,4 @@
-// Procedural low-poly pigments and atmosphere. No authored surface textures.
+// Procedural pixel materials and atmosphere. Texture library generated in Rust.
 // params = elapsed seconds, camera yaw, camera pitch, hour of day.
 // camera.w = viewport aspect; settings = near chunk radius, grass fade metres, 0, 0.
 // distant = canopy start metres, canopy end metres, transition width metres, 0.
@@ -32,14 +32,17 @@ struct Globals {
     shelter_matrix: mat4x4<f32>,
     shelter_origin: vec4<f32>,
     shelter_params: vec4<f32>,
+    hearths: array<vec4<f32>,8>,
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    @location(1) normal: vec4<f32>,
     @location(2) color: vec3<f32>,
     @location(3) material: f32,
+    @location(4) uv: vec2<f32>,
+    @location(5) texture: f32,
 };
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -47,6 +50,8 @@ struct VertexOut {
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
     @location(3) @interpolate(flat) material: f32,
+    @location(4) uv: vec2<f32>,
+    @location(5) @interpolate(flat) texture: f32,
 };
 
 fn hash21(p: vec2<f32>) -> f32 {
@@ -133,8 +138,10 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
 fn vegetation_wind(world: vec3<f32>, time: f32, strength: f32) -> vec2<f32> {
     let direction = normalize(u.storm.xy + vec2<f32>(0.001,0.0));
     let across = vec2<f32>(-direction.y,direction.x);
-    let wave = time * 0.70 - dot(world.xz, direction) * 0.026;
-    let cross_wave = time * 0.39 + dot(world.xz, across) * 0.019;
+    // Weather rotates displacement, never the absolute-coordinate phase field.
+    // Otherwise a small wind turn becomes a large phase jump 60km from origin.
+    let wave = time * 0.70 - dot(world.xz, vec2<f32>(0.82,0.57)) * 0.026;
+    let cross_wave = time * 0.39 + dot(world.xz, vec2<f32>(-0.57,0.82)) * 0.019;
     let gust = 0.53 + sin(wave) * 0.27 + sin(cross_wave) * 0.16;
     let flutter = sin(time * 1.9 + dot(world.xz, vec2<f32>(0.31, 0.23))) * 0.08;
     return (direction * (gust + flutter) + across * sin(cross_wave) * 0.12)
@@ -157,7 +164,13 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
         p.x += bend.x;
         p.z += bend.y;
     }
-    var surface_normal = v.normal;
+    if v.material > 9.5 && v.material < 10.5 {
+        let tip = v.uv.y*v.uv.y;
+        p.x += sin(u.params.x*5.7+v.position.z)*0.13*tip;
+        p.z += cos(u.params.x*4.3+v.position.x)*0.10*tip;
+        p.y += sin(u.params.x*7.1+v.position.x)*0.08*tip;
+    }
+    var surface_normal = v.normal.xyz;
     if ((v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) && v.color.z > 0.5 {
         // Broad geometric sea swells survive coarse terrain tessellation. Near
         // shore they converge to the exact clipped coastline; fine ripples are
@@ -184,6 +197,8 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
     o.normal = surface_normal;
     o.color = v.color;
     o.material = v.material;
+    o.uv = v.uv;
+    o.texture = v.texture;
     return o;
 }
 
@@ -277,10 +292,17 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     slope += flow * mix(cos(phase_c_b), cos(phase_c_a), flow_weight) * (rapids * 0.075 + wind * 0.009) * fine;
     slope += water_rain_slope(p, time, rain, rain_detail) * (1.0 - sim_detail * 0.75);
     slope += local.slope * (1.0 - smoothstep(0.7, 2.4, footprint));
+    let texture_uv_a = moving_a*0.19 + vec2<f32>(time*0.014,-time*0.009);
+    let texture_uv_b = moving_b*0.19 + vec2<f32>(time*0.014,-time*0.009);
+    let water_lod=clamp(log2(max(footprint*24.32,1.0)),0.0,7.0);
+    let micro_a=textureSampleLevel(material_surface,material_sampler,texture_uv_a,14,water_lod);
+    let micro_b=textureSampleLevel(material_surface,material_sampler,texture_uv_b,14,water_lod);
+    let micro=mix(micro_b,micro_a,flow_weight);
+    slope += (micro.xy*2.0-vec2<f32>(1.0))*0.024*fine;
     let normal = normalize(normalize(surface_normal) - vec3<f32>(slope.x, 0.0, slope.y));
     let view = normalize(u.camera.xyz - world);
     let facing = clamp(dot(normal, view), 0.0, 1.0);
-    let roughness = clamp(0.035 + wind * mix(0.21, 0.31, ocean) + rain * 0.10 + rapids * 0.27, 0.035, 0.60);
+    let roughness = clamp(0.035 + micro.b*0.025 + wind * mix(0.21, 0.31, ocean) + rain * 0.10 + rapids * 0.27, 0.035, 0.60);
     let fresnel = 0.0204 + 0.9796 * pow(1.0 - facing, 5.0);
 
     // Authored pigment is converted once to linear light. Clear shallows expose
@@ -355,6 +377,7 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     // screen-space shoreline that leaks across the terrain or floating props.
     let contact = (1.0 - smoothstep(0.018, 0.20, depth)) * has_depth;
     color *= 1.0 - contact * 0.12;
+    color += hearth_illumination(world,normal,view,vec3<f32>(0.0),roughness,0.0,false);
     return max(color, vec3<f32>(0.0));
 }
 
@@ -455,53 +478,14 @@ fn surface_communities(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, mat
     return mix(base, color, detail);
 }
 
-// Small world-anchored pigment blocks suggest authored pixel materials without
-// textures. Derivative fading removes subpixel detail rather than making it swim.
+// Broad world-anchored pigment communities vary the shared pixel textures.
+// Derivative fading removes subpixel detail rather than making it swim.
 fn surface_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, material: f32, footprint: f32, distance: f32) -> vec3<f32> {
     var substrate = base;
     if material < 0.5 || (material > 6.5 && material < 7.5) {
         substrate = terrain_pigment(base, world, normal, footprint);
     }
-    substrate = surface_communities(substrate, world, normal, material, footprint, distance);
-    let detail = (1.0 - smoothstep(0.12, 0.65, footprint)) * (1.0 - smoothstep(90.0, 230.0, distance));
-    if detail <= 0.001 { return substrate; }
-    let p = floor(world * 8.0) / 8.0;
-    var color = substrate;
-    if material > 2.5 && material < 3.5 {
-        // Long broken fibers follow upright bark; short knots stop a striped look.
-        let face = surface_plane(p, normal);
-        let fibers = noise(vec2<f32>(face.x * 11.0, face.y * 0.48));
-        let breaks = noise(face * vec2<f32>(2.2, 1.5));
-        let fissure = smoothstep(0.54, 0.76, fibers) * (0.35 + breaks * 0.65);
-        let fleck = hash21(floor(face * vec2<f32>(5.0, 8.0))) - 0.5;
-        color *= 1.06 - fissure * 0.34 + fleck * 0.12;
-        let weathering = smoothstep(0.60, 0.82, noise(face * 0.75)) * max(normal.y, 0.0);
-        color = mix(color, vec3<f32>(0.48, 0.46, 0.36), weathering * 0.18);
-    } else if material > 1.5 && material < 2.5 {
-        let face = surface_plane(p, normal);
-        let mineral = hash21(floor(p.xz * 7.0) + vec2<f32>(floor(p.y * 8.0), 0.0));
-        let warm_stone = clamp((base.r - base.b) * 5.0, 0.0, 1.0);
-        let stratum = sin(p.y * 9.0 + noise(p.xz * 0.5) * 2.0);
-        color *= 0.95 + mineral * 0.10 + stratum * warm_stone * 0.045;
-        let lichen = smoothstep(0.58, 0.77, noise(face * 2.4)) * (0.25 + max(normal.y, 0.0) * 0.75);
-        color = mix(color, vec3<f32>(0.58, 0.59, 0.36), lichen * 0.14);
-        let moss = smoothstep(0.57, 0.77, noise(p.xz * 0.65 + vec2<f32>(9.1, 2.4))) * smoothstep(0.20, 0.80, normal.y);
-        // Darker silicate rock takes a little moss; pale chalk stays chalk.
-        color = mix(color, vec3<f32>(0.24, 0.34, 0.16), moss * (1.0 - smoothstep(0.55, 0.76, base.r)) * 0.20);
-    } else if material < 0.5 || (material > 6.5 && material < 7.5) {
-        let grain = hash21(floor(p.xz * 6.0));
-        let grass = smoothstep(0.015, 0.12, base.g - base.r);
-        let shade_floor = 1.0 - smoothstep(0.31, 0.45, base.g);
-        let soil = noise(p.xz * 1.7);
-        color *= 0.9825 + grain * 0.035;
-        // Sandy gravel flecks and low-contrast needles/leaves share a restrained
-        // scale; the biome palette, not noisy triangles, carries the broad forms.
-        let gravel = step(0.90, grain) * (1.0 - grass);
-        color = mix(color, base * vec3<f32>(0.80, 0.83, 0.77), gravel * 0.35);
-        let litter = smoothstep(0.63, 0.79, soil) * grass * (0.10 + shade_floor * 0.36);
-        color = mix(color, vec3<f32>(0.28, 0.235, 0.13), litter);
-    }
-    return mix(substrate, color, detail);
+    return surface_communities(substrate, world, normal, material, footprint, distance);
 }
 
 fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32) -> vec3<f32> {
@@ -513,19 +497,19 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     let sandstone = clamp(u.climate.z, 0.0, 1.0) * regional;
     let sunlight = u.direct.rgb * mix(vec3<f32>(1.0), vec3<f32>(1.04, 0.97, 0.87), sandstone * daylight() * 0.48);
     var ambient = mix(vec3<f32>(0.42, 0.43, 0.35), vec3<f32>(0.60, 0.65, 0.68), up);
-    var direct = floor(diffuse * 5.0 + 0.5) / 5.0 * 0.43;
+    var direct = diffuse * 0.86;
     if material < 0.5 || (material > 6.5 && material < 7.5) {
         // Continuous terrain normals remain readable without hard light bands;
         // rock and architecture retain the faceted quantized response above.
         ambient = mix(vec3<f32>(0.49, 0.50, 0.42), vec3<f32>(0.66, 0.68, 0.60), up);
-        direct = diffuse * 0.38;
+        direct = diffuse * 0.82;
     } else if (material > 0.5 && material < 1.5) || (material > 8.5 && material < 9.5) {
         // Distant canopy keeps the same light response as its nearby trees.
         ambient = mix(vec3<f32>(0.30, 0.38, 0.27), vec3<f32>(0.56, 0.62, 0.47), up);
-        direct = diffuse * 0.44 + max(dot(-normal, sun), 0.0) * 0.12;
+        direct = diffuse * 0.74 + max(dot(-normal, sun), 0.0) * 0.38;
     } else if material > 5.5 && material < 6.5 {
         ambient = mix(vec3<f32>(0.52, 0.58, 0.46), vec3<f32>(0.65, 0.70, 0.56), up);
-        direct = abs(dot(normal, sun)) * 0.34;
+        direct = abs(dot(normal, sun)) * 0.68;
     }
     // Shade cools without becoming black. Only the sun term is shadowed;
     // retained sky illumination keeps forest paths and plant silhouettes clear.
@@ -541,7 +525,7 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     let pigment_luma = dot(base, vec3<f32>(0.2126, 0.7152, 0.0722));
     let nocturne = (1.0 - daylight()) * 0.72;
     let reflectance = mix(base, vec3<f32>(pigment_luma), nocturne);
-    ambient *= (0.58 + sky_access * 0.32) * (1.0 - u.weather.x * 0.16);
+    ambient *= (0.30 + sky_access * 0.38) * (1.0 - u.weather.x * 0.16);
     direct *= 1.30;
     let illumination = ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w;
     let albedo = pow(max(reflectance,vec3<f32>(0.0)),vec3<f32>(2.2));
@@ -596,12 +580,16 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     return result;
 }
 
-fn shade_surface(v: VertexOut) -> vec4<f32> {
+struct SurfaceGrad { world_x:vec3<f32>, world_y:vec3<f32>, uv_x:vec2<f32>, uv_y:vec2<f32> };
+fn surface_grad(v:VertexOut)->SurfaceGrad {
+    return SurfaceGrad(dpdx(v.world),dpdy(v.world),dpdx(v.uv),dpdy(v.uv));
+}
+fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     if u.reflection_params.z > 0.5 && (v.world.y < u.reflection_params.x - 0.12
         || (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
     let distance = length(v.world - u.camera.xyz);
-    let water_footprint = max(length(dpdx(v.world.xz)), length(dpdy(v.world.xz)));
-    let material_footprint = max(length(dpdx(v.world)), length(dpdy(v.world)));
+    let water_footprint = max(length(grad.world_x.xz), length(grad.world_y.xz));
+    let material_footprint = max(length(grad.world_x), length(grad.world_y));
     if v.material > 6.5 && v.material < 9.5 {
         // Near terrain replaces far patches exactly on the streamed chunk mask.
         let tile_delta = floor(v.world.xz / 192.0) - floor(u.camera.xz / 192.0);
@@ -630,12 +618,20 @@ fn shade_surface(v: VertexOut) -> vec4<f32> {
         }
     }
 
-    let normal = normalize(v.normal);
+    if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
+        return vec4<f32>(atmospheric_color(water_color(v.world,distance,v.color,water_footprint,v.normal),v.world,distance),1.0);
+    }
+    let pixel = pixel_material(v, material_footprint,grad);
+    if pixel.alpha < 0.40 { discard; }
+    let normal = pixel.normal;
+    if v.material > 9.5 && v.material < 10.5 {
+        return vec4<f32>(atmospheric_color(flame_emission(pixel.pigment,pixel.emission,v.world),v.world,distance),1.0);
+    }
     var color: vec3<f32>;
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
         color = water_color(v.world, distance, v.color, water_footprint, v.normal);
     } else {
-        var pigment = surface_pigment(v.color, v.world, normal, v.material, material_footprint, distance);
+        var pigment = surface_pigment(pixel.pigment, v.world, normal, v.material, material_footprint, distance);
         let physical_sky = open_sky(v.world);
         let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
         let deposition = smoothstep(0.15,0.72,normal.y) * physical_sky;
@@ -645,14 +641,22 @@ fn shade_surface(v: VertexOut) -> vec4<f32> {
         pigment = mix(pigment, vec3<f32>(0.84,0.89,0.91),snow);
         let visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
         color = surface_lighting(pigment, normal, v.material, visibility, distance, sky_access);
-        // Small wet-rock and soil glints follow actual surface orientation. No
-        // global glossy overlay on grass or sheltered undersides.
-        if v.material < 0.5 || (v.material > 1.5 && v.material < 3.5) {
-            let view = normalize(u.camera.xyz - v.world);
-            let halfway = normalize(view + normalize(u.light.xyz));
-            let sheen = pow(max(dot(normal,halfway),0.0),mix(80.0,28.0,u.surface.x));
-            color += u.direct.rgb * sheen * u.surface.x * deposition * visibility * u.direct.w * (1.0-snow) * 0.35;
+        let wet = u.surface.x * deposition * (1.0-snow);
+        let roughness = mix(pixel.roughness,0.92,snow);
+        if distance < 450.0 {
+            color += material_highlight(pigment,normal,v.world,roughness,pixel.metal,wet,visibility);
         }
+        // Thin leaf transmission makes sunlit canopy tips glow without glowing in shade.
+        if v.texture >= 5.0 && v.texture < 10.0 {
+            let view = normalize(u.camera.xyz-v.world);
+            let forward_scatter = pow(max(dot(-view,normalize(u.light.xyz)),0.0),3.0);
+            color += pow(pigment,vec3<f32>(2.2))*u.direct.rgb*u.direct.w*visibility
+                * (0.12+forward_scatter*0.52);
+        }
+        color += hearth_illumination(v.world,normal,normalize(u.camera.xyz-v.world),
+            pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2)),mix(roughness,0.2,wet),pixel.metal,
+            (v.material>0.5 && v.material<1.5) || (v.material>5.5 && v.material<6.5));
+
     }
 
     color = atmospheric_color(max(color,vec3<f32>(0.0)), v.world, distance);
@@ -662,15 +666,18 @@ fn shade_surface(v: VertexOut) -> vec4<f32> {
 }
 
 @fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
-    return shade_surface(v);
+    let grad=surface_grad(v);
+    return shade_surface(v,grad);
 }
 @fragment fn fs_land(v: VertexOut) -> @location(0) vec4<f32> {
+    let grad=surface_grad(v);
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) { discard; }
-    return shade_surface(v);
+    return shade_surface(v,grad);
 }
 @fragment fn fs_water(v: VertexOut) -> @location(0) vec4<f32> {
+    let grad=surface_grad(v);
     if !((v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
-    return shade_surface(v);
+    return shade_surface(v,grad);
 }
 
 struct SkyOut {
@@ -681,7 +688,7 @@ struct SkyOut {
 @vertex fn vs_sky(@builtin(vertex_index) index: u32) -> SkyOut {
     let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
     var o: SkyOut;
-    o.clip = vec4<f32>(positions[index], 0.99999, 1.0);
+    o.clip = vec4<f32>(positions[index], 1.0, 1.0);
     o.uv = positions[index] * 0.5 + 0.5;
     return o;
 }

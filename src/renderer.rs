@@ -1,6 +1,6 @@
 use crate::{
     cover::{CoverLayer, CoverStats},
-    geometry::{self, MeshData, Vertex, CHUNK_SIZE},
+    geometry::{self, MeshData, CHUNK_SIZE},
     horizon::{self, PATCH_SIZE},
     postprocess::PostProcess,
     shadow::{ShadowMap, SHADOW_RADIUS, SHADOW_SIZE},
@@ -41,6 +41,7 @@ struct Globals {
     shelter_matrix: [[f32; 4]; 4],
     shelter_origin: [f32; 4],
     shelter_params: [f32; 4],
+    hearths: [[f32; 4]; 8],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -51,10 +52,34 @@ struct GpuMesh {
 }
 struct Chunk {
     lod: u32,
+    // Props can survive one terrain update while their replacement is queued.
+    prop_lod: u32,
     prop_detail: u8,
     terrain: Option<GpuMesh>,
     props: Option<GpuMesh>,
     water: Option<GpuMesh>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChunkPhase {
+    Terrain,
+    Props,
+}
+#[derive(Clone, Copy)]
+struct ChunkJob {
+    x: i32,
+    z: i32,
+    lod: u32,
+    detail: u8,
+    phase: ChunkPhase,
+}
+fn chunk_phase(current: Option<(u32, u32, u8)>, lod: u32, detail: u8) -> Option<ChunkPhase> {
+    match current {
+        Some((terrain_lod, prop_lod, prop_detail)) if terrain_lod == lod => {
+            (prop_lod != lod || prop_detail != detail).then_some(ChunkPhase::Props)
+        }
+        _ => Some(ChunkPhase::Terrain),
+    }
 }
 
 struct ReflectionTarget {
@@ -105,14 +130,18 @@ impl ReflectionTarget {
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    gpu_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     world_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     water_sim: WaterSim,
+    materials: crate::materials::MaterialLibrary,
+    empty_group: wgpu::BindGroup,
     precipitation: crate::precipitation::PrecipitationMotion,
     sky_pipeline: wgpu::RenderPipeline,
     post: PostProcess,
+    rays: crate::rays::Rays,
     shadow: ShadowMap,
     shadows_enabled: bool,
     shelter: ShadowMap,
@@ -155,7 +184,7 @@ pub struct Renderer {
     capture: wgpu::Texture,
     capture_view: wgpu::TextureView,
     chunks: HashMap<(i32, i32), Chunk>,
-    pending: VecDeque<(i32, i32, u32, u8)>,
+    pending: VecDeque<ChunkJob>,
     center: Option<(i32, i32)>,
     horizon: HashMap<(i32, i32), GpuMesh>,
     horizon_pending: VecDeque<(i32, i32)>,
@@ -169,6 +198,7 @@ pub struct Renderer {
     climate: [f32; 4],
     air: [f32; 4],
     atmosphere_position: Option<Vec3>,
+    hearths: [[f32; 4]; 8],
     cover: CoverLayer,
     ground_cover_density: f32,
     cover_drawn_instances: u32,
@@ -239,6 +269,17 @@ impl Renderer {
             })
             .await
             .map_err(|e| e.to_string())?;
+        // WebGPU validation is asynchronous: surface the first failure instead
+        // of silently presenting a black frame while the simulation keeps running.
+        let gpu_error = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let errors = gpu_error.clone();
+        device.on_uncaptured_error(Box::new(move |error: wgpu::Error| {
+            if let Ok(mut slot) = errors.lock() {
+                if slot.is_none() {
+                    *slot = Some(error.to_string());
+                }
+            }
+        }));
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -264,7 +305,11 @@ impl Renderer {
                     "\n",
                     include_str!("environment.wgsl"),
                     "\n",
-                    include_str!("water_sampling.wgsl")
+                    include_str!("water_sampling.wgsl"),
+                    "\n",
+                    include_str!("materials.wgsl"),
+                    "\n",
+                    include_str!("fire_lighting.wgsl")
                 )
                 .into(),
             ),
@@ -275,8 +320,18 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let water_sim = WaterSim::new(&device);
-        let shadow = ShadowMap::new(&device);
-        let shelter = ShadowMap::with_size(&device, 512);
+        let materials = crate::materials::MaterialLibrary::new(&device, &queue);
+        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Unused slot"),
+            entries: &[],
+        });
+        let empty_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Unused slot"),
+            layout: &empty_layout,
+            entries: &[],
+        });
+        let shadow = ShadowMap::new(&device, &materials.layout, &empty_layout);
+        let shelter = ShadowMap::with_size(&device, 512, &materials.layout, &empty_layout);
         let reflection = ReflectionTarget::new(&device, 320, 180);
         let refraction_size = scene_dimensions(
             width,
@@ -397,11 +452,15 @@ impl Renderer {
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
-            bind_group_layouts: &[&uniform_layout, &water_sim.layout],
+            bind_group_layouts: &[
+                &uniform_layout,
+                &water_sim.layout,
+                &empty_layout,
+                &materials.layout,
+            ],
             push_constant_ranges: &[],
         });
-        let attributes =
-            wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32];
+        let attributes = crate::vertex::ATTRIBUTES;
         let surface_pipeline = |entry| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Flat shaded wilderness"),
@@ -411,7 +470,7 @@ impl Renderer {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        array_stride: std::mem::size_of::<crate::vertex::PackedVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attributes,
                     }],
@@ -467,7 +526,7 @@ impl Renderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -476,6 +535,13 @@ impl Renderer {
             cache: None,
         });
         let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1, 0);
+        let rays = crate::rays::Rays::new(
+            &device,
+            &depth_view,
+            &shadow.view,
+            &shadow.sampler,
+            [scene.width(), scene.height()],
+        );
         let post = PostProcess::new(
             &device,
             &scene_view,
@@ -487,6 +553,7 @@ impl Renderer {
             &device,
             &uniform_layout,
             &water_sim.layout,
+            &materials.layout,
             &shader,
             wgpu::TextureFormat::Rgba16Float,
         );
@@ -527,14 +594,18 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            gpu_error,
             surface,
             config,
             world_pipeline,
             water_pipeline,
             water_sim,
+            materials,
+            empty_group,
             precipitation: Default::default(),
             sky_pipeline,
             post,
+            rays,
             shadow,
             shadows_enabled: true,
             shelter,
@@ -591,6 +662,7 @@ impl Renderer {
             climate: [0.; 4],
             air: [0., 0.4, 0.5, 0.],
             atmosphere_position: None,
+            hearths: [[0.0; 4]; 8],
             cover,
             ground_cover_density: 4.0,
             cover_drawn_instances: 0,
@@ -642,7 +714,9 @@ impl Renderer {
         );
         let depth = make(
             wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             "World depth",
         );
         let sv = scene.create_view(&Default::default());
@@ -745,7 +819,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let v = t.create_view(&Default::default());
@@ -770,6 +846,13 @@ impl Renderer {
         self.post.resize(
             &self.device,
             &self.scene_view,
+            [self.scene.width(), self.scene.height()],
+        );
+        self.rays.resize(
+            &self.device,
+            &self.depth_view,
+            &self.shadow.view,
+            &self.shadow.sampler,
             [self.scene.width(), self.scene.height()],
         );
         self.resize_reflections();
@@ -800,6 +883,13 @@ impl Renderer {
         );
         self.post
             .resize(&self.device, &self.scene_view, self.render_resolution());
+        self.rays.resize(
+            &self.device,
+            &self.depth_view,
+            &self.shadow.view,
+            &self.shadow.sampler,
+            [self.scene.width(), self.scene.height()],
+        );
         self.resize_reflections();
     }
     pub fn set_reflections(&mut self, enabled: bool) {
@@ -901,6 +991,7 @@ impl Renderer {
     }
     pub fn clear_chunks(&mut self) {
         self.atmosphere_position = None;
+        self.hearths = [[0.0; 4]; 8];
         self.shelter_valid = false;
         self.reflection_valid = false;
         self.cover.clear();
@@ -927,22 +1018,23 @@ impl Renderer {
         // Wind and the most distant foliage must not disappear on frustum edges.
         bounds[0] -= Vec3::ONE;
         bounds[1] += Vec3::ONE;
+        let (vertices, indices) = crate::vertex::pack(&data.vertices, &data.indices);
         Some(GpuMesh {
             bounds,
-            bytes: (data.vertices.len() * std::mem::size_of::<Vertex>() + data.indices.len() * 4)
-                as u64,
+            bytes: (vertices.len() * std::mem::size_of::<crate::vertex::PackedVertex>()
+                + indices.len() * 4) as u64,
             vertices: self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Generated vertices"),
-                    contents: bytemuck::cast_slice(&data.vertices),
+                    contents: bytemuck::cast_slice(&vertices),
                     usage: wgpu::BufferUsages::VERTEX,
                 }),
             indices: self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Generated indices"),
-                    contents: bytemuck::cast_slice(&data.indices),
+                    contents: bytemuck::cast_slice(&indices),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
             count: data.indices.len() as u32,
@@ -1011,6 +1103,12 @@ impl Renderer {
         });
         if travel < 3.0 {
             return;
+        }
+        self.hearths = [[0.0; 4]; 8];
+        for (target, source) in self.hearths.iter_mut().zip(geometry::campfire_emitters(
+            world, position.x, position.z, 96.0,
+        )) {
+            *target = source;
         }
         let sample = world.natural_sample(position.x, position.z);
         let region = crate::regions::sample(world.seed, position.x, position.z, &sample);
@@ -1084,13 +1182,13 @@ impl Renderer {
         self.atmosphere_position = Some(position);
     }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
+        let clock = StreamClock::new();
         self.water_sim
             .update_world(&self.queue, world, position + Vec3::Y * 1.72);
         self.update_atmosphere(world, position);
         if self.weather_system.is_none() || self.weather_seed != world.seed {
             self.update_weather(world, position, 9.0, 0.0);
         }
-        let clock = StreamClock::new();
         let limit_ms = if force { 12.0 } else { 4.0 };
         self.prepare_horizon(position);
         self.cover.prepare(position);
@@ -1113,73 +1211,111 @@ impl Renderer {
                     }
                     let lod = terrain_lod(dist);
                     let detail = if dist < prop_radius { 1 } else { 0 };
-                    if self
+                    let current = self
                         .chunks
                         .get(&(x, z))
-                        .is_some_and(|c| c.lod == lod && c.prop_detail == detail)
-                    {
+                        .map(|c| (c.lod, c.prop_lod, c.prop_detail));
+                    let Some(phase) = chunk_phase(current, lod, detail) else {
                         continue;
-                    }
-                    requested.push((x, z, lod, detail, dist));
+                    };
+                    requested.push((
+                        ChunkJob {
+                            x,
+                            z,
+                            lod,
+                            detail,
+                            phase,
+                        },
+                        dist,
+                    ));
                 }
             }
-            requested.sort_by(|a, b| a.4.total_cmp(&b.4));
-            self.pending = requested
-                .into_iter()
-                .map(|(x, z, l, p, _)| (x, z, l, p))
-                .collect();
+            requested.sort_by(|a, b| a.1.total_cmp(&b.1));
+            // Rebuild the whole queue from actual mesh metadata: a turn back or
+            // quality change must not leave a stale props job marked complete.
+            self.pending = requested.into_iter().map(|(job, _)| job).collect();
         }
-        // A time budget supplements the job cap. No large grass mesh is baked
-        // inside these 192m chunks; small cover tiles are independent jobs.
+        // Terrain and props are separate queued phases. The first phase retains
+        // old props and yields, so a dense replacement cannot stack on the same
+        // walking frame as terrain/water generation and packing.
         let budget = if force { 9 } else { 2 };
-        for job in 0..budget {
-            if job > 0 && clock.elapsed_ms() >= limit_ms * 0.55 {
+        for job_index in 0..budget {
+            if clock.elapsed_ms() >= limit_ms * 0.55 && (!force || job_index > 0) {
                 break;
             }
-            let Some((x, z, lod, detail)) = self.pending.pop_front() else {
+            let Some(job) = self.pending.pop_front() else {
                 break;
             };
-            let previous = self.chunks.remove(&(x, z));
-            let (terrain, water) = if let Some(old) = previous.filter(|old| old.lod == lod) {
-                (old.terrain, old.water)
-            } else {
-                (
-                    self.upload(geometry::terrain_chunk(world, x, z, lod)),
-                    self.upload(geometry::water_chunk(world, x, z, lod)),
-                )
-            };
-            let props_mesh = if detail > 0 {
-                self.upload(geometry::props_chunk_at_lod(world, x, z, false, lod))
-            } else if lod <= 3 {
-                self.upload(geometry::distant_props_chunk_at_lod(world, x, z, lod))
-            } else {
-                None
-            };
-            self.chunks.insert(
-                (x, z),
-                Chunk {
-                    lod,
-                    prop_detail: detail,
-                    terrain,
-                    props: props_mesh,
-                    water,
-                },
-            );
+            let ChunkJob {
+                x,
+                z,
+                lod,
+                detail,
+                phase,
+            } = job;
+            match phase {
+                ChunkPhase::Terrain => {
+                    let terrain = self.upload(geometry::terrain_chunk(world, x, z, lod));
+                    let water = self.upload(geometry::water_chunk(world, x, z, lod));
+                    let previous = self.chunks.remove(&(x, z));
+                    let (props, prop_lod, prop_detail) = previous
+                        .map(|old| (old.props, old.prop_lod, old.prop_detail))
+                        .unwrap_or((None, u32::MAX, u8::MAX));
+                    self.chunks.insert(
+                        (x, z),
+                        Chunk {
+                            lod,
+                            prop_lod,
+                            prop_detail,
+                            terrain,
+                            props,
+                            water,
+                        },
+                    );
+                    self.pending.push_front(ChunkJob {
+                        phase: ChunkPhase::Props,
+                        ..job
+                    });
+                    // Even during warmup, props never run in the same call as
+                    // their terrain job. pending_count includes this next phase.
+                    break;
+                }
+                ChunkPhase::Props => {
+                    if !self.chunks.get(&(x, z)).is_some_and(|c| c.lod == lod) {
+                        // Defensive retry if the terrain was invalidated before
+                        // this phase. A new center normally rebuilds the queue.
+                        self.pending.push_front(ChunkJob {
+                            phase: ChunkPhase::Terrain,
+                            ..job
+                        });
+                        continue;
+                    }
+                    let props = if detail > 0 {
+                        self.upload(geometry::props_chunk_at_lod(world, x, z, false, lod))
+                    } else if lod <= 3 {
+                        self.upload(geometry::distant_props_chunk_at_lod(world, x, z, lod))
+                    } else {
+                        None
+                    };
+                    let chunk = self.chunks.get_mut(&(x, z)).unwrap();
+                    chunk.props = props;
+                    chunk.prop_lod = lod;
+                    chunk.prop_detail = detail;
+                }
+            }
         }
         // Alternate cover and horizon work so both progress during exploration.
-        // At least one small cover tile can progress even after a costly terrain
-        // job; subsequent work respects the shared frame budget.
-        for job in 0..if force { 16 } else { 8 } {
-            if job > 0 && clock.elapsed_ms() >= limit_ms {
+        // No extra cover job is forced after an expensive terrain/props phase.
+        // This budget includes water-patch and atmosphere updates above.
+        for _job in 0..if force { 16 } else { 8 } {
+            if clock.elapsed_ms() >= limit_ms {
                 break;
             }
             let mut progressed = false;
             if self.ground_cover_density > 0.0 {
                 progressed |= self.cover.build_next(world, &self.device);
             }
-            if clock.elapsed_ms() < limit_ms
-                || (self.horizon.is_empty() && self.canopies.is_empty())
-            {
+            if clock.elapsed_ms() < limit_ms {
                 // Neither distant terrain nor canopy may monopolize the budget.
                 progressed |= if self.canopy_turn {
                     self.build_canopy(world) || self.build_horizon(world)
@@ -1243,6 +1379,11 @@ impl Renderer {
         self.reflection_elapsed += dt;
     }
     pub fn render(&mut self, eye: Vec3, yaw: f32, pitch: f32, hour: f32) -> Result<(), String> {
+        if let Ok(mut error) = self.gpu_error.lock() {
+            if let Some(error) = error.take() {
+                return Err(error);
+            }
+        }
         let dir = Vec3::new(
             yaw.sin() * pitch.cos(),
             pitch.sin(),
@@ -1278,7 +1419,7 @@ impl Renderer {
             self.shelter_origin = eye;
             self.shelter_matrix =
                 self.shelter
-                    .update(&self.queue, eye, Vec3::Y, self.elapsed, wind, wind_dir);
+                    .update(&self.queue, eye, Vec3::Y, 0.0, 0.0, wind_dir);
             self.shelter_elapsed = 0.0;
             self.shelter_valid = true;
         }
@@ -1356,6 +1497,7 @@ impl Renderer {
                 0.0,
                 self.quality as f32,
             ],
+            hearths: self.hearths,
             shelter_matrix: self.shelter_matrix.to_cols_array_2d(),
             shelter_origin: self.shelter_origin.extend(1.0).to_array(),
             shelter_params: [
@@ -1428,6 +1570,9 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow.pipeline);
             pass.set_bind_group(0, &self.shadow.group, &[]);
+            pass.set_bind_group(1, &self.empty_group, &[]);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
             for chunk in self.chunks.values() {
                 for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
                     let nearest = eye.clamp(mesh.bounds[0], mesh.bounds[1]);
@@ -1460,6 +1605,9 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shelter.pipeline);
             pass.set_bind_group(0, &self.shelter.group, &[]);
+            pass.set_bind_group(1, &self.empty_group, &[]);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
             for chunk in self.chunks.values() {
                 for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
                     if !bounds_visible(&planes, mesh.bounds, eye) {
@@ -1499,8 +1647,8 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.reflected_group, &[]);
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
             for mesh in self
                 .horizon
@@ -1522,6 +1670,8 @@ impl Renderer {
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
                 self.reflection_draws += 1;
             }
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.draw(0..3, 0..1);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1553,41 +1703,45 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.uniform_group, &[]);
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
-            // Reject whole mesh bounds before vertex work. This includes side,
-            // vertical, near and far planes, rather than only the rear hemisphere.
-            for (mesh, is_canopy) in self
-                .horizon
+            // Draw nearer occluders first. A forest must not shade every distant
+            // canopy behind the same trunk before depth can reject those pixels.
+            let mut visible: Vec<_> = self
+                .chunks
                 .values()
-                .map(|m| (m, false))
-                .chain(self.canopies.values().flatten().map(|m| (m, true)))
-            {
-                let nearest = eye.clamp(mesh.bounds[0], mesh.bounds[1]);
-                if is_canopy && (nearest - eye).length_squared() > self.canopy_distance().powi(2) {
-                    continue;
-                }
-                if !bounds_visible(&frustum, mesh.bounds, eye) {
-                    continue;
-                }
+                .flat_map(|c| [&c.terrain, &c.props].into_iter().flatten())
+                .chain(self.horizon.values())
+                .chain(self.canopies.values().flatten().filter(|mesh| {
+                    (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared()
+                        <= self.canopy_distance().powi(2)
+                }))
+                .filter(|mesh| bounds_visible(&frustum, mesh.bounds, eye))
+                .map(|mesh| {
+                    (
+                        (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared(),
+                        mesh,
+                    )
+                })
+                .collect();
+            visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, mesh) in visible {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
-            for chunk in self.chunks.values() {
-                for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
-                    if !bounds_visible(&frustum, mesh.bounds, eye) {
-                        continue;
-                    }
-                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..mesh.count, 0, 0..1);
-                }
-            }
-            self.cover_drawn_instances =
-                self.cover
-                    .draw(&mut pass, eye, view_projection, self.ground_cover_density);
+            self.cover_drawn_instances = self.cover.draw(
+                &mut pass,
+                eye,
+                view_projection,
+                self.ground_cover_density,
+                &self.materials.bind_group,
+            );
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         // Separate opaque and water passes avoid sampling the current attachment.
         // Depth rejects foreground samples along distorted shoreline pixels.
@@ -1628,6 +1782,8 @@ impl Renderer {
             pass.set_pipeline(&self.water_pipeline);
             pass.set_bind_group(0, &self.uniform_group, &[]);
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
             for mesh in self.horizon.values().chain(
                 self.chunks
                     .values()
@@ -1646,6 +1802,29 @@ impl Renderer {
                 pass.draw(0..6, 0..20480);
             }
         }
+        self.rays.update(
+            &self.queue,
+            &crate::rays::RaysState {
+                view_projection,
+                shadow_matrix,
+                eye,
+                shadow_origin: eye,
+                light_direction: sun,
+                light_color: sky.direct_color,
+                light_intensity: sky.direct_strength,
+                shadow_strength: sky.shadow_strength,
+                shadows_enabled: shadow_active,
+                shadow_radius: SHADOW_RADIUS,
+                woodland: self.climate[0],
+                humidity: self.air[2],
+                fog_base: self.air[0],
+                cloud_cover: weather.weather[0],
+                rain: weather.rain,
+                fog: weather.weather[3],
+                quality: self.quality,
+            },
+        );
+        self.rays.encode(&mut encoder, &self.scene_view);
         self.post
             .render(&self.queue, &mut encoder, output, [self.width, self.height]);
         self.queue.submit(Some(encoder.finish()));
@@ -1890,5 +2069,34 @@ mod cover_lod_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod streaming_phase_tests {
+    use super::{chunk_phase, ChunkPhase};
+    #[test]
+    fn props_readiness_tracks_actual_terrain_lod_and_detail() {
+        assert_eq!(chunk_phase(None, 0, 1), Some(ChunkPhase::Terrain));
+        // Newly loaded terrain still needs its first props phase.
+        assert_eq!(
+            chunk_phase(Some((0, u32::MAX, u8::MAX)), 0, 1),
+            Some(ChunkPhase::Props)
+        );
+        assert_eq!(chunk_phase(Some((0, 0, 1)), 0, 1), None);
+        // Crossing a terrain LOD threshold preserves the old props briefly,
+        // but must not call them ready until they are rooted to the new mesh.
+        assert_eq!(
+            chunk_phase(Some((0, 0, 1)), 1, 0),
+            Some(ChunkPhase::Terrain)
+        );
+        assert_eq!(chunk_phase(Some((1, 0, 1)), 1, 0), Some(ChunkPhase::Props));
+        assert_eq!(chunk_phase(Some((1, 1, 0)), 1, 0), None);
+        // A quality change and turning back both requeue only what is missing.
+        assert_eq!(chunk_phase(Some((0, 0, 0)), 0, 1), Some(ChunkPhase::Props));
+        assert_eq!(
+            chunk_phase(Some((1, 1, 0)), 0, 1),
+            Some(ChunkPhase::Terrain)
+        );
     }
 }

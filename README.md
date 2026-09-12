@@ -2,6 +2,18 @@
 
 A first-person procedural fantasy exploration slice, built with Rust, WebAssembly, and wgpu. All terrain, trees, rocks, crossings and landmark geometry are generated in code. The browser shell handles input, maps and a retro HUD; it does not render the 3D world.
 
+## Procedural pixel material style
+
+The renderer now generates a shared 17-layer, 128 × 128 texture library at startup: soil, turf/litter, stone, bark, planks, leaves, needles, grass, ferns, flowers, sand, canvas, metal, snow, water detail, moss and flame. Albedo, alpha, normal XY, roughness and emission are generated in Rust. Geometry remains procedural. There are no downloaded models or authored texture files.
+
+Near trees use layered, wind-animated cutout cards, with rounded oak crowns, upright broadleaf variants, tall birches, conifers and hanging willows. The same masks cut directional and shelter shadows. Cutout samplers clamp at plant edges; tiling surface samplers repeat. Wind phases stay fixed in world space while weather changes the displacement direction. Ground communities use instanced textured cards. Plant mipmaps preserve alpha coverage; nearest magnification retains deliberate pixels, while filtered mip minification stabilizes the distance. Opaque surfaces use world-projected material coordinates and per-surface roughness/normal response. Wetness darkens exposed surfaces and changes specular reflections; foliage has thin-leaf transmission.
+
+A shadow-raymarched atmosphere integrates 12/16/20 samples at half width and half height, then reconstructs with depth-aware weights before HDR bloom. Thin pixels without reliable low-resolution depth support receive a matching full-resolution integration, avoiding dark holes around moving leaves. It uses real foliage shadows and stops at visible water depth. Sunlight and moonlight, cloud cover and humidity affect its intensity. This is bounded near-field scattering, not unlimited volumetric global illumination. Generated campfires use their own emissive texture and eight bounded local light slots. Hearth lights are currently unshadowed; the sun and primary moon cast shadows.
+
+GPU upload packing retains full-precision positions/water data, compacts normals/UVs and merges identical vertices. Terrain and prop streaming run in separate phases; cover respects the remaining frame budget. Visible world meshes draw from front to back; the sky draws after opaque geometry to avoid shading covered pixels. Directional shadow texels use a nearby persistent anchor with phase-preserving rebasing, preventing large-world coordinate jitter as the sun moves. Cached ambient enclosure uses a stable canopy envelope. The texture library occupies about 2.83 MiB with all mipmaps. Existing instancing, frustum culling, terrain/vegetation LOD, cached water reflections and the local fixed-step water solver remain active.
+
+Settings includes explicit 420p, 450p, 540p and 720p targets, five lighting studies in seed 1337, and an actual-browser frame-pacing comparison. The view comparison warms streaming, then samples 15 seconds of camera movement at each resolution. The walk comparison includes 30 seconds of normal player movement and streaming per resolution. Results show actual pixel size, mean FPS, p95/p99 frame interval, CPU submission time and frames over 33 ms. Tests stop if the tab becomes hidden. Hidden tabs submit no engine frames. Native capture timings must not be presented as browser FPS. F4 hides/restores the HUD for photos.
+
 ## Play
 
 - WASD / arrow keys: walk. Mouse: look. Shift: sprint. Space: jump.

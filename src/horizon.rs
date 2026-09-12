@@ -63,6 +63,8 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
                             color
                         },
                         material: if ocean || freshwater { 8.0 } else { 7.0 },
+                        uv: [0., 0.],
+                        texture: -1.,
                     });
                 }
                 mesh.indices.extend([start, start + 1, start + 2]);
@@ -330,6 +332,8 @@ fn canopy_triangle(mesh: &mut MeshData, p: [Vec3; 3], color: [f32; 3]) {
             normal,
             color,
             material: 9.0,
+            uv: [0., 0.],
+            texture: -1.,
         });
     }
     mesh.indices.extend([start, start + 1, start + 2]);

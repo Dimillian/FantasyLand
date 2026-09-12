@@ -149,3 +149,5 @@ body.mouse-focused #world { cursor: none; }
 .weather-conditions > span:not(.overline) { color: #a7b4a0; }
 #weather-speed-value { color: #c4cbb0; font-variant-numeric: tabular-nums; }
 #weather-mode, #weather-paused, #water-reflections, #enclosure-shading { flex-shrink: 0; }
+
+body.photo-mode .top-hud,body.photo-mode .bottom-hud,body.photo-mode .edge-shade,body.photo-mode #destination-marker,body.photo-mode #focus-hint,body.photo-mode #toast,body.photo-mode #crosshair,body.photo-mode #diagnostics {visibility:hidden}

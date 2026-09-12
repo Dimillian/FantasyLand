@@ -41,7 +41,8 @@ fn main() {
         world.seed,
         spawn
     );
-    if check.as_deref() != Some("fluid")
+    if check.as_deref() != Some("materials")
+        && check.as_deref() != Some("fluid")
         && !filters_only
         && !grounding_only
         && !roads_only
@@ -59,6 +60,70 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("materials") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_ground_cover_density(4.0);
+        renderer.set_filter(1, 1.0);
+        let mut reports = Vec::new();
+        for (name, x, z, yaw, pitch, hour, weather) in [
+            ("amberwood", -10879., 58547., 1.4, 0.08, 7.5, 1),
+            (
+                "silverwater",
+                -8909.148,
+                -77660.938,
+                -0.2618,
+                -0.0438,
+                9.3,
+                1,
+            ),
+            ("sunstone", 23512.3, 63468.41, -1.9067289, 0.27, 16.0, 1),
+            (
+                "hearth",
+                -16211.261,
+                -12684.719,
+                -1.4056476,
+                -0.08339161,
+                22.0,
+                1,
+            ),
+            ("moonwater", -8909.148, -77660.938, -0.2618, 0.12, 23.0, 1),
+        ] {
+            let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+            renderer.clear_chunks();
+            renderer.set_weather_mode(weather);
+            for _ in 0..90 {
+                renderer.update_weather(&world, eye, hour, 1.0);
+            }
+            renderer.update_chunks(&world, eye - glam::Vec3::Y * 1.72, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye - glam::Vec3::Y * 1.72, false);
+            }
+            let mut times = Vec::new();
+            for _ in 0..16 {
+                let start = Instant::now();
+                renderer.advance_time(1.0 / 60.0);
+                renderer.render(eye, yaw, pitch, hour).unwrap();
+                renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            save_png(
+                &format!("{dir}/{name}.png"),
+                1280,
+                720,
+                &renderer.capture_rgba().unwrap(),
+            );
+            let report = serde_json::json!({"name":name,"eye":eye.to_array(),"yaw":yaw,"pitch":pitch,"hour":hour,"completedNativeMs":times[4..].iter().sum::<f64>()/12.0,"cover":renderer.cover_stats(),"meshBytes":renderer.mesh_bytes()});
+            println!("{report}");
+            reports.push(report);
+        }
+        fs::write(
+            format!("{dir}/materials-report.json"),
+            serde_json::to_string_pretty(&reports).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     if check.as_deref() == Some("fluid") {
         let probe =
             fantasy_land::water_sim::WaterSim::verify_gpu(&renderer.device, &renderer.queue)

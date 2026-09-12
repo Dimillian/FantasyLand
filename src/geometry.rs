@@ -15,6 +15,9 @@ pub struct Vertex {
     pub normal: [f32; 3],
     pub color: [f32; 3],
     pub material: f32,
+    /// Explicit UV and atlas layer; -1 selects world-space substrate mapping.
+    pub uv: [f32; 2],
+    pub texture: f32,
 }
 
 #[derive(Default, Clone)]
@@ -50,6 +53,8 @@ impl MeshData {
             normal,
             color,
             material,
+            uv: [0., 0.],
+            texture: -1.,
         }));
         self.indices.extend([i, i + 1, i + 2]);
     }
@@ -446,6 +451,8 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
                     },
                 ],
                 material: 4.0,
+                uv: [0., 0.],
+                texture: -1.,
             });
         }
         mesh.indices.extend([start, start + 1, start + 2]);
@@ -1565,6 +1572,7 @@ fn fallen_log(mesh: &mut MeshData, p: Prop, world: &World) {
     fallen_log_lod(mesh, p, world, 0)
 }
 fn fallen_log_lod(mesh: &mut MeshData, p: Prop, world: &World, lod: u32) {
+    let surface_start = mesh.vertices.len();
     let yaw = random(p.seed, 291) * TAU;
     let len = (3.0 + random(p.seed, 292) * 3.0) * p.scale;
     let r = 0.36 * p.scale;
@@ -1674,9 +1682,16 @@ fn fallen_log_lod(mesh: &mut MeshData, p: Prop, world: &World, lod: u32) {
         0.04 * p.scale,
         [0.31, 0.25, 0.17],
     );
+
+    for v in &mut mesh.vertices[surface_start..] {
+        if v.material > 2.5 && v.material < 3.5 {
+            v.texture = 3.0;
+        }
+    }
 }
 
 fn stump(mesh: &mut MeshData, p: Prop) {
+    let surface_start = mesh.vertices.len();
     let height = (0.5 + random(p.seed, 296) * 0.6) * p.scale;
     trunk(
         mesh,
@@ -1696,6 +1711,12 @@ fn stump(mesh: &mut MeshData, p: Prop) {
         [0.55, 0.43, 0.26],
         3.0,
     );
+
+    for v in &mut mesh.vertices[surface_start..] {
+        if v.material > 2.5 && v.material < 3.5 {
+            v.texture = 3.0;
+        }
+    }
 }
 
 // Small ground cover is one deliberately bounded layer: at most 4,096 candidate
@@ -2595,6 +2616,7 @@ fn camp(world: &World, mesh: &mut MeshData, base: [f32; 3], seed: u32, lod: u32)
         [0.28, 0.20, 0.13],
         3.0,
     );
+    let flame_start = mesh.vertices.len();
     cone(
         mesh,
         [x + 6.0, fire + 0.40, z],
@@ -2602,9 +2624,18 @@ fn camp(world: &World, mesh: &mut MeshData, base: [f32; 3], seed: u32, lod: u32)
         0.75,
         5,
         0.0,
-        [0.76, 0.35, 0.08],
-        5.0,
+        [1.0, 0.66, 0.19],
+        10.0,
     );
+    for vertex in &mut mesh.vertices[flame_start..] {
+        let dx = vertex.position[0] - (x + 6.0);
+        let dz = vertex.position[2] - z;
+        vertex.uv = [
+            0.5 + dx.atan2(dz) / TAU,
+            ((vertex.position[1] - fire - 0.40) / 0.75).clamp(0.0, 1.0),
+        ];
+        vertex.texture = 16.0;
+    }
     // A fallen seat/log follows its own local slope. Its lower endpoints are
     // embedded, and small support feet also reach the adjacent terrain LODs.
     let a = [x + 4.0 - 1.5 * 0.1_f32.cos(), z + 3.0 + 1.5 * 0.1_f32.sin()];
@@ -3869,6 +3900,10 @@ fn stem_at(model: &TreeModel, y: f32) -> [f32; 3] {
 }
 fn tree_model(p: Prop) -> TreeModel {
     let age = tree_age(p);
+    // One species can grow round oak-like crowns or taller beech-like forms.
+    // The same deterministic scaffold drives both near cards and far proxies.
+    let upright =
+        p.kind == PropKind::Broadleaf && random(p.seed, 1437) > 0.64 && age != TreeAge::Windswept;
     let yaw = random(p.seed, 503) * TAU;
     let age_height = match age {
         TreeAge::Young => 0.70,
@@ -3879,7 +3914,7 @@ fn tree_model(p: Prop) -> TreeModel {
     let h = (match p.kind {
         PropKind::Pine => 11. + random(p.seed, 9) * 7.,
         PropKind::Fir => 16. + random(p.seed, 241) * 9.,
-        PropKind::Broadleaf => 7.5 + random(p.seed, 15) * 4.,
+        PropKind::Broadleaf => (7.5 + random(p.seed, 15) * 4.) * if upright { 1.14 } else { 1. },
         PropKind::Birch => 12. + random(p.seed, 261) * 7.,
         PropKind::Willow => 8.5 + random(p.seed, 271) * 4.,
         _ => 6. + random(p.seed, 281) * 5.,
@@ -4072,8 +4107,12 @@ fn tree_model(p: Prop) -> TreeModel {
                     0.20
                 } else if dead {
                     0.29
-                } else {
+                } else if willow {
                     0.43
+                } else if upright {
+                    0.24
+                } else {
+                    0.34
                 }) * (0.77 + random(p.seed, 630 + n) * 0.42)
                     * p.canopy;
             let elbow = [
@@ -4082,8 +4121,10 @@ fn tree_model(p: Prop) -> TreeModel {
                     0.55 + n as f32 * 0.075
                 } else if willow {
                     0.68
+                } else if upright {
+                    0.63 + n as f32 * 0.057
                 } else {
-                    0.52 + n as f32 * 0.037
+                    0.57 + n as f32 * 0.044
                 }) + random(p.seed, 640 + n) * h * 0.055,
                 start[2] + a.cos() * spread * 0.62 + direction.cos() * h * wind * 0.2,
             ];
@@ -4103,8 +4144,10 @@ fn tree_model(p: Prop) -> TreeModel {
                             0.055
                         } else if birch {
                             0.08
+                        } else if upright {
+                            0.12
                         } else {
-                            0.095
+                            0.105
                         }) * (0.6 + random(p.seed, 670 + j) * 0.9),
                     elbow[2] + b.cos() * spread * (0.45 + random(p.seed, 680 + j) * 0.25),
                 ];
@@ -4116,17 +4159,26 @@ fn tree_model(p: Prop) -> TreeModel {
                 });
                 if !dead {
                     let crown_size = if birch {
-                        [0.10, 0.14, 0.085]
+                        [0.105, 0.235, 0.095]
                     } else if willow {
-                        [0.135, 0.25, 0.12]
+                        [0.16, 0.28, 0.14]
+                    } else if upright {
+                        [0.15, 0.28, 0.13]
                     } else {
-                        [0.175, 0.102, 0.14]
+                        [0.21, 0.235, 0.18]
                     };
                     let varied = 0.77 + random(p.seed, 690 + j) * 0.46;
                     model.crowns.push(TreeCrown {
                         center: [
                             end[0],
-                            end[1] - if willow { h * 0.13 } else { -h * 0.02 },
+                            end[1]
+                                + h * if willow {
+                                    -0.14
+                                } else if upright {
+                                    0.08
+                                } else {
+                                    0.065
+                                },
                             end[2],
                         ],
                         radii: crown_size.map(|v| v * h * varied),
@@ -4167,7 +4219,7 @@ fn tree_model(p: Prop) -> TreeModel {
             });
             model.crowns.push(TreeCrown {
                 center: tip,
-                radii: [h * 0.09, h * 0.14, h * 0.08],
+                radii: [h * 0.09, h * 0.205, h * 0.09],
                 yaw: a,
                 seed: hash(p.seed, n as i32, 718),
                 color: mul(green, 1.02 + n as f32 * 0.04),
@@ -4324,7 +4376,110 @@ fn crown_mesh(mesh: &mut MeshData, base: [f32; 3], c: TreeCrown, far: bool) {
         }
     }
 }
+/// A foliage card is actual mesh geometry, so the same cutout participates in
+/// camera depth, reflected scenes, sun shadows and precipitation shelter. Its
+/// UVs stay local to the cluster; only the procedural tint varies by species.
+fn foliage_card(
+    mesh: &mut MeshData,
+    center: [f32; 3],
+    side: [f32; 3],
+    rise: [f32; 3],
+    color: [f32; 3],
+    texture: f32,
+    pendant: bool,
+) {
+    let corner =
+        |sx: f32, sy: f32| std::array::from_fn(|i| center[i] + side[i] * sx + rise[i] * sy);
+    let first = mesh.vertices.len();
+    mesh.quad(
+        corner(-1., -1.),
+        corner(1., -1.),
+        corner(1., 1.),
+        corner(-1., 1.),
+        color,
+        1.,
+    );
+    let uv = [[0., 1.], [1., 1.], [1., 0.], [0., 1.], [1., 0.], [0., 0.]];
+    for (vertex, uv) in mesh.vertices[first..].iter_mut().zip(uv) {
+        vertex.uv = uv;
+        vertex.texture = texture;
+        // Branch attachment moves less than the free leaves. Hanging willow
+        // fronds reverse this gradient so their lower tips carry the motion.
+        let free = if pendant { uv[1] } else { 1. - uv[1] };
+        vertex.material = 1.20 - free * 0.20;
+    }
+}
+
+fn crown_cards(mesh: &mut MeshData, p: Prop, c: TreeCrown) {
+    let center: [f32; 3] = std::array::from_fn(|i| p.position[i] + c.center[i]);
+    let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
+    let willow = p.kind == PropKind::Willow;
+    let count = if conifer {
+        3
+    } else if p.kind == PropKind::Broadleaf {
+        5
+    } else {
+        4
+    };
+    for i in 0..count {
+        let jitter = (random(c.seed, 1400 + i) - 0.5) * 0.22;
+        let yaw = c.yaw + i as f32 * 1.96350 + jitter;
+        let width = ((yaw.cos() * c.radii[0]).powi(2) + (yaw.sin() * c.radii[2]).powi(2)).sqrt();
+        let (tilt, half_width, half_height, lift) = if conifer {
+            // Open, overlapping needle sprays replace the old solid cones.
+            // A third inclined spray gives each branch volume from above.
+            if i == 2 && !c.pointed {
+                (0.29, width * 0.91, c.radii[2] * 0.82, c.radii[1] * 0.20)
+            } else {
+                (1.44 + jitter, width, c.radii[1] * 0.52, c.radii[1] * 0.24)
+            }
+        } else if willow {
+            if i == 3 {
+                (0.23, width * 0.85, c.radii[2] * 0.82, c.radii[1] * 0.59)
+            } else {
+                (1.43 + jitter, width * 0.90, c.radii[1] * 0.91, 0.)
+            }
+        } else {
+            if i == count - 1 {
+                // A smaller upper lobe closes the crown from above. Most cards
+                // stay upright to describe volume rather than horizontal pads.
+                (0.38, width * 0.84, c.radii[2] * 0.83, c.radii[1] * 0.50)
+            } else if i == 2 {
+                (
+                    0.96 + jitter,
+                    width * 0.91,
+                    c.radii[1] * 0.84,
+                    c.radii[1] * 0.10,
+                )
+            } else {
+                (1.45 + jitter, width, c.radii[1] * 0.88, 0.)
+            }
+        };
+        let side = [yaw.cos() * half_width, 0., -yaw.sin() * half_width];
+        let rise = [
+            yaw.sin() * tilt.cos() * half_height,
+            tilt.sin() * half_height,
+            yaw.cos() * tilt.cos() * half_height,
+        ];
+        let base = [
+            center[0] + jitter * c.radii[0] * 0.25,
+            center[1] + lift,
+            center[2] - jitter * c.radii[2] * 0.25,
+        ];
+        foliage_card(
+            mesh,
+            base,
+            side,
+            rise,
+            mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
+            if conifer { 6. } else { 5. },
+            willow && i < 3,
+        );
+    }
+}
+
 fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
+    let surface_start = mesh.vertices.len();
     let model = tree_model(p);
     tree_trunk(mesh, p, &model, far);
     if far {
@@ -4406,6 +4561,12 @@ fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
                 }
             }
         }
+
+        for v in &mut mesh.vertices[surface_start..] {
+            if v.material > 2.5 && v.material < 3.5 {
+                v.texture = 3.0;
+            }
+        }
         return;
     }
     if !matches!(p.kind, PropKind::Birch | PropKind::DeadTree) {
@@ -4452,7 +4613,7 @@ fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
         }
     }
     for crown in &model.crowns {
-        crown_mesh(mesh, p.position, *crown, far);
+        crown_cards(mesh, p, *crown);
     }
     if !far && p.kind == PropKind::Birch {
         for i in 0..5 {
@@ -4469,6 +4630,12 @@ fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
                 [0.25, 0.29, 0.25],
                 3.,
             );
+        }
+    }
+
+    for v in &mut mesh.vertices[surface_start..] {
+        if v.material > 2.5 && v.material < 3.5 {
+            v.texture = 3.0;
         }
     }
 }
@@ -5048,7 +5215,11 @@ mod regional_geometry_tests {
                         .filter(|tri| tri[0].color[0] > 0.9 && tri[0].color[2] < 0.8)
                         .collect();
                     assert!(!heads.is_empty());
-                    assert!(heads.iter().all(|tri| tri[0].normal[1] > 0.9));
+                    assert!(heads.iter().all(|tri| tri[0].texture == 9.));
+                    assert!(
+                        heads.iter().any(|tri| tri[0].normal[1] > 0.9),
+                        "flower head must include an upward-facing petal card"
+                    );
                 }
             }
         }
@@ -5477,6 +5648,64 @@ mod character_asset_tests {
         println!("{formations} real formations, {neighbor_probes} neighboring-cell collider probes; representative [{x},{z}]; repeated collision mean {:.3}ms",now.elapsed().as_secs_f64()*10.);
     }
     #[test]
+    fn near_foliage_uses_bounded_cutout_cards_and_keeps_far_proxies() {
+        let mut maximum_cards = 0;
+        for kind in [
+            PropKind::Pine,
+            PropKind::Fir,
+            PropKind::Broadleaf,
+            PropKind::Birch,
+            PropKind::Willow,
+        ] {
+            for seed in 0..32 {
+                let p = Prop {
+                    position: [0.; 3],
+                    scale: 1.2,
+                    canopy: 1.,
+                    seed,
+                    kind,
+                    biome: Biome::Forest,
+                    style: PropStyle {
+                        ancient: 1.,
+                        ..PropStyle::default()
+                    },
+                };
+                let mut near = MeshData::default();
+                let mut far = MeshData::default();
+                render_tree(&mut near, p, false);
+                render_tree(&mut far, p, true);
+                let leaves: Vec<_> = near
+                    .vertices
+                    .iter()
+                    .filter(|v| v.material > 0.5 && v.material < 1.5)
+                    .collect();
+                assert!(!leaves.is_empty());
+                assert_eq!(leaves.len() % 6, 0);
+                assert!(
+                    leaves.len() / 6 <= 50,
+                    "{kind:?} exceeded alpha-card budget"
+                );
+                maximum_cards = maximum_cards.max(leaves.len() / 6);
+                assert!(leaves.iter().all(|v| {
+                    v.texture
+                        == if matches!(kind, PropKind::Pine | PropKind::Fir) {
+                            6.
+                        } else {
+                            5.
+                        }
+                        && v.uv
+                            .iter()
+                            .all(|u| u.is_finite() && (0.0..=1.0).contains(u))
+                }));
+                assert!(
+                    far.vertices.iter().all(|v| v.texture < 0.),
+                    "distant tree mesh must not add alpha overdraw"
+                );
+            }
+        }
+        println!("maximum near tree foliage cards: {maximum_cards}");
+    }
+    #[test]
     fn broad_canopies_have_layers_and_birch_stems_stay_connected() {
         let p = Prop {
             position: [0.; 3],
@@ -5492,7 +5721,10 @@ mod character_asset_tests {
         };
         let model = tree_model(p);
         assert!(model.crowns.len() >= 6);
-        assert!(model.crowns.iter().all(|c| c.radii[1] < c.radii[0] * 0.70));
+        assert!(
+            model.crowns.iter().all(|c| c.radii[1] > c.radii[0]),
+            "rounded and columnar broadleaf crowns must retain vertical volume"
+        );
         assert!(model
             .limbs
             .iter()
@@ -5549,4 +5781,107 @@ pub fn formation_locations(world: &World, x: f32, z: f32, radius: f32) -> Vec<[f
         }
     }
     found
+}
+
+/// Positions of actual generated camp hearths, shared with local illumination.
+/// Radius selection happens before sampling support heights. Settlement marker
+/// and independent-camp offsets match their `camp()` calls exactly.
+pub fn campfire_emitters(world: &World, x: f32, z: f32, radius: f32) -> Vec<[f32; 4]> {
+    if !x.is_finite() || !z.is_finite() || !radius.is_finite() || radius < 0.0 {
+        return Vec::new();
+    }
+    let radius = radius.min(512.0);
+    let mut centers = Vec::new();
+    for site in world.sites_near(x, z, radius + 16.0) {
+        centers.push([site.x - 4.0, site.z + 8.0]);
+    }
+    for landmark in world.landmarks_near(x, z, radius + 8.0) {
+        if landmark.kind == "camp" {
+            centers.push([landmark.x + 6.0, landmark.z]);
+        }
+    }
+    centers.retain(|p| (p[0] - x).hypot(p[1] - z) <= radius);
+    centers.sort_by(|a, b| {
+        let da = (a[0] - x).powi(2) + (a[1] - z).powi(2);
+        let db = (b[0] - x).powi(2) + (b[1] - z).powi(2);
+        da.total_cmp(&db)
+            .then(a[0].total_cmp(&b[0]))
+            .then(a[1].total_cmp(&b[1]))
+    });
+    centers.truncate(8);
+    centers
+        .into_iter()
+        .map(|p| {
+            // Same 4m square, foundation rise .04m, flame base .40m; the source
+            // sits .34m above that base. At these distances geometry is at LOD0.
+            let hearth = structural_ground_range(world, p, [4.0, 4.0], 0.0, 0).1 + 0.04;
+            [p[0], hearth + 0.74, p[1], 22.0]
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod campfire_material_tests {
+    use super::*;
+    #[test]
+    fn hearth_light_lies_inside_its_actual_generated_flame() {
+        let world = World::new(1337);
+        let site = world
+            .sites_near(-16545.926, -12303.939, 12000.0)
+            .into_iter()
+            .min_by(|a, b| {
+                (a.x + 16545.926)
+                    .hypot(a.z + 12303.939)
+                    .total_cmp(&(b.x + 16545.926).hypot(b.z + 12303.939))
+            })
+            .unwrap();
+        let mut mesh = MeshData::default();
+        camp(&world, &mut mesh, [site.x - 10.0, 0.0, site.z + 8.0], 31, 0);
+        let lights = campfire_emitters(&world, site.x - 4.0, site.z + 8.0, 1.0);
+        assert_eq!(lights.len(), 1);
+        let light = lights[0];
+        let eye = glam::Vec3::new(
+            site.x + 8.0,
+            walk_height(&world, site.x + 8.0, site.z + 10.0) + 1.72,
+            site.z + 10.0,
+        );
+        let target = glam::Vec3::new(light[0], light[1], light[2]);
+        let delta = target - eye;
+        println!(
+            "Current camp site={} at{},{}; emitter={:?}; eye={:?}; yaw={}; pitch={}",
+            site.name,
+            site.x,
+            site.z,
+            light,
+            eye.to_array(),
+            delta.x.atan2(-delta.z),
+            delta.y.atan2(delta.x.hypot(delta.z))
+        );
+        let flame: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.material == 10.0)
+            .collect();
+        assert!(!flame.is_empty());
+        assert!(flame.iter().all(|v| v.texture == 16.0));
+        for axis in 0..3 {
+            let low = flame
+                .iter()
+                .map(|v| v.position[axis])
+                .fold(f32::INFINITY, f32::min);
+            let high = flame
+                .iter()
+                .map(|v| v.position[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (low..=high).contains(&light[axis]),
+                "emitter must be inside actual grounded flame"
+            );
+        }
+        let cloth: Vec<_> = mesh.vertices.iter().filter(|v| v.material == 5.0).collect();
+        assert!(!cloth.is_empty());
+        assert!(cloth.iter().all(|v| v.texture != 16.0));
+        assert!(campfire_emitters(&world, f32::NAN, 0.0, 20.0).is_empty());
+        assert!(campfire_emitters(&world, 0.0, 0.0, -1.0).is_empty());
+    }
 }

@@ -37,6 +37,7 @@ struct TemplateVertex {
     normal: [f32; 4],
     // W=1 multiplies the biome tint; W=0 preserves flower/heather color.
     color: [f32; 4],
+    surface: [f32; 4], // UV, atlas layer, reserved
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -274,10 +275,11 @@ fn templates() -> Vec<TemplateVertex> {
                         vertex.position[0],
                         vertex.position[1],
                         vertex.position[2],
-                        0.,
+                        1.,
                     ],
                     normal: [vertex.normal[0], vertex.normal[1], vertex.normal[2], 0.],
                     color: [vertex.color[0], vertex.color[1], vertex.color[2], tint],
+                    surface: [vertex.uv[0], vertex.uv[1], vertex.texture, 0.],
                 });
             }
             for _ in mesh.vertices.len()..TEMPLATE_VERTICES as usize {
@@ -320,6 +322,7 @@ impl CoverLayer {
         device: &wgpu::Device,
         uniform_layout: &wgpu::BindGroupLayout,
         water_layout: &wgpu::BindGroupLayout,
+        material_layout: &wgpu::BindGroupLayout,
         shader: &wgpu::ShaderModule,
         format: wgpu::TextureFormat,
     ) -> Self {
@@ -360,7 +363,7 @@ impl CoverLayer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cover pipeline layout"),
-            bind_group_layouts: &[uniform_layout, water_layout, &layout],
+            bind_group_layouts: &[uniform_layout, water_layout, &layout, material_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -537,6 +540,7 @@ impl CoverLayer {
         eye: Vec3,
         view_projection: Mat4,
         density: f32,
+        materials: &'a wgpu::BindGroup,
     ) -> u32 {
         let mut drawn_tiles = 0;
         let mut drawn_instances = 0;
@@ -550,6 +554,7 @@ impl CoverLayer {
                     continue;
                 }
                 pass.set_bind_group(2, &tile.group, &[]);
+                pass.set_bind_group(3, materials, &[]);
                 pass.set_vertex_buffer(0, tile.instances.slice(..));
                 pass.draw(0..TEMPLATE_VERTICES, 0..count);
                 drawn_tiles += 1;

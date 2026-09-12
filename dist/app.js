@@ -29,7 +29,7 @@ let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Numbe
 let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
 // Removed filter saves return to visible Bloom while all world progress stays intact.
 let filterStrength = Number(saved.filterMode) === 3 ? 1 : Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
-const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 450, 720, 1080];
+const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 420, 450, 540, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
@@ -42,6 +42,7 @@ let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 4)) 
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
+let benchmark = null, benchmarkReport = [], adapterLabel = 'WebGPU';
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 384000;
 let landscapeDestinations = null;
@@ -70,6 +71,7 @@ function toast(message, duration = 3500) {
 }
 
 function saveProgress() {
+  if (benchmark) return;
   if (!game || !initialReady) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
@@ -613,25 +615,33 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
 
 function renderFrame(now) {
   if (fatal) return;
+  // Hidden previews must not keep submitting GPU work or advancing the world.
+  // Keep one RAF chain: the browser resumes it when this tab becomes visible.
+  if (document.hidden) { lastFrame = 0; requestAnimationFrame(renderFrame); return; }
+  const frameGap = lastFrame ? now-lastFrame : 0;
+  const frameStart = performance.now();
   const dt = lastFrame ? Math.min((now - lastFrame) / 1000, .05) : 1 / 60;
   lastFrame = now;
   try {
-    const moving = started && !modal && !document.hidden;
+    if (benchmark) updateBenchmark(now, frameGap);
+    const moving = started && !modal && !document.hidden && !benchmark;
     let forward = moving ? Number(keys.has('KeyW') || keys.has('ArrowUp') || touchMoves.has('forward')) - Number(keys.has('KeyS') || keys.has('ArrowDown') || touchMoves.has('back')) : 0;
     let strafe = moving ? Number(keys.has('KeyD') || keys.has('ArrowRight') || touchMoves.has('right')) - Number(keys.has('KeyA') || keys.has('ArrowLeft') || touchMoves.has('left')) : 0;
     // Avoid diagonal movement being faster than walking straight.
     const length = Math.hypot(forward, strafe); if (length > 1) { forward /= length; strafe /= length; }
     const sprint = moving && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touchMoves.has('sprint'));
-    game.tick(dt, forward, strafe, sprint, moving && jumpQueued);
+    if (benchmark?.walking && benchmark.phase === "sample") { forward=1;strafe=0; }
+    game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
-    state = game.state();
+    if (now-lastHUD > 100) state = game.state();
+    if (benchmark?.phase === "sample") benchmark.cpu.push(performance.now()-frameStart);
     if (!initialReady && (!game.is_ready || game.is_ready())) {
       initialReady = true;
       $('loading-track').classList.add('hidden');
@@ -664,8 +674,13 @@ async function boot() {
   try {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
     $('loading-label').textContent = 'Preparing the world engine…';
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=water-3');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=water-3', location.href) });
+    if (navigator.gpu.requestAdapter) {
+      const adapter = await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
+      const info = adapter?.info;
+      if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
+    }
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=materials-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=materials-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -680,7 +695,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'water-3' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'materials-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -847,11 +862,13 @@ document.addEventListener('keydown', (event) => {
   const editing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName);
   if (event.code === 'Escape') {
     event.preventDefault();
+    if (benchmark) {finishBenchmark(true);toast('Performance check cancelled.');}
     if (modal) closeModal();
     releaseMouse();
     return;
   }
   if (editing) return;
+  if (event.code === 'F4') { event.preventDefault(); document.body.classList.toggle('photo-mode'); return; }
   if (event.code === 'F3') { event.preventDefault(); $('diagnostics').classList.toggle('hidden'); return; }
   if (!started) {
     if (event.code === 'Enter' && initialReady) { event.preventDefault(); startExploring(event); }
@@ -981,6 +998,66 @@ mapCanvas.addEventListener('wheel', (event) => {
 }, { passive: false });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { resize(); if (modal === 'map') scheduleMapData(); }, 100); });
 window.addEventListener('blur', releaseMouse);
-document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseMouse(); saveProgress(); } lastFrame = 0; });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { if (benchmark) finishBenchmark(true); releaseMouse(); saveProgress(); } lastFrame = 0; });
 window.addEventListener('pagehide', saveProgress);
+
+// Repeatable frame-pacing comparison through the real browser animation loop.
+// Initialization/streaming warm-up is shown separately, never included as steady FPS.
+function finishBenchmark(cancelled = false) {
+  if (!benchmark) return;
+  game.set_render_resolution(renderResolution);
+  const restored=benchmark.restore;
+  if (benchmark.walking) {game.teleport(restored.x,restored.z);game.face(restored.yaw,restored.pitch);}
+  else game.face(benchmark.yaw, benchmark.pitch);
+  benchmark = null;
+  state=game.state();saveProgress();
+  $('benchmark-start').disabled = false;
+  $('benchmark-walk').disabled = false;
+  $('benchmark-result').textContent = (cancelled ? 'Interrupted; keep this tab visible to measure.\n' : '') + benchmarkReport.map(r => `${r.width} × ${r.actualHeight} · ${r.fps.toFixed(1)} FPS · p95 ${r.p95.toFixed(1)} ms · p99 ${r.p99.toFixed(1)} ms · CPU ${r.cpu.toFixed(1)} ms · ${r.hitches} frames >33 ms${r.walking ? ` · walked ${r.distance.toFixed(0)} m / ${r.chunks} chunks` : ""}`).join('\n');
+  $('benchmark-result').setAttribute('data-report',JSON.stringify(benchmarkReport));
+  if (!cancelled) openModal('settings');
+}
+function beginBenchmark(walking = false) {
+  if (!game || benchmark) return;
+  benchmarkReport = [];
+  benchmark = {height:420,phase:'warm',since:performance.now(),samples:[],cpu:[],yaw:Number(state.yaw),pitch:Number(state.pitch),size:null,walking,restore:{x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch},chunks:new Set(),distance:0};
+  if (walking) {game.return_to_spawn();state=game.state();benchmark.yaw=state.yaw;benchmark.pitch=state.pitch;}
+  $('benchmark-start').disabled = true;
+  $('benchmark-walk').disabled = true;
+  closeModal(); clearMovement();
+  game.set_render_resolution(420);
+  toast('420p warm-up · keep the game visible',3500);
+}
+function updateBenchmark(now,gap) {
+  const b = benchmark;
+  if (document.hidden) { finishBenchmark(true); return; }
+  if (b.phase === 'warm') {
+    if (now-b.since < 3000 || (game.is_ready && !game.is_ready())) return;
+    b.phase='sample'; b.since=now; b.size=Array.from(game.render_resolution());b.walkStart=Number(state.walked || 0);
+    toast(`${b.height}p · ${b.walking ? 'walking across streaming boundaries' : 'measuring a slow camera sweep'}`,b.walking?30000:15000);
+    return;
+  }
+  if (!b.walking) game.face(b.yaw + Math.sin((now-b.since)/15000*Math.PI*2)*0.20,b.pitch);
+  b.chunks.add(`${Math.floor(state.x/192)},${Math.floor(state.z/192)}`);
+  if (gap>0) b.samples.push(gap);
+  if (now-b.since<(b.walking?30000:15000)) return;
+  const values=[...b.samples].sort((a,b)=>a-b);
+  const percentile=q=>values[Math.min(values.length-1,Math.floor(values.length*q))] || 0;
+  benchmarkReport.push({height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,quality,groundCoverDensity,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
+  if (b.height===420) {b.height=720;b.phase='warm';b.since=now;b.samples=[];b.cpu=[];b.chunks=new Set();if(b.walking){game.return_to_spawn();game.face(b.yaw,b.pitch);}game.set_render_resolution(720);toast('720p warm-up',3000);}
+  else finishBenchmark();
+}
+$('benchmark-start').addEventListener('click',()=>beginBenchmark(false));
+$('benchmark-walk').addEventListener('click',()=>beginBenchmark(true));
+$('study-form').addEventListener('submit',event=>{
+  event.preventDefault(); if(!game || benchmark)return;
+  if(seed!==1337){toast('These studies use seed 1337. Landscape travel works with every seed.');return;}
+  const studies={hearth:[-16211.261,-12684.719,-1.4056476,-.08339161,22],forest:[-10879,58547,1.4,.08,7.5],lake:[-8909.148,-77660.938,-.2618,-.0438,9.3],moon:[-8909.148,-77660.938,-.2618,.12,23],stone:[23512.3,63468.41,-1.9067289,.27,16]};
+  const v=studies[$('study-select').value]; if(!v)return;
+  game.teleport(v[0],v[1]); game.face(v[2],v[3]); game.set_time(v[4]);
+  weatherMode=1;game.set_weather_mode(1);updateWeatherControls();
+  closeModal(); clearMovement(); state=game.state(); saveProgress();
+  toast('Light study · walk anywhere from here');
+});
+
 boot();
