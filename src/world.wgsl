@@ -33,6 +33,7 @@ struct Globals {
     shelter_origin: vec4<f32>,
     shelter_params: vec4<f32>,
     hearths: array<vec4<f32>,8>,
+    cloud_shadow: vec4<f32>, // cached world center x/z, inverse span, valid
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
@@ -488,7 +489,7 @@ fn surface_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, materia
     return surface_communities(substrate, world, normal, material, footprint, distance);
 }
 
-fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32) -> vec3<f32> {
+fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32) -> vec3<f32> {
     let sun = normalize(u.light.xyz);
     let diffuse = max(dot(normal, sun), 0.0);
     let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
@@ -528,7 +529,8 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     ambient *= (0.30 + sky_access * 0.38) * (1.0 - u.weather.x * 0.16);
     direct *= 1.30;
     let illumination = ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w;
-    let albedo = pow(max(reflectance,vec3<f32>(0.0)),vec3<f32>(2.2));
+    var albedo = linear_base;
+    if nocturne > 0.001 { albedo = pow(max(reflectance,vec3<f32>(0.0)),vec3<f32>(2.2)); }
     // Illuminate linear albedo. Gamma-converting the product would darken
     // forest shelter and moonlight twice, obscuring otherwise walkable ground.
     return albedo * illumination * mix(0.72,0.85,daylight())
@@ -627,36 +629,47 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     if v.material > 9.5 && v.material < 10.5 {
         return vec4<f32>(atmospheric_color(flame_emission(pixel.pigment,pixel.emission,v.world),v.world,distance),1.0);
     }
-    var color: vec3<f32>;
-    if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
-        color = water_color(v.world, distance, v.color, water_footprint, v.normal);
-    } else {
-        var pigment = surface_pigment(pixel.pigment, v.world, normal, v.material, material_footprint, distance);
-        let physical_sky = open_sky(v.world);
-        let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
-        let deposition = smoothstep(0.15,0.72,normal.y) * physical_sky;
+    var pigment = surface_pigment(pixel.pigment, v.world, normal, v.material, material_footprint, distance);
+    let physical_sky = open_sky(v.world);
+    let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
+    let deposition = smoothstep(0.15,0.72,normal.y) * physical_sky;
+    var snow = 0.0;
+    if u.surface.y > 0.02 {
         let snow_pattern = noise(v.world.xz * 0.20) * 0.24 + 0.76;
-        let snow = smoothstep(0.02,0.80,u.surface.y) * deposition * snow_pattern;
-        pigment *= 1.0 - u.surface.x * 0.20 * physical_sky * (1.0-snow);
-        pigment = mix(pigment, vec3<f32>(0.84,0.89,0.91),snow);
-        let visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
-        color = surface_lighting(pigment, normal, v.material, visibility, distance, sky_access);
-        let wet = u.surface.x * deposition * (1.0-snow);
-        let roughness = mix(pixel.roughness,0.92,snow);
-        if distance < 450.0 {
-            color += material_highlight(pigment,normal,v.world,roughness,pixel.metal,wet,visibility);
+        snow = smoothstep(0.02,0.80,u.surface.y) * deposition * snow_pattern;
+    }
+    pigment *= 1.0 - u.surface.x * 0.20 * physical_sky * (1.0-snow);
+    pigment = mix(pigment, vec3<f32>(0.84,0.89,0.91),snow);
+    let pigment_linear = pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2));
+    let light = normalize(u.light.xyz);
+    let view = (u.camera.xyz-v.world)/max(distance,0.0001);
+    let visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
+    var color = surface_lighting(pigment, pigment_linear, normal, v.material, visibility, distance, sky_access);
+    let wet = u.surface.x * deposition * (1.0-snow);
+    let roughness = mix(pixel.roughness,0.92,snow);
+    let vegetation = (v.material>0.5 && v.material<1.5)
+        || (v.material>5.5 && v.material<6.5) || (v.material>8.5 && v.material<9.5);
+    if distance < 450.0 {
+        if vegetation && distance > 24.0 {
+            var highlight = vegetation_highlight(normal,view,light,roughness,wet,visibility);
+            if distance < 64.0 {
+                highlight = mix(material_highlight(pigment_linear,normal,view,light,roughness,pixel.metal,wet,visibility),
+                    highlight,smoothstep(24.0,64.0,distance));
+            }
+            color += highlight;
+        } else {
+            color += material_highlight(pigment_linear,normal,view,light,roughness,pixel.metal,wet,visibility);
         }
-        // Thin leaf transmission makes sunlit canopy tips glow without glowing in shade.
-        if v.texture >= 5.0 && v.texture < 10.0 {
-            let view = normalize(u.camera.xyz-v.world);
-            let forward_scatter = pow(max(dot(-view,normalize(u.light.xyz)),0.0),3.0);
-            color += pow(pigment,vec3<f32>(2.2))*u.direct.rgb*u.direct.w*visibility
-                * (0.12+forward_scatter*0.52);
-        }
-        color += hearth_illumination(v.world,normal,normalize(u.camera.xyz-v.world),
-            pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2)),mix(roughness,0.2,wet),pixel.metal,
-            (v.material>0.5 && v.material<1.5) || (v.material>5.5 && v.material<6.5));
-
+    }
+    // Keep the exact alpha/depth and sunlight paths for leaf transmission and
+    // godrays. Only the reflected highlight is simplified beyond the foreground.
+    if v.texture >= 5.0 && v.texture < 10.0 {
+        let forward_scatter = pow(max(dot(-view,light),0.0),3.0);
+        color += pigment_linear*u.direct.rgb*u.direct.w*visibility*(0.12+forward_scatter*0.52);
+    }
+    if u.hearths[0].w > 0.0 {
+        color += hearth_illumination(v.world,normal,view,pigment_linear,
+            mix(roughness,0.2,wet),pixel.metal,vegetation);
     }
 
     color = atmospheric_color(max(color,vec3<f32>(0.0)), v.world, distance);
@@ -982,4 +995,11 @@ fn sky_radiance(ray: vec3<f32>) -> vec3<f32> {
 
 @fragment fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     return vec4<f32>(sky_radiance(sky_ray(v.uv)), 1.0);
+}
+
+// Rendered only when the reusable world-space cloud density needs refreshing.
+@fragment fn fs_cloud_cache(v: SkyOut) -> @location(0) vec4<f32> {
+    let uv = v.clip.xy / 512.0;
+    let world_xz = u.cloud_shadow.xy + (uv - vec2<f32>(0.5)) / u.cloud_shadow.z;
+    return vec4<f32>(weather_cloud_field(world_xz, false).x, 0.0, 0.0, 1.0);
 }

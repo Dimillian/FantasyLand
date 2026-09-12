@@ -1,0 +1,755 @@
+{
+  "date": "2026-09-12",
+  "base_commit": "fec15527ee9e412438855c2ad3f61810dfcf87be",
+  "checkpoint": "checkpoint/pre-lighting-cache-20260912",
+  "candidate_wasm_sha256": "6e6648d81dffcf128c7d2e99e93e71de1c61c69a073018f1a449131a84106bda",
+  "hardware": "Apple M4 MacBook Air, 32GB",
+  "viewport": [
+    1280,
+    720
+  ],
+  "settings": {
+    "quality": "Balanced",
+    "seed": 1337,
+    "cover_percent": 400,
+    "bloom_percent": 100,
+    "shadows": true,
+    "reflections": true,
+    "enclosure": true,
+    "godrays": "unchanged 16 steps at half width/height plus exact-depth fallback",
+    "weather": "Clear, 1x, running"
+  },
+  "power": "AC; charging; Low Power Mode off",
+  "browser_panel_visible": true,
+  "notes": [
+    "One game view, no compile/test jobs during measurement.",
+    "Files named *first.json, *final.json, forest-control.json, walking-control.json and lake-control.json were collected with the browser panel hidden. They are exploratory only and excluded from this comparison.",
+    "GPU draw span excludes water simulation and cloud-cache refresh; individual GPU intervals may overlap. Use RAF frame times for net performance.",
+    "Short scene tests and one walking route; no universal 60 FPS claim.",
+    "Photos wait for full streaming and retain dynamic wind, waves and local weather history."
+  ],
+  "forest": [
+    {
+      "hour": 7.50472354888916,
+      "height": 420,
+      "width": 747,
+      "actualHeight": 420,
+      "frames": 870,
+      "fps": 57.99999999999999,
+      "p95": 17.5,
+      "p99": 33.39999999999418,
+      "hitches": 6,
+      "cpu": 2.9911494252833957,
+      "cover": 10832,
+      "meshMB": 337.5423583984375,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 4.128767967224121
+        },
+        {
+          "name": "World + foliage",
+          "ms": 12.64844799041748
+        },
+        {
+          "name": "Water + rain",
+          "ms": 9.961471557617188
+        },
+        {
+          "name": "Godrays march",
+          "ms": 10.027008056640625
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 10.092543601989746
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 0.32767999172210693
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 0.26214399933815
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 0.131071999669075
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 0.131071999669075
+        },
+        {
+          "name": "Presentation",
+          "ms": 0.19660800695419312
+        }
+      ],
+      "gpuDrawSpan": 14.811136245727539,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    },
+    {
+      "hour": 7.50472354888916,
+      "height": 720,
+      "width": 1280,
+      "actualHeight": 720,
+      "frames": 675,
+      "fps": 44.99970000199997,
+      "p95": 33.5,
+      "p99": 34.19999999998254,
+      "hitches": 42,
+      "cpu": 4.837777777778467,
+      "cover": 10832,
+      "meshMB": 337.5423583984375,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 3.407871961593628
+        },
+        {
+          "name": "World + foliage",
+          "ms": 14.942208290100098
+        },
+        {
+          "name": "Water + rain",
+          "ms": 12.910592079162598
+        },
+        {
+          "name": "Godrays march",
+          "ms": 12.976127624511719
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 13.303808212280273
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 13.303808212280273
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 13.303808212280273
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 13.303808212280273
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 13.238271713256836
+        },
+        {
+          "name": "Presentation",
+          "ms": 13.369343757629395
+        }
+      ],
+      "gpuDrawSpan": 17.367040634155273,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    }
+  ],
+  "walking": [
+    {
+      "hour": 9,
+      "height": 420,
+      "width": 747,
+      "actualHeight": 420,
+      "frames": 1697,
+      "fps": 56.53576045095348,
+      "p95": 33.20000000001164,
+      "p99": 33.40000000002328,
+      "hitches": 19,
+      "cpu": 2.4005892751911304,
+      "cover": 12080,
+      "meshMB": 335.53009033203125,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 2.293760061264038
+        },
+        {
+          "name": "World + foliage",
+          "ms": 9.568256378173828
+        },
+        {
+          "name": "Water + rain",
+          "ms": 7.798783779144287
+        },
+        {
+          "name": "Godrays march",
+          "ms": 7.798783779144287
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 7.929855823516846
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 7.929855823516846
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 7.864319801330566
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 7.798783779144287
+        },
+        {
+          "name": "Presentation",
+          "ms": 7.929855823516846
+        }
+      ],
+      "gpuDrawSpan": 10.944512367248535,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": true,
+      "distance": 237.64165878295898,
+      "chunks": 2
+    },
+    {
+      "hour": 9,
+      "height": 720,
+      "width": 1280,
+      "actualHeight": 720,
+      "frames": 1419,
+      "fps": 47.3,
+      "p95": 33.40000000002328,
+      "p99": 33.90000000002328,
+      "hitches": 105,
+      "cpu": 3.101057082455647,
+      "cover": 12064,
+      "meshMB": 335.53009033203125,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 2.4248321056365967
+        },
+        {
+          "name": "World + foliage",
+          "ms": 12.255231857299805
+        },
+        {
+          "name": "Water + rain",
+          "ms": 11.010047912597656
+        },
+        {
+          "name": "Godrays march",
+          "ms": 11.075584411621094
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 11.206656455993652
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 11.206656455993652
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 11.272192001342773
+        },
+        {
+          "name": "Presentation",
+          "ms": 11.337727546691895
+        }
+      ],
+      "gpuDrawSpan": 14.548992156982422,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": true,
+      "distance": 237.24813842773438,
+      "chunks": 2
+    }
+  ],
+  "lake": [
+    {
+      "hour": 9.303609848022461,
+      "height": 420,
+      "width": 747,
+      "actualHeight": 420,
+      "frames": 900,
+      "fps": 59.99999999999999,
+      "p95": 17.5,
+      "p99": 17.600000000034925,
+      "hitches": 0,
+      "cpu": 2.2643333333239166,
+      "cover": 2921,
+      "meshMB": 199.09942626953125,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 0.851967990398407
+        },
+        {
+          "name": "World + foliage",
+          "ms": 6.9468159675598145
+        },
+        {
+          "name": "Water + rain",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Godrays march",
+          "ms": 6.160384178161621
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 6.2259202003479
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 6.2259202003479
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 6.2259202003479
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 6.2259202003479
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 6.29145622253418
+        },
+        {
+          "name": "Presentation",
+          "ms": 6.356991767883301
+        }
+      ],
+      "gpuDrawSpan": 8.781824111938477,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    },
+    {
+      "hour": 9.303609848022461,
+      "height": 720,
+      "width": 1280,
+      "actualHeight": 720,
+      "frames": 900,
+      "fps": 59.99960000266674,
+      "p95": 17.400000000023283,
+      "p99": 17.600000000034925,
+      "hitches": 0,
+      "cpu": 2.3732222222102184,
+      "cover": 2921,
+      "meshMB": 199.09942626953125,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 1.1141120195388794
+        },
+        {
+          "name": "World + foliage",
+          "ms": 10.4202241897583
+        },
+        {
+          "name": "Water + rain",
+          "ms": 10.223615646362305
+        },
+        {
+          "name": "Godrays march",
+          "ms": 10.158080101013184
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 10.354687690734863
+        },
+        {
+          "name": "Presentation",
+          "ms": 10.4202241897583
+        }
+      ],
+      "gpuDrawSpan": 13.041664123535156,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    }
+  ],
+  "forest_control": [
+    {
+      "hour": 7.511253356933594,
+      "height": 420,
+      "width": 747,
+      "actualHeight": 420,
+      "frames": 619,
+      "fps": 41.266666666666666,
+      "p95": 33.69999999999709,
+      "p99": 34.19999999999709,
+      "hitches": 89,
+      "cpu": 3.9072697899870046,
+      "cover": 10832,
+      "meshMB": 332.67974853515625,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 5.767168045043945
+        },
+        {
+          "name": "World + foliage",
+          "ms": 13.172736167907715
+        },
+        {
+          "name": "Water + rain",
+          "ms": 10.747903823852539
+        },
+        {
+          "name": "Godrays march",
+          "ms": 10.747903823852539
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 10.878975868225098
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 10.878975868225098
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 10.878975868225098
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 10.878975868225098
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 10.944512367248535
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 10.944512367248535
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 10.878975868225098
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 10.944512367248535
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 10.944512367248535
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 10.944512367248535
+        },
+        {
+          "name": "Presentation",
+          "ms": 11.010047912597656
+        }
+      ],
+      "gpuDrawSpan": 17.367040634155273,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    },
+    {
+      "hour": 7.511253356933594,
+      "height": 720,
+      "width": 1280,
+      "actualHeight": 720,
+      "frames": 456,
+      "fps": 30.400000000000002,
+      "p95": 34.30000000000291,
+      "p99": 50.10000000000582,
+      "hitches": 146,
+      "cpu": 4.066447368419623,
+      "cover": 10832,
+      "meshMB": 332.67974853515625,
+      "weather": 1,
+      "adapter": "apple \u00b7 metal-3",
+      "gpuIntervals": [
+        {
+          "name": "Sun shadows",
+          "ms": 9.895936012268066
+        },
+        {
+          "name": "Enclosure",
+          "ms": 2.293760061264038
+        },
+        {
+          "name": "World + foliage",
+          "ms": 29.818880081176758
+        },
+        {
+          "name": "Water + rain",
+          "ms": 21.03705596923828
+        },
+        {
+          "name": "Godrays march",
+          "ms": 21.10259246826172
+        },
+        {
+          "name": "Godrays reconstruction",
+          "ms": 18.481151580810547
+        },
+        {
+          "name": "Bloom extract",
+          "ms": 18.41561508178711
+        },
+        {
+          "name": "Bloom blur X",
+          "ms": 13.172736167907715
+        },
+        {
+          "name": "Bloom blur Y",
+          "ms": 13.107199668884277
+        },
+        {
+          "name": "Bloom downsample 1",
+          "ms": 13.107199668884277
+        },
+        {
+          "name": "Bloom blur X1",
+          "ms": 0.7208960056304932
+        },
+        {
+          "name": "Bloom blur Y1",
+          "ms": 0.45875200629234314
+        },
+        {
+          "name": "Bloom downsample 2",
+          "ms": 0.32767999172210693
+        },
+        {
+          "name": "Bloom blur X2",
+          "ms": 0.0655359998345375
+        },
+        {
+          "name": "Bloom blur Y2",
+          "ms": 0.131071999669075
+        },
+        {
+          "name": "Presentation",
+          "ms": 0.131071999669075
+        }
+      ],
+      "gpuDrawSpan": 32.833534240722656,
+      "worker": true,
+      "pending": 0,
+      "quality": 1,
+      "groundCoverDensity": 4,
+      "shadows": true,
+      "reflections": true,
+      "enclosure": true,
+      "walking": false,
+      "distance": 0,
+      "chunks": 1
+    }
+  ]
+}

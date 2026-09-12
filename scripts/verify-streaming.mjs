@@ -20,23 +20,28 @@ for(const kind of [0,1,2,3,4]) {
   } else {
     assert.equal(count,kind<=2?2:1);
     let offset=8;
+    const leafVertices=[];
     for(let m=0;m<count;m++) {
       const nv=view.getUint32(offset+24,true),ni=view.getUint32(offset+28,true);
       assert.equal(nv%40,0);assert.equal(ni%12,0);offset+=32;
+      let leaves=0;
       for(let v=0;v<nv;v+=40) {
         for(const f of [0,4,8,16,20,24,28,36]) assert.ok(Number.isFinite(view.getFloat32(offset+v+f,true)));
         const material=view.getFloat32(offset+v+28,true);
         if(kind===2) assert.equal(material,m===0?7:8,'horizon passes contain only their own material');
-        if(kind===1 && m===1) {
+        if(kind===1) {
           const layer=view.getFloat32(offset+v+36,true);
-          assert.ok(layer<5 || layer>9,'reflection proxy avoids fine alpha foliage');
+          if(layer>=5 && layer<10) leaves++;
         }
       }
+      leafVertices.push(leaves);
       offset+=nv;
       for(let i=0;i<ni;i+=4) assert.ok(view.getUint32(offset+i,true)<nv/40);
       offset+=ni;
     }
     assert.equal(offset,packet.length);
+    if(kind===1) assert.ok(leafVertices[1]>0 && leafVertices[1]<leafVertices[0],
+      'middle proxy retains a smaller set of textured leaves');
   }
   console.log(`WASM worker packet ${kind}: ${packet.length} bytes, deterministic and valid`);
 }

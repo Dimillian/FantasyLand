@@ -1154,7 +1154,7 @@ fn props_for_pass(
                             | PropKind::DeadTree
                     )
                 {
-                    render_tree(&mut mesh, p, true);
+                    render_tree_lod(&mut mesh, p, 1);
                 } else {
                     match p.kind {
                         PropKind::Pine => pine(&mut mesh, p),
@@ -4438,6 +4438,9 @@ fn foliage_card(
 }
 
 fn crown_cards(mesh: &mut MeshData, p: Prop, c: TreeCrown) {
+    crown_cards_lod(mesh, p, c, false, false);
+}
+fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, cap: bool) {
     let center: [f32; 3] = std::array::from_fn(|i| p.position[i] + c.center[i]);
     let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
     let willow = p.kind == PropKind::Willow;
@@ -4449,6 +4452,11 @@ fn crown_cards(mesh: &mut MeshData, p: Prop, c: TreeCrown) {
         4
     };
     for i in 0..count {
+        // Keep exact planes from the full crown; distant foliage has the same
+        // attachment points, texture scale, gaps and wind phase.
+        if reduced && i >= 2 && !(cap && i == count - 1) {
+            continue;
+        }
         let jitter = (random(c.seed, 1400 + i) - 0.5) * 0.22;
         let yaw = c.yaw + i as f32 * 1.96350 + jitter;
         let width = ((yaw.cos() * c.radii[0]).powi(2) + (yaw.sin() * c.radii[2]).powi(2)).sqrt();
@@ -4506,12 +4514,31 @@ fn crown_cards(mesh: &mut MeshData, p: Prop, c: TreeCrown) {
 }
 
 fn render_tree(mesh: &mut MeshData, p: Prop, far: bool) {
+    render_tree_lod(mesh, p, if far { 2 } else { 0 });
+}
+// 0: full branches/cards, 1: original crowns with fewer cards, 2: kilometre silhouettes.
+fn render_tree_lod(mesh: &mut MeshData, p: Prop, lod: u8) {
+    let far = lod > 0;
     let surface_start = mesh.vertices.len();
     let model = tree_model(p);
     tree_trunk(mesh, p, &model, far);
     if far {
-        for crown in distant_crowns(&model, p) {
-            crown_mesh(mesh, p.position, crown, true);
+        let top_seed = model
+            .crowns
+            .iter()
+            .max_by(|a, b| (a.center[1] + a.radii[1]).total_cmp(&(b.center[1] + b.radii[1])))
+            .map(|c| c.seed);
+        let crowns = if lod == 1 {
+            model.crowns.clone()
+        } else {
+            distant_crowns(&model, p)
+        };
+        for crown in crowns {
+            if lod == 1 {
+                crown_cards_lod(mesh, p, crown, true, Some(crown.seed) == top_seed);
+            } else {
+                crown_mesh(mesh, p.position, crown, true);
+            }
             if matches!(p.kind, PropKind::Broadleaf | PropKind::Willow)
                 || (p.kind == PropKind::Pine && tree_age(p) == TreeAge::Windswept)
             {
@@ -5699,8 +5726,10 @@ mod character_asset_tests {
                 };
                 let mut near = MeshData::default();
                 let mut far = MeshData::default();
+                let mut middle = MeshData::default();
                 render_tree(&mut near, p, false);
                 render_tree(&mut far, p, true);
+                render_tree_lod(&mut middle, p, 1);
                 let leaves: Vec<_> = near
                     .vertices
                     .iter()
@@ -5713,6 +5742,27 @@ mod character_asset_tests {
                     "{kind:?} exceeded alpha-card budget"
                 );
                 maximum_cards = maximum_cards.max(leaves.len() / 6);
+                let middle_leaves: Vec<_> = middle
+                    .vertices
+                    .iter()
+                    .filter(|v| (5.0..10.0).contains(&v.texture))
+                    .collect();
+                assert!(!middle_leaves.is_empty());
+                assert!(
+                    middle_leaves.len() / 6 <= 33,
+                    "{kind:?} seed {seed} exceeded the middle-distance card budget"
+                );
+                assert!(middle_leaves.len() < leaves.len());
+                assert!(middle.vertices.len() < near.vertices.len());
+                for v in middle_leaves {
+                    assert!(
+                        leaves.iter().any(|full| full.position == v.position
+                            && full.uv == v.uv
+                            && full.color == v.color
+                            && full.normal == v.normal),
+                        "middle LOD changed a leaf cluster instead of thinning it"
+                    );
+                }
                 assert!(leaves.iter().all(|v| {
                     v.texture
                         == if matches!(kind, PropKind::Pine | PropKind::Fir) {

@@ -42,6 +42,7 @@ struct Globals {
     shelter_origin: [f32; 4],
     shelter_params: [f32; 4],
     hearths: [[f32; 4]; 8],
+    cloud_shadow: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -55,6 +56,7 @@ struct Chunk {
     // Props can survive one terrain update while their replacement is queued.
     prop_lod: u32,
     prop_detail: u8,
+    camera_proxy: bool,
     terrain: Option<GpuMesh>,
     props: Option<GpuMesh>,
     reflected_props: Option<GpuMesh>,
@@ -138,6 +140,7 @@ pub struct Renderer {
     water_pipeline: wgpu::RenderPipeline,
     water_sim: WaterSim,
     materials: crate::materials::MaterialLibrary,
+    cloud_shadow: crate::cloud_shadow::CloudShadow,
     empty_group: wgpu::BindGroup,
     precipitation: crate::precipitation::PrecipitationMotion,
     sky_pipeline: wgpu::RenderPipeline,
@@ -325,6 +328,7 @@ impl Renderer {
             contents: bytemuck::bytes_of(&Globals::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let cloud_shadow = crate::cloud_shadow::CloudShadow::new(&device, &uniform, &shader);
         let water_sim = WaterSim::new(&device);
         let materials = crate::materials::MaterialLibrary::new(&device, &queue);
         let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -434,6 +438,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let uniform_group = Self::environment_group(
@@ -445,6 +459,7 @@ impl Renderer {
             &reflection.view,
             &reflection_sampler,
             &refraction,
+            &cloud_shadow.view,
         );
         let reflected_group = Self::environment_group(
             &device,
@@ -455,6 +470,7 @@ impl Renderer {
             &reflection_fallback.view,
             &reflection_sampler,
             &refraction,
+            &cloud_shadow.view,
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
@@ -608,6 +624,7 @@ impl Renderer {
             water_pipeline,
             water_sim,
             materials,
+            cloud_shadow,
             empty_group,
             precipitation: Default::default(),
             sky_pipeline,
@@ -744,6 +761,7 @@ impl Renderer {
         reflection: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
         refraction: &ReflectionTarget,
+        cloud_shadow: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Shared landscape environment"),
@@ -781,6 +799,10 @@ impl Renderer {
                     binding: 7,
                     resource: wgpu::BindingResource::TextureView(&refraction.depth),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(cloud_shadow),
+                },
             ],
         })
     }
@@ -801,6 +823,7 @@ impl Renderer {
             &self.reflection.view,
             &self.reflection_sampler,
             &self.refraction,
+            &self.cloud_shadow.view,
         );
         self.reflected_group = Self::environment_group(
             &self.device,
@@ -811,6 +834,7 @@ impl Renderer {
             &self._reflection_fallback.view,
             &self.reflection_sampler,
             &self.refraction,
+            &self.cloud_shadow.view,
         );
         self.reflection_valid = false;
     }
@@ -1278,22 +1302,24 @@ impl Renderer {
                     let terrain = self.upload(geometry::terrain_chunk(world, x, z, lod));
                     let water = self.upload(geometry::water_chunk(world, x, z, lod));
                     let previous = self.chunks.remove(&(x, z));
-                    let (props, reflected_props, prop_lod, prop_detail) = previous
+                    let (props, reflected_props, prop_lod, prop_detail, camera_proxy) = previous
                         .map(|old| {
                             (
                                 old.props,
                                 old.reflected_props,
                                 old.prop_lod,
                                 old.prop_detail,
+                                old.camera_proxy,
                             )
                         })
-                        .unwrap_or((None, None, u32::MAX, u8::MAX));
+                        .unwrap_or((None, None, u32::MAX, u8::MAX, false));
                     self.chunks.insert(
                         (x, z),
                         Chunk {
                             lod,
                             prop_lod,
                             prop_detail,
+                            camera_proxy,
                             terrain,
                             props,
                             reflected_props,
@@ -1483,15 +1509,24 @@ impl Renderer {
                         let terrain = parts.next().unwrap();
                         let water = parts.next().unwrap();
                         let old = self.chunks.remove(&(job.x, job.z));
-                        let (props, reflected_props, prop_lod, prop_detail) = old
-                            .map(|c| (c.props, c.reflected_props, c.prop_lod, c.prop_detail))
-                            .unwrap_or((None, None, u32::MAX, u8::MAX));
+                        let (props, reflected_props, prop_lod, prop_detail, camera_proxy) = old
+                            .map(|c| {
+                                (
+                                    c.props,
+                                    c.reflected_props,
+                                    c.prop_lod,
+                                    c.prop_detail,
+                                    c.camera_proxy,
+                                )
+                            })
+                            .unwrap_or((None, None, u32::MAX, u8::MAX, false));
                         self.chunks.insert(
                             (job.x, job.z),
                             Chunk {
                                 lod: job.lod,
                                 prop_lod,
                                 prop_detail,
+                                camera_proxy,
                                 terrain,
                                 water,
                                 props,
@@ -1616,6 +1651,20 @@ impl Renderer {
         let fog_color = [0.50, 0.64, 0.76];
         let view_projection = projection * view;
         let frustum = frustum_planes(view_projection);
+        // Hysteresis avoids toggling entire plant groups when hovering around
+        // a distance boundary. Both the main view and mirror share the choice.
+        let mut changed_tree_lod = false;
+        for c in self.chunks.values_mut() {
+            if let Some(mesh) = &c.props {
+                let d2 = (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared();
+                let reduced = tree_proxy_lod(c.camera_proxy, d2);
+                changed_tree_lod |= reduced != c.camera_proxy;
+                c.camera_proxy = reduced;
+            }
+        }
+        if changed_tree_lod {
+            self.reflection_valid = false;
+        }
         let weather = self.weather_state;
         let wind = (weather.wind_x.hypot(weather.wind_z) / 11.0).clamp(0.10, 2.5);
         let wind_dir = glam::Vec2::new(weather.wind_x, weather.wind_z);
@@ -1673,6 +1722,9 @@ impl Renderer {
             self.reflection_valid = true;
         }
         let shadow_active = self.shadows_enabled && sky.shadow_strength > 0.001;
+        let update_clouds =
+            self.cloud_shadow
+                .prepare(eye, sun, weather.weather, weather.surface[3]);
         let globals = Globals {
             view_projection: view_projection.to_cols_array_2d(),
             camera: [eye.x, eye.y, eye.z, self.width as f32 / self.height as f32],
@@ -1725,6 +1777,7 @@ impl Renderer {
                 self.quality as f32,
             ],
             hearths: self.hearths,
+            cloud_shadow: self.cloud_shadow.uniform(),
             shelter_matrix: self.shelter_matrix.to_cols_array_2d(),
             shelter_origin: self.shelter_origin.extend(1.0).to_array(),
             shelter_params: [
@@ -1771,6 +1824,9 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("World frame"),
             });
+        if update_clouds {
+            self.cloud_shadow.encode(&mut encoder);
+        }
         self.water_sim.encode(
             &self.queue,
             &mut encoder,
@@ -1883,9 +1939,7 @@ impl Renderer {
                 .filter_map(|p| p[0].as_ref())
                 .chain(self.canopies.values().flatten())
                 .chain(self.chunks.values().flat_map(|c| {
-                    let props = if c.props.as_ref().is_some_and(|m| {
-                        (eye.clamp(m.bounds[0], m.bounds[1]) - eye).length_squared() > 220.0 * 220.0
-                    }) {
+                    let props = if c.camera_proxy {
                         c.reflected_props.as_ref().or(c.props.as_ref())
                     } else {
                         c.props.as_ref()
@@ -1952,12 +2006,9 @@ impl Renderer {
                 .chunks
                 .values()
                 .flat_map(|c| {
-                    // Keep the complete candidate set and non-tree props, but
-                    // distant branch-sized alpha cards no longer fill pixels.
-                    // Sun shadows still use detailed c.props for canopy gaps.
-                    let props = if c.props.as_ref().is_some_and(|m| {
-                        (eye.clamp(m.bounds[0], m.bounds[1]) - eye).length_squared() > 220.0 * 220.0
-                    }) {
+                    // Original crown clusters keep their leaf gaps in the middle
+                    // LOD. Detailed c.props still supplies all sun-shadow casters.
+                    let props = if c.camera_proxy {
                         c.reflected_props.as_ref().or(c.props.as_ref())
                     } else {
                         c.props.as_ref()
@@ -2360,5 +2411,31 @@ mod streaming_phase_tests {
             chunk_phase(Some((1, 1, 0)), 0, 1),
             Some(ChunkPhase::Terrain)
         );
+    }
+}
+
+fn tree_proxy_lod(reduced: bool, distance_squared: f32) -> bool {
+    if reduced {
+        distance_squared >= 204.0 * 204.0
+    } else {
+        distance_squared > 244.0 * 244.0
+    }
+}
+#[cfg(test)]
+mod tree_lod_tests {
+    #[test]
+    fn tree_lod_does_not_chatter_at_the_old_boundary() {
+        let mut reduced = false;
+        for d in [219.0_f32, 225.0, 215.0, 240.0] {
+            reduced = super::tree_proxy_lod(reduced, d * d);
+            assert!(!reduced);
+        }
+        reduced = super::tree_proxy_lod(reduced, 245.0 * 245.0);
+        assert!(reduced);
+        for d in [240.0_f32, 225.0, 215.0, 205.0] {
+            reduced = super::tree_proxy_lod(reduced, d * d);
+            assert!(reduced);
+        }
+        assert!(!super::tree_proxy_lod(reduced, 203.0 * 203.0));
     }
 }

@@ -30,7 +30,7 @@
     }
     // Unmatched leaf pixels use their exact-depth integral. Do not fetch four
     // low-resolution scattering texels that will be discarded in that case.
-    if total_weight > 0.000001 {
+    if total_weight > 0.015 {
         for (var i=0; i<4; i+=1) {result += textureLoad(scattered_light,pixels[i],0)*weights[i];}
     }
     // Well-supported smooth surfaces keep the inexpensive quarter-area result.
@@ -40,7 +40,7 @@
     if total_weight >= 0.12 { return result / total_weight; }
     let ray = normalize(relative_position(o.uv, 0.5));
     let fine = volume_integral(ray, distance, full_pixel / vec2<i32>(2));
-    if total_weight <= 0.000001 { return fine; }
+    if total_weight <= 0.015 { return fine; }
     // Blend the transition continuously. Both estimates end at foreground
     // depth; the fallback never copies distant light across an occluding leaf.
     let confidence = smoothstep(0.015, 0.12, total_weight);

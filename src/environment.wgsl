@@ -5,6 +5,7 @@
 @group(0) @binding(5) var environment_sampler: sampler;
 @group(0) @binding(6) var submerged_scene: texture_2d<f32>;
 @group(0) @binding(7) var submerged_depth: texture_depth_2d;
+@group(0) @binding(8) var cloud_density_cache: texture_2d<f32>;
 
 fn water_bed_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     let forward = vec3<f32>(sin(u.params.y)*cos(u.params.z),sin(u.params.z),-cos(u.params.y)*cos(u.params.z));
@@ -64,8 +65,20 @@ fn weather_light_visibility(world: vec3<f32>) -> f32 {
     let light = normalize(u.light.xyz);
     if light.y < 0.035 { return 1.0 - u.weather.x * 0.50; }
     let at_cloud = world.xz + light.xz * max(weather_cloud_base(false) - world.y, 0.0) / light.y;
-    let cloud = weather_cloud_field(at_cloud, false);
-    return mix(1.0, 0.26, cloud.x) * (1.0 - u.weather.x * 0.12);
+    let uv = (at_cloud - u.cloud_shadow.xy) * u.cloud_shadow.z + vec2<f32>(0.5);
+    let edge = min(min(uv.x, uv.y), min(1.0-uv.x, 1.0-uv.y));
+    var density: f32;
+    if u.cloud_shadow.w > 0.5 && edge > 0.02 {
+        density = textureSampleLevel(cloud_density_cache, environment_sampler, uv, 0.0).r;
+        // Blend the remote edge into the exact field, without paying for the
+        // procedural fallback over the entire visible foreground.
+        if edge < 0.05 {
+            density = mix(weather_cloud_field(at_cloud, false).x, density, smoothstep(0.02,0.05,edge));
+        }
+    } else {
+        density = weather_cloud_field(at_cloud, false).x;
+    }
+    return mix(1.0, 0.26, density) * (1.0 - u.weather.x * 0.12);
 }
 
 fn reflected_environment(world: vec3<f32>, normal: vec3<f32>, view: vec3<f32>, roughness: f32) -> vec3<f32> {

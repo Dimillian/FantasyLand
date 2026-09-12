@@ -1,4 +1,5 @@
 pub mod celestial;
+mod cloud_shadow;
 pub mod cover;
 pub mod ecology;
 pub mod exploration;

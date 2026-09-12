@@ -67,8 +67,7 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad) -> PixelMaterial 
     if cutout { pigment *= vec3<f32>(0.94,1.06,0.96); }
     return PixelMaterial(pigment,mapped,packed.b,select(0.0,0.85,layer==12i),packed.a,select(1.0,tex.a,cutout));
 }
-fn material_highlight(base:vec3<f32>,n:vec3<f32>,world:vec3<f32>,rough:f32,metal:f32,wet:f32,visibility:f32)->vec3<f32> {
-    let view=normalize(u.camera.xyz-world); let light=normalize(u.light.xyz);
+fn material_highlight(albedo:vec3<f32>,n:vec3<f32>,view:vec3<f32>,light:vec3<f32>,rough:f32,metal:f32,wet:f32,visibility:f32)->vec3<f32> {
     let facing_normal=select(-n,n,dot(n,view)>=0.0);
     let h=normalize(view+light);
     let nv=max(dot(facing_normal,view),0.001); let nl=max(dot(facing_normal,light),0.0);
@@ -79,7 +78,7 @@ fn material_highlight(base:vec3<f32>,n:vec3<f32>,world:vec3<f32>,rough:f32,metal
     let distribution=min(a2/(3.14159265*denominator*denominator),20.0);
     let k=(r+1.0)*(r+1.0)*0.125;
     let geometry=(nv/(nv*(1.0-k)+k))*(nl/(nl*(1.0-k)+k));
-    let f0=mix(vec3<f32>(0.035),pow(base,vec3<f32>(2.2)),metal);
+    let f0=mix(vec3<f32>(0.035),albedo,metal);
     let fresnel=f0+(vec3<f32>(1.0)-f0)*pow(1.0-vh,5.0);
     let spec=distribution*geometry*fresnel/max(4.0*nv*nl,0.001);
     let reflected=reflect(-view,facing_normal);
@@ -88,4 +87,21 @@ fn material_highlight(base:vec3<f32>,n:vec3<f32>,world:vec3<f32>,rough:f32,metal
     let env_f=f0+(vec3<f32>(1.0)-f0)*pow(1.0-nv,5.0);
     return spec*nl*u.direct.rgb*u.direct.w*visibility*0.68
         + sky*env_f*(1.0-r)*(0.12+wet*0.55+metal*0.45);
+}
+
+// Rough leaves retain sunlight and rain sheen without evaluating a complete
+// reflected sky and microfacet BRDF over every distant grass pixel.
+fn vegetation_highlight(n:vec3<f32>,view:vec3<f32>,light:vec3<f32>,rough:f32,wet:f32,visibility:f32)->vec3<f32> {
+    let r=clamp(mix(rough,0.20,wet),0.18,1.0);
+    let facing = select(-n,n,dot(n,view)>=0.0);
+    let half_sum=view+light;
+    let halfway=half_sum*inverseSqrt(max(dot(half_sum,half_sum),0.00001));
+    let nh=max(dot(facing,halfway),0.0);
+    let nh2=nh*nh; let nh4=nh2*nh2; let nh8=nh4*nh4;
+    let lobe=mix(nh8,nh8*nh8*nh8*nh8,wet);
+    let nl=max(dot(facing,light),0.0);
+    let sheen=(0.009+wet*0.12)*(1.0-r*0.65);
+    let sky=u.ambient.rgb*(0.20+max(facing.y,0.0)*0.28);
+    return u.direct.rgb*u.direct.w*visibility*nl*lobe*sheen
+        + sky*0.035*(1.0-r)*(0.12+wet*0.55);
 }

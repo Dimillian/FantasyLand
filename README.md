@@ -149,9 +149,12 @@ or after a worker failure. Water bathymetry, player collision and atmosphere
 sampling still run on the main thread.
 
 Ground cover keeps the 400% foreground setting through 80m, tapers to zero at
-300m, and uses 72/36/24-vertex template banks with hysteresis. Distant trees use
-complete, matching proxy populations in the main view and reflections; detailed
-leaf shadows remain in the sun pass so canopy godrays retain their gaps. Horizon
+300m, and uses 72/36/24-vertex template banks with hysteresis. Middle-distance trees keep a sparse subset of the original leaf cards and crown
+positions, shared between the main view and reflections. Chunk-bound hysteresis
+reduces detail beyond 244m and restores it below 204m, preventing repeated LOD
+switching at the boundary. This is not a per-tree crossfade; outer-distance trees
+still use solid silhouettes. Detailed leaf shadows remain in the sun pass so
+canopy godrays retain their gaps. Horizon
 land and water have separate buffers; invisible water skips refraction copies
 and reflection updates. The 17 procedural materials remain unchanged (2.83 MiB).
 
@@ -162,10 +165,32 @@ over immediately. Paused views also stop streaming work and progress saves.
 F3 includes a sampled GPU draw span when timestamps are supported. Individual
 pass intervals can overlap on Apple tile GPUs and must **not** be added together
 or interpreted as exclusive shading costs. The span excludes the preceding
-water simulation. The browser performance check waits for streaming to drain,
+water simulation and cloud-cache refresh. The browser performance check waits for streaming to drain,
 freezes the sun clock, hides diagnostics during measurement, and reports frame
 intervals separately from CPU submission time. Walking checks include streaming.
 
 Additional verification: `node scripts/verify-streaming.mjs` checks actual WASM
 worker packets; `node scripts/verify-ui.cjs` covers input, saved settings, worker
 fallback/resume and single-view rendering.
+
+### Cached lighting and foliage continuity
+
+A world-anchored 512 × 512 R8 texture caches low-cloud density across 32.8km
+(256 KiB), refreshing up to eight times per weather second. Surface elevation and
+light direction still project each shadow onto that cloud plane. Camera movement
+does not drag the pattern; large travel recenters on the same 64m sample lattice.
+The cache fades to the analytic density at its edges, and the visible sky remains
+procedural. Fast weather clocks refresh more often.
+
+Foliage retains full material highlights nearby, blending to a cheaper wetness-aware
+response from 24–64m. Diffuse light, leaf transmission, enclosure, directional
+shadows and godrays remain enabled. The ray reconstruction also skips light
+texture reads whose blend weight is exactly zero, retaining its exact-depth
+fallback and original integration sample count. Snow noise and empty fire-light calculations
+are skipped when they cannot contribute. Texture resolution and 400% foreground
+cover are unchanged. Middle-distance alpha cards trade a little extra memory and
+overdraw for better silhouette continuity, so net performance is measured using
+browser frame intervals rather than inferred from triangle counts.
+
+See [the measured comparison](docs/performance-lighting-cache.md) for conditions,
+raw results and limitations of the current lighting-cache build.
