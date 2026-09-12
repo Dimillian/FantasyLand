@@ -1092,6 +1092,19 @@ pub fn props_chunk_with_cover(world: &World, cx: i32, cz: i32, cover: bool) -> M
     props_chunk_at_lod(world, cx, cz, cover, 0)
 }
 pub fn props_chunk_at_lod(world: &World, cx: i32, cz: i32, cover: bool, lod: u32) -> MeshData {
+    props_for_pass(world, cx, cz, cover, lod, false)
+}
+pub fn reflection_props_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
+    props_for_pass(world, cx, cz, false, lod, true)
+}
+fn props_for_pass(
+    world: &World,
+    cx: i32,
+    cz: i32,
+    cover: bool,
+    lod: u32,
+    tree_proxy: bool,
+) -> MeshData {
     let mut mesh = MeshData::default();
     let ox = cx as f32 * CHUNK_SIZE;
     let oz = cz as f32 * CHUNK_SIZE;
@@ -1130,28 +1143,42 @@ pub fn props_chunk_at_lod(world: &World, cx: i32, cz: i32, cover: bool, lod: u32
                 p.position[1] =
                     terrain_surface_height_lod(world, p.position[0], p.position[2], lod) - 0.08;
                 let first = mesh.vertices.len();
-                match p.kind {
-                    PropKind::Pine => pine(&mut mesh, p),
-                    PropKind::Fir => fir(&mut mesh, p),
-                    PropKind::Broadleaf => broadleaf(&mut mesh, p),
-                    PropKind::Birch => birch(&mut mesh, p),
-                    PropKind::Willow => willow(&mut mesh, p),
-                    PropKind::DeadTree => dead_tree(&mut mesh, p),
-                    PropKind::FallenLog => fallen_log_lod(&mut mesh, p, world, lod),
-                    PropKind::Stump => stump(&mut mesh, p),
-                    PropKind::Boulder => landscape_rock(&mut mesh, p),
-                    PropKind::Shrub => {
-                        let color = mul([0.27, 0.34, 0.14], 0.86 + random(p.seed, 12) * 0.24);
-                        polyhedron(
-                            &mut mesh,
-                            [p.position[0], p.position[1] + 0.6 * p.scale, p.position[2]],
-                            [1.25 * p.scale, 0.95 * p.scale, 1.10 * p.scale],
-                            p.seed,
-                            color,
-                            1.0,
-                        );
+                if tree_proxy
+                    && matches!(
+                        p.kind,
+                        PropKind::Pine
+                            | PropKind::Fir
+                            | PropKind::Broadleaf
+                            | PropKind::Birch
+                            | PropKind::Willow
+                            | PropKind::DeadTree
+                    )
+                {
+                    render_tree(&mut mesh, p, true);
+                } else {
+                    match p.kind {
+                        PropKind::Pine => pine(&mut mesh, p),
+                        PropKind::Fir => fir(&mut mesh, p),
+                        PropKind::Broadleaf => broadleaf(&mut mesh, p),
+                        PropKind::Birch => birch(&mut mesh, p),
+                        PropKind::Willow => willow(&mut mesh, p),
+                        PropKind::DeadTree => dead_tree(&mut mesh, p),
+                        PropKind::FallenLog => fallen_log_lod(&mut mesh, p, world, lod),
+                        PropKind::Stump => stump(&mut mesh, p),
+                        PropKind::Boulder => landscape_rock(&mut mesh, p),
+                        PropKind::Shrub => {
+                            let color = mul([0.27, 0.34, 0.14], 0.86 + random(p.seed, 12) * 0.24);
+                            polyhedron(
+                                &mut mesh,
+                                [p.position[0], p.position[1] + 0.6 * p.scale, p.position[2]],
+                                [1.25 * p.scale, 0.95 * p.scale, 1.10 * p.scale],
+                                p.seed,
+                                color,
+                                1.0,
+                            );
+                        }
+                        PropKind::Reed => reeds(&mut mesh, p),
                     }
-                    PropKind::Reed => reeds(&mut mesh, p),
                 }
                 anchor_prop(world, &mut mesh, first, p, lod);
             }
@@ -5698,7 +5725,9 @@ mod character_asset_tests {
                             .all(|u| u.is_finite() && (0.0..=1.0).contains(u))
                 }));
                 assert!(
-                    far.vertices.iter().all(|v| v.texture < 0.),
+                    far.vertices
+                        .iter()
+                        .all(|v| !(5.0..=9.0).contains(&v.texture)),
                     "distant tree mesh must not add alpha overdraw"
                 );
             }

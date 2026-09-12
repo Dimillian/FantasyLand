@@ -324,6 +324,7 @@ impl PostProcess {
         encoder: &mut wgpu::CommandEncoder,
         output: &wgpu::TextureView,
         size: [u32; 2],
+        profile: &crate::gpu_profile::GpuProfile,
     ) {
         queue.write_buffer(
             &self.uniform,
@@ -349,9 +350,22 @@ impl PostProcess {
                         &self.downsample
                     },
                     input,
+                    profile.pass(7 + i as u32 * 3),
                 );
-                Self::pass(encoder, &level.b.view, &self.horizontal, &level.a.source);
-                Self::pass(encoder, &level.a.view, &self.vertical, &level.b.source);
+                Self::pass(
+                    encoder,
+                    &level.b.view,
+                    &self.horizontal,
+                    &level.a.source,
+                    profile.pass(8 + i as u32 * 3),
+                );
+                Self::pass(
+                    encoder,
+                    &level.a.view,
+                    &self.vertical,
+                    &level.b.source,
+                    profile.pass(9 + i as u32 * 3),
+                );
             }
         }
         Self::pass(
@@ -359,6 +373,7 @@ impl PostProcess {
             output,
             &self.presentation,
             &self.presentation_group,
+            profile.pass(16),
         );
     }
     fn pass(
@@ -366,6 +381,7 @@ impl PostProcess {
         output: &wgpu::TextureView,
         pipeline: &wgpu::RenderPipeline,
         group: &wgpu::BindGroup,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("World post processing"),
@@ -379,7 +395,7 @@ impl PostProcess {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
         });
         pass.set_pipeline(pipeline);

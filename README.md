@@ -136,3 +136,36 @@ The `cover` verifier compares Off, 100%, 200% and 400% from one fixed camera, ch
 ## Code
 
 `world.rs` defines world identity, climate, terrain, features and maps. `coast.rs` defines landmass contours, shore profiles and the ocean shelf. `geography.rs` generates connected mountain ranges and basins; `regions.rs` supplies geology and landscape identity. `hydrology.rs` builds drainage and channel profiles. `roads.rs` builds the sparse transport graph; `traversal.rs` supplies bounded contour routing and `journeys.rs` selects geographic walks. `habitat.rs` describes future habitation suitability. `natural.rs` owns natural-monument geometry, collision and viewpoints; `exploration.rs` finds regional destinations. `ecology.rs` supplies shared forest and cover fields. `plants.rs`, `cover.rs` and `cover.wgsl` generate and instance ground cover. `geometry.rs` builds other mesh recipes and physical crossing floors. `player.rs` implements movement. `renderer.rs` manages wgpu and streaming; `horizon.rs` generates distant terrain. `celestial.rs` supplies the shared sky and light state; `weather.rs` provides moving fronts and local surface history, `environment.wgsl` handles shelter, reflections and precipitation, and `tonemap.wgsl` supplies final HDR presentation; `world.wgsl`, `shadow.rs`, `shadow.wgsl` and `lighting.wgsl` draw the sky, surfaces and shadows. `dist/app.js` supplies browser controls and atlas interactions. Generated browser bindings and WASM are checked into `dist/pkg` for static hosting.
+
+### Smooth streaming and rendering
+
+The browser uses one module worker (`dist/world-worker.js`) with its own seeded
+Rust world. Terrain, props, horizon patches, canopy and cover generation, vertex
+packing and deduplication run there. Versioned binary packets transfer their
+buffers; the main thread admits at most two outstanding jobs and uploads ready
+packets within a small frame budget. Teleports and quality changes invalidate job
+tickets. The bounded synchronous path remains available during worker startup
+or after a worker failure. Water bathymetry, player collision and atmosphere
+sampling still run on the main thread.
+
+Ground cover keeps the 400% foreground setting through 80m, tapers to zero at
+300m, and uses 72/36/24-vertex template banks with hysteresis. Distant trees use
+complete, matching proxy populations in the main view and reflections; detailed
+leaf shadows remain in the sun pass so canopy godrays retain their gaps. Horizon
+land and water have separate buffers; invisible water skips refraction copies
+and reflection updates. The 17 procedural materials remain unchanged (2.83 MiB).
+
+Only one visible game view per origin submits frames. A BroadcastChannel lease
+handles embedded browsers that report multiple previews as visible; input takes
+over immediately. Paused views also stop streaming work and progress saves.
+
+F3 includes a sampled GPU draw span when timestamps are supported. Individual
+pass intervals can overlap on Apple tile GPUs and must **not** be added together
+or interpreted as exclusive shading costs. The span excludes the preceding
+water simulation. The browser performance check waits for streaming to drain,
+freezes the sun clock, hides diagnostics during measurement, and reports frame
+intervals separately from CPU submission time. Walking checks include streaming.
+
+Additional verification: `node scripts/verify-streaming.mjs` checks actual WASM
+worker packets; `node scripts/verify-ui.cjs` covers input, saved settings, worker
+fallback/resume and single-view rendering.

@@ -1,6 +1,4 @@
-fn volume_visibility(relative: vec3<f32>) -> f32 {
-    let p = relative + (fog.camera.xyz - fog.shadow_origin.xyz);
-    let clip = fog.shadow_matrix * vec4<f32>(p, 1.0);
+fn volume_visibility(clip: vec4<f32>) -> f32 {
     let uv = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
     if clip.z <= 0.0 || clip.z >= 1.0 || any(uv < vec2<f32>(0.002)) || any(uv > vec2<f32>(0.998)) { return 1.0; }
     // One bilinear PCF lookup per sample. The shadow pass uses exactly the same
@@ -23,6 +21,10 @@ fn volume_integral(ray: vec3<f32>, distance: f32, low_pixel: vec2<i32>) -> vec4<
     let radiance = fog.light_color.rgb * fog.light_direction.w * fog.light_color.w * phase;
     var scattering = vec3<f32>(0.0);
     var transmittance = 1.0;
+    // The directional shadow transform is affine. Transform the ray once,
+    // including in the full-resolution leaf-edge fallback, not at every step.
+    let shadow_start = fog.shadow_matrix * vec4<f32>(fog.camera.xyz - fog.shadow_origin.xyz, 1.0);
+    let shadow_ray = fog.shadow_matrix * vec4<f32>(ray, 0.0);
     for (var i = 0u; i < 20u; i += 1u) {
         if f32(i) >= steps { break; }
         // Quadratic spacing allocates most samples to nearby canopy gaps. Each
@@ -37,7 +39,7 @@ fn volume_integral(ray: vec3<f32>, distance: f32, low_pixel: vec2<i32>) -> vec4<
         let altitude = max((fog.camera.y - fog.camera.w) + sample.y, 0.0);
         let density = fog.atmosphere.x * (0.28 + 0.72 * exp(-altitude * fog.atmosphere.z));
         let opacity = 1.0 - exp(-density * step_length);
-        scattering += radiance * volume_visibility(sample) * (transmittance * opacity);
+        scattering += radiance * volume_visibility(shadow_start + shadow_ray * t) * (transmittance * opacity);
         transmittance *= 1.0 - opacity;
     }
     return vec4<f32>(scattering, transmittance);

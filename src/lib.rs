@@ -4,6 +4,7 @@ pub mod ecology;
 pub mod exploration;
 pub mod geography;
 pub mod geometry;
+mod gpu_profile;
 pub mod habitat;
 mod horizon;
 pub mod journeys;
@@ -17,6 +18,7 @@ mod rays;
 pub mod regions;
 pub mod renderer;
 mod shadow;
+pub mod streaming;
 pub mod traversal;
 mod vertex;
 pub mod water_sim;
@@ -65,6 +67,9 @@ struct GameState {
     mesh_megabytes: f32,
     weather: weather::WeatherState,
     reflection_draws: u32,
+    gpu_timings: Vec<gpu_profile::PassTime>,
+    gpu_render_ms: Option<f32>,
+    streaming_pending: usize,
 }
 
 #[wasm_bindgen]
@@ -87,6 +92,18 @@ impl Game {
             renderer,
             hour: 9.0,
         })
+    }
+    pub fn set_async_streaming(&mut self, enabled: bool) {
+        self.renderer.set_async_streaming(enabled);
+    }
+    pub fn next_stream_job(&mut self) -> Vec<i32> {
+        self.renderer.next_stream_job()
+    }
+    pub fn accept_stream_result(&mut self, ticket: u32, bytes: &[u8]) -> bool {
+        self.renderer.accept_stream_result(ticket, bytes)
+    }
+    pub fn pending_chunks(&self) -> usize {
+        self.renderer.pending_count()
     }
     pub fn resize(&mut self, width: u32, height: u32) {
         self.renderer.resize(width, height);
@@ -202,6 +219,9 @@ impl Game {
             mesh_megabytes: self.renderer.mesh_bytes() as f32 / 1_000_000.0,
             weather: *self.renderer.weather_state(),
             reflection_draws: self.renderer.reflection_draws(),
+            gpu_timings: self.renderer.gpu_timings(),
+            gpu_render_ms: self.renderer.gpu_render_ms(),
+            streaming_pending: self.renderer.pending_count(),
         })
         .unwrap_or(JsValue::NULL)
     }

@@ -440,7 +440,12 @@ impl Rays {
 
     /// After opaque, water and precipitation, before PostProcess::render. Water
     /// writes scene depth, so integration ends at its actual moving surface.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::TextureView) {
+    pub fn encode(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &wgpu::TextureView,
+        profile: &crate::gpu_profile::GpuProfile,
+    ) {
         if !self.active {
             return;
         }
@@ -463,7 +468,7 @@ impl Rays {
                     attachment(&self.targets.distance),
                 ],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: profile.pass(5),
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.march_pipeline);
@@ -483,7 +488,7 @@ impl Rays {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: profile.pass(6),
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.composite_pipeline);

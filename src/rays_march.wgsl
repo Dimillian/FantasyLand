@@ -24,8 +24,9 @@ struct VolumeOut {
         }
     }
     let uv = (vec2<f32>(nearest_pixel) + vec2<f32>(0.5)) / fog.resolution.xy;
-    let ray = normalize(relative_position(uv, 0.5));
-    let distance = integration_distance(uv, nearest_depth);
+    let position = relative_position(uv, select(nearest_depth, 0.5, nearest_depth >= 0.999999));
+    let ray = normalize(position);
+    let distance = select(min(length(position), fog.atmosphere.y), fog.atmosphere.y, nearest_depth >= 0.999999);
     var result: VolumeOut;
     result.scattering = volume_integral(ray, distance, low_pixel);
     result.distance = distance;

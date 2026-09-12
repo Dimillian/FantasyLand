@@ -57,6 +57,7 @@ struct Chunk {
     prop_detail: u8,
     terrain: Option<GpuMesh>,
     props: Option<GpuMesh>,
+    reflected_props: Option<GpuMesh>,
     water: Option<GpuMesh>,
 }
 
@@ -141,6 +142,7 @@ pub struct Renderer {
     precipitation: crate::precipitation::PrecipitationMotion,
     sky_pipeline: wgpu::RenderPipeline,
     post: PostProcess,
+    gpu_profile: crate::gpu_profile::GpuProfile,
     rays: crate::rays::Rays,
     shadow: ShadowMap,
     shadows_enabled: bool,
@@ -185,8 +187,12 @@ pub struct Renderer {
     capture_view: wgpu::TextureView,
     chunks: HashMap<(i32, i32), Chunk>,
     pending: VecDeque<ChunkJob>,
+    async_streaming: bool,
+    stream_ticket: u32,
+    stream_turn: u32,
+    in_flight: HashMap<u32, crate::streaming::Job>,
     center: Option<(i32, i32)>,
-    horizon: HashMap<(i32, i32), GpuMesh>,
+    horizon: HashMap<(i32, i32), [Option<GpuMesh>; 2]>,
     horizon_pending: VecDeque<(i32, i32)>,
     canopies: HashMap<(i32, i32), Option<GpuMesh>>,
     canopy_pending: VecDeque<(i32, i32)>,
@@ -261,7 +267,7 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("FantasyLand GPU"),
-                required_features: wgpu::Features::empty(),
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: wgpu::Limits::downlevel_defaults()
                     .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -591,6 +597,7 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        let gpu_profile = crate::gpu_profile::GpuProfile::new(&device, &queue);
         Ok(Self {
             device,
             queue,
@@ -605,6 +612,7 @@ impl Renderer {
             precipitation: Default::default(),
             sky_pipeline,
             post,
+            gpu_profile,
             rays,
             shadow,
             shadows_enabled: true,
@@ -649,6 +657,10 @@ impl Renderer {
             capture_view,
             chunks: HashMap::new(),
             pending: VecDeque::new(),
+            async_streaming: false,
+            stream_ticket: 0,
+            stream_turn: 0,
+            in_flight: HashMap::new(),
             center: None,
             horizon: HashMap::new(),
             horizon_pending: VecDeque::new(),
@@ -960,6 +972,12 @@ impl Renderer {
             4.0
         };
     }
+    pub fn gpu_render_ms(&self) -> Option<f32> {
+        self.gpu_profile.span_ms()
+    }
+    pub fn gpu_timings(&self) -> Vec<crate::gpu_profile::PassTime> {
+        self.gpu_profile.latest()
+    }
     pub fn cover_stats(&self) -> CoverStats {
         self.cover.stats()
     }
@@ -972,9 +990,9 @@ impl Renderer {
     pub fn mesh_bytes(&self) -> u64 {
         self.chunks
             .values()
-            .flat_map(|c| [&c.terrain, &c.props, &c.water])
+            .flat_map(|c| [&c.terrain, &c.props, &c.water, &c.reflected_props])
             .flatten()
-            .chain(self.horizon.values())
+            .chain(self.horizon.values().flatten().flatten())
             .chain(self.canopies.values().flatten())
             .map(|m| m.bytes)
             .sum::<u64>()
@@ -984,6 +1002,7 @@ impl Renderer {
         let q = q.min(2);
         if q != self.quality {
             self.quality = q;
+            self.in_flight.clear();
             self.center = None;
             self.horizon_center = None;
             self.resize(self.width, self.height);
@@ -994,6 +1013,7 @@ impl Renderer {
         self.hearths = [[0.0; 4]; 8];
         self.shelter_valid = false;
         self.reflection_valid = false;
+        self.in_flight.clear();
         self.cover.clear();
         self.cover_drawn_instances = 0;
         self.horizon.clear();
@@ -1006,23 +1026,18 @@ impl Renderer {
         self.center = None;
     }
     fn upload(&self, data: MeshData) -> Option<GpuMesh> {
+        self.upload_packed(crate::streaming::PackedMesh::new(data))
+    }
+    fn upload_packed(&self, data: crate::streaming::PackedMesh) -> Option<GpuMesh> {
         if data.indices.is_empty() {
             return None;
         }
-        let mut bounds = [Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)];
-        for vertex in &data.vertices {
-            let p = Vec3::from_array(vertex.position);
-            bounds[0] = bounds[0].min(p);
-            bounds[1] = bounds[1].max(p);
-        }
-        // Wind and the most distant foliage must not disappear on frustum edges.
-        bounds[0] -= Vec3::ONE;
-        bounds[1] += Vec3::ONE;
-        let (vertices, indices) = crate::vertex::pack(&data.vertices, &data.indices);
+        let bounds = data.bounds;
+        let vertices = data.vertices;
+        let indices = data.indices;
         Some(GpuMesh {
             bounds,
-            bytes: (vertices.len() * std::mem::size_of::<crate::vertex::PackedVertex>()
-                + indices.len() * 4) as u64,
+            bytes: (vertices.len() + indices.len()) as u64,
             vertices: self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1037,7 +1052,7 @@ impl Renderer {
                     contents: bytemuck::cast_slice(&indices),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
-            count: data.indices.len() as u32,
+            count: indices.len() as u32 / 4,
         })
     }
     fn prepare_horizon(&mut self, position: Vec3) {
@@ -1092,9 +1107,8 @@ impl Renderer {
         let Some((x, z)) = self.horizon_pending.pop_front() else {
             return false;
         };
-        if let Some(mesh) = self.upload(horizon::patch(world, x, z)) {
-            self.horizon.insert((x, z), mesh);
-        }
+        let parts = horizon::patch_parts(world, x, z).map(|mesh| self.upload(mesh));
+        self.horizon.insert((x, z), parts);
         true
     }
     fn update_atmosphere(&mut self, world: &World, position: Vec3) {
@@ -1199,6 +1213,9 @@ impl Renderer {
         // their rooted silhouettes without duplicating hundreds of vertices.
         let prop_radius = [1.8, 2.7, 3.7][self.quality as usize];
         if self.center != Some((cx, cz)) {
+            self.in_flight.clear();
+            self.cover.invalidate_requests();
+            self.horizon_center = None;
             self.center = Some((cx, cz));
             self.chunks
                 .retain(|&(x, z), _| (x - cx).abs() <= radius + 1 && (z - cz).abs() <= radius + 1);
@@ -1235,6 +1252,9 @@ impl Renderer {
             // quality change must not leave a stale props job marked complete.
             self.pending = requested.into_iter().map(|(job, _)| job).collect();
         }
+        if self.async_streaming {
+            return;
+        }
         // Terrain and props are separate queued phases. The first phase retains
         // old props and yields, so a dense replacement cannot stack on the same
         // walking frame as terrain/water generation and packing.
@@ -1258,9 +1278,16 @@ impl Renderer {
                     let terrain = self.upload(geometry::terrain_chunk(world, x, z, lod));
                     let water = self.upload(geometry::water_chunk(world, x, z, lod));
                     let previous = self.chunks.remove(&(x, z));
-                    let (props, prop_lod, prop_detail) = previous
-                        .map(|old| (old.props, old.prop_lod, old.prop_detail))
-                        .unwrap_or((None, u32::MAX, u8::MAX));
+                    let (props, reflected_props, prop_lod, prop_detail) = previous
+                        .map(|old| {
+                            (
+                                old.props,
+                                old.reflected_props,
+                                old.prop_lod,
+                                old.prop_detail,
+                            )
+                        })
+                        .unwrap_or((None, None, u32::MAX, u8::MAX));
                     self.chunks.insert(
                         (x, z),
                         Chunk {
@@ -1269,6 +1296,7 @@ impl Renderer {
                             prop_detail,
                             terrain,
                             props,
+                            reflected_props,
                             water,
                         },
                     );
@@ -1297,8 +1325,14 @@ impl Renderer {
                     } else {
                         None
                     };
+                    let reflected_props = if detail > 0 {
+                        self.upload(geometry::reflection_props_chunk(world, x, z, lod))
+                    } else {
+                        None
+                    };
                     let chunk = self.chunks.get_mut(&(x, z)).unwrap();
                     chunk.props = props;
+                    chunk.reflected_props = reflected_props;
                     chunk.prop_lod = lod;
                     chunk.prop_detail = detail;
                 }
@@ -1329,6 +1363,182 @@ impl Renderer {
             }
         }
     }
+    pub fn set_async_streaming(&mut self, enabled: bool) {
+        if enabled != self.async_streaming {
+            self.async_streaming = enabled;
+            self.in_flight.clear();
+            self.center = None;
+            self.horizon_center = None;
+            self.cover.invalidate_requests();
+        }
+    }
+    pub fn next_stream_job(&mut self) -> Vec<i32> {
+        use crate::streaming::Job;
+        if !self.async_streaming || self.center.is_none() || self.in_flight.len() >= 2 {
+            return vec![];
+        }
+        let mut selected = None;
+        // Interleave near terrain, plants and far silhouettes. The background
+        // worker cannot spend the entire warmup drawing an empty horizon first.
+        for _ in 0..4 {
+            let turn = self.stream_turn % 4;
+            self.stream_turn = self.stream_turn.wrapping_add(1);
+            selected = match turn {
+                0 | 2 => self.pending.pop_front().map(|j| Job {
+                    kind: if j.phase == ChunkPhase::Terrain { 0 } else { 1 },
+                    x: j.x,
+                    z: j.z,
+                    lod: j.lod,
+                    detail: j.detail,
+                }),
+                1 if self.ground_cover_density > 0. => self.cover.next_job().map(|(x, z)| Job {
+                    kind: 4,
+                    x,
+                    z,
+                    lod: 0,
+                    detail: 0,
+                }),
+                _ => {
+                    let kind = if self.canopy_turn { 3 } else { 2 };
+                    self.canopy_turn = !self.canopy_turn;
+                    let primary = if kind == 3 {
+                        &mut self.canopy_pending
+                    } else {
+                        &mut self.horizon_pending
+                    };
+                    if let Some((x, z)) = primary.pop_front() {
+                        Some(Job {
+                            kind,
+                            x,
+                            z,
+                            lod: 0,
+                            detail: 0,
+                        })
+                    } else {
+                        let kind = 5 - kind;
+                        let other = if kind == 3 {
+                            &mut self.canopy_pending
+                        } else {
+                            &mut self.horizon_pending
+                        };
+                        other.pop_front().map(|(x, z)| Job {
+                            kind,
+                            x,
+                            z,
+                            lod: 0,
+                            detail: 0,
+                        })
+                    }
+                }
+            };
+            if selected.is_some() {
+                break;
+            }
+        }
+        let Some(job) = selected else { return vec![] };
+        self.stream_ticket = self.stream_ticket.wrapping_add(1);
+        self.in_flight.insert(self.stream_ticket, job);
+        vec![
+            self.stream_ticket as i32,
+            job.kind as i32,
+            job.x,
+            job.z,
+            job.lod as i32,
+            job.detail as i32,
+        ]
+    }
+    pub fn accept_stream_result(&mut self, ticket: u32, bytes: &[u8]) -> bool {
+        use crate::streaming::Payload;
+        let Some(job) = self.in_flight.remove(&ticket) else {
+            return true;
+        }; // stale teleport/quality result
+        let Some(payload) = crate::streaming::decode(bytes) else {
+            return false;
+        };
+        match payload {
+            Payload::Cover(tile) if job.kind == 4 => {
+                if tile.seed != self.weather_seed
+                    || tile.origin
+                        != [
+                            job.x as f32 * crate::cover::TILE_SIZE,
+                            job.z as f32 * crate::cover::TILE_SIZE,
+                        ]
+                {
+                    return false;
+                }
+                self.cover.install(&self.device, job.x, job.z, tile)
+            }
+            Payload::Meshes(meshes) => {
+                let expected = if job.kind <= 2 { 2 } else { 1 };
+                if meshes.len() != expected || job.kind > 3 {
+                    return false;
+                }
+                let mut parts = meshes
+                    .into_iter()
+                    .map(|m| self.upload_packed(m))
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                match job.kind {
+                    0 => {
+                        let terrain = parts.next().unwrap();
+                        let water = parts.next().unwrap();
+                        let old = self.chunks.remove(&(job.x, job.z));
+                        let (props, reflected_props, prop_lod, prop_detail) = old
+                            .map(|c| (c.props, c.reflected_props, c.prop_lod, c.prop_detail))
+                            .unwrap_or((None, None, u32::MAX, u8::MAX));
+                        self.chunks.insert(
+                            (job.x, job.z),
+                            Chunk {
+                                lod: job.lod,
+                                prop_lod,
+                                prop_detail,
+                                terrain,
+                                water,
+                                props,
+                                reflected_props,
+                            },
+                        );
+                        self.pending.push_front(ChunkJob {
+                            x: job.x,
+                            z: job.z,
+                            lod: job.lod,
+                            detail: job.detail,
+                            phase: ChunkPhase::Props,
+                        });
+                    }
+                    1 => {
+                        if let Some(c) = self.chunks.get_mut(&(job.x, job.z)) {
+                            if c.lod == job.lod {
+                                c.props = parts.next().unwrap();
+                                c.reflected_props = parts.next().unwrap();
+                                c.prop_lod = job.lod;
+                                c.prop_detail = job.detail;
+                            }
+                        }
+                    }
+                    2 => {
+                        self.horizon.insert(
+                            (job.x, job.z),
+                            [parts.next().unwrap(), parts.next().unwrap()],
+                        );
+                    }
+                    3 => {
+                        self.canopies.insert((job.x, job.z), parts.next().unwrap());
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => return false,
+        }
+        // Newly streamed scenery must enter the next reflected/enclosure view.
+        if job.kind != 4 {
+            self.reflection_valid = false;
+        }
+        if job.kind <= 1 {
+            self.shelter_valid = false;
+        }
+        true
+    }
     pub fn chunk_count(&self) -> usize {
         self.chunks.len() + self.horizon.len()
     }
@@ -1336,7 +1546,7 @@ impl Renderer {
         self.chunks
             .values()
             .map(|c| {
-                [&c.terrain, &c.props, &c.water]
+                [&c.terrain, &c.props, &c.water, &c.reflected_props]
                     .into_iter()
                     .map(|m| m.as_ref().map_or(0, |m| m.count as usize / 3))
                     .sum::<usize>()
@@ -1345,6 +1555,8 @@ impl Renderer {
             + self
                 .horizon
                 .values()
+                .flatten()
+                .flatten()
                 .map(|m| m.count as usize / 3)
                 .sum::<usize>()
             + self
@@ -1357,6 +1569,7 @@ impl Renderer {
     }
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+            + self.in_flight.len()
             + self.horizon_pending.len()
             + self.canopy_pending.len()
             + if self.ground_cover_density > 0.0 {
@@ -1384,6 +1597,7 @@ impl Renderer {
                 return Err(error);
             }
         }
+        self.gpu_profile.begin();
         let dir = Vec3::new(
             yaw.sin() * pitch.cos(),
             pitch.sin(),
@@ -1423,8 +1637,21 @@ impl Renderer {
             self.shelter_elapsed = 0.0;
             self.shelter_valid = true;
         }
-        let reflection_active =
-            self.reflections_enabled && self.reflection_plane.is_some() && self.quality > 0;
+        // Use the actual submitted water bounds, including patches crossing the
+        // near plane. A nearby lake alone must not redraw an invisible mirror.
+        let water_visible = self
+            .horizon
+            .values()
+            .filter_map(|p| p[1].as_ref())
+            .chain(self.chunks.values().filter_map(|c| c.water.as_ref()))
+            .any(|m| bounds_visible(&frustum, m.bounds, eye));
+        let reflection_active = self.reflections_enabled
+            && water_visible
+            && self.reflection_plane.is_some()
+            && self.quality > 0;
+        if !reflection_active {
+            self.reflection_valid = false;
+        }
         let update_reflection = reflection_active
             && (!self.reflection_valid
                 || eye.distance_squared(self.reflection_eye) > 0.09
@@ -1565,7 +1792,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_profile.pass(0),
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.shadow.pipeline);
@@ -1600,7 +1827,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_profile.pass(1),
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.shelter.pipeline);
@@ -1642,7 +1869,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_profile.pass(2),
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.reflected_group, &[]);
@@ -1650,21 +1877,34 @@ impl Renderer {
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
-            for mesh in self
+            let mut visible: Vec<_> = self
                 .horizon
                 .values()
+                .filter_map(|p| p[0].as_ref())
                 .chain(self.canopies.values().flatten())
-                .chain(
-                    self.chunks
-                        .values()
-                        .flat_map(|c| [&c.terrain, &c.props].into_iter().flatten()),
-                )
-            {
-                if mesh.bounds[1].y < plane_y
-                    || !bounds_visible(&planes, mesh.bounds, reflected_eye)
-                {
-                    continue;
-                }
+                .chain(self.chunks.values().flat_map(|c| {
+                    let props = if c.props.as_ref().is_some_and(|m| {
+                        (eye.clamp(m.bounds[0], m.bounds[1]) - eye).length_squared() > 220.0 * 220.0
+                    }) {
+                        c.reflected_props.as_ref().or(c.props.as_ref())
+                    } else {
+                        c.props.as_ref()
+                    };
+                    [c.terrain.as_ref(), props].into_iter().flatten()
+                }))
+                .filter(|m| {
+                    m.bounds[1].y >= plane_y && bounds_visible(&planes, m.bounds, reflected_eye)
+                })
+                .map(|m| {
+                    (
+                        (reflected_eye.clamp(m.bounds[0], m.bounds[1]) - reflected_eye)
+                            .length_squared(),
+                        m,
+                    )
+                })
+                .collect();
+            visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, mesh) in visible {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
@@ -1698,7 +1938,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_profile.pass(3),
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.uniform_group, &[]);
@@ -1711,8 +1951,20 @@ impl Renderer {
             let mut visible: Vec<_> = self
                 .chunks
                 .values()
-                .flat_map(|c| [&c.terrain, &c.props].into_iter().flatten())
-                .chain(self.horizon.values())
+                .flat_map(|c| {
+                    // Keep the complete candidate set and non-tree props, but
+                    // distant branch-sized alpha cards no longer fill pixels.
+                    // Sun shadows still use detailed c.props for canopy gaps.
+                    let props = if c.props.as_ref().is_some_and(|m| {
+                        (eye.clamp(m.bounds[0], m.bounds[1]) - eye).length_squared() > 220.0 * 220.0
+                    }) {
+                        c.reflected_props.as_ref().or(c.props.as_ref())
+                    } else {
+                        c.props.as_ref()
+                    };
+                    [c.terrain.as_ref(), props].into_iter().flatten()
+                })
+                .chain(self.horizon.values().filter_map(|p| p[0].as_ref()))
                 .chain(self.canopies.values().flatten().filter(|mesh| {
                     (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared()
                         <= self.canopy_distance().powi(2)
@@ -1745,17 +1997,19 @@ impl Renderer {
         }
         // Separate opaque and water passes avoid sampling the current attachment.
         // Depth rejects foreground samples along distorted shoreline pixels.
-        let extent = self.scene.size();
-        encoder.copy_texture_to_texture(
-            self.scene.as_image_copy(),
-            self.refraction._color.as_image_copy(),
-            extent,
-        );
-        encoder.copy_texture_to_texture(
-            self.depth.as_image_copy(),
-            self.refraction._depth.as_image_copy(),
-            extent,
-        );
+        if water_visible {
+            let extent = self.scene.size();
+            encoder.copy_texture_to_texture(
+                self.scene.as_image_copy(),
+                self.refraction._color.as_image_copy(),
+                extent,
+            );
+            encoder.copy_texture_to_texture(
+                self.depth.as_image_copy(),
+                self.refraction._depth.as_image_copy(),
+                extent,
+            );
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Refractive water and precipitation"),
@@ -1776,7 +2030,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.gpu_profile.pass(4),
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.water_pipeline);
@@ -1784,7 +2038,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
-            for mesh in self.horizon.values().chain(
+            for mesh in self.horizon.values().filter_map(|p| p[1].as_ref()).chain(
                 self.chunks
                     .values()
                     .filter_map(|chunk| chunk.water.as_ref()),
@@ -1824,10 +2078,18 @@ impl Renderer {
                 quality: self.quality,
             },
         );
-        self.rays.encode(&mut encoder, &self.scene_view);
-        self.post
-            .render(&self.queue, &mut encoder, output, [self.width, self.height]);
+        self.rays
+            .encode(&mut encoder, &self.scene_view, &self.gpu_profile);
+        self.post.render(
+            &self.queue,
+            &mut encoder,
+            output,
+            [self.width, self.height],
+            &self.gpu_profile,
+        );
+        self.gpu_profile.resolve(&mut encoder);
         self.queue.submit(Some(encoder.finish()));
+        self.gpu_profile.readback();
         if let Some(frame) = frame {
             frame.present();
         }

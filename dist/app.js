@@ -21,6 +21,9 @@ try {
 } catch (_) { /* Storage is optional. */ }
 const urlSeed = new URL(location.href).searchParams.get('seed');
 const seed = clamp(Math.floor(Number(urlSeed || saved.seed) || DEFAULT_SEED), 1, 4294967295);
+let otherViewActive = false, renderChannel = null, renderOwner = '', renderClaim = 0, renderSeen = 0;
+const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let streamWorker = null, streamReady = false, streamOutstanding = 0, streamResults = [], streamDeadline = 0;
 let game, state = {}, started = false, locked = false, modal = null;
 let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
 let pointerLockFallback = false, lockEpoch = 0;
@@ -71,7 +74,7 @@ function toast(message, duration = 3500) {
 }
 
 function saveProgress() {
-  if (benchmark) return;
+  if (benchmark || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
@@ -252,7 +255,7 @@ function updateFocusHint() {
   const show = started && !modal && !locked && !fatal && !matchMedia('(pointer: coarse)').matches;
   $('focus-hint').classList.toggle('hidden', !show);
   document.body.classList.toggle('mouse-focused', focusedLook && !modal);
-  $('focus-hint-text').textContent = focusedLook ? 'Mouse look active · Esc releases' : 'Click the world to look around';
+  $('focus-hint-text').textContent = otherViewActive ? 'Another view is active · click here to resume' : focusedLook ? 'Mouse look active · Esc releases' : 'Click the world to look around';
   $('focus-hint').querySelector('small').textContent = focusedLook && pointerLockFallback
     ? 'Window edges limit turning. Click to try full capture.'
     : focusedLook ? 'WASD move · Shift run · Space jump' : 'WASD move · Shift run · Space jump';
@@ -615,16 +618,105 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
+}
+
+// Embedded previews can report every tab as visible. Elect one rendering
+// view per origin; input immediately takes ownership, without closing any tab.
+function claimRenderer() {
+  if(!renderChannel || document.hidden || (renderOwner===renderId && !otherViewActive))return;
+  renderClaim=Math.max(Date.now(),renderClaim+1);
+  renderOwner=renderId;renderSeen=performance.now();otherViewActive=false;lastFrame=0;
+  if(streamWorker && streamDeadline)streamDeadline=performance.now()+120000;
+  canvas.setAttribute('data-render-active','true');
+  updateFocusHint();
+  renderChannel.postMessage({type:'claim',id:renderId,stamp:renderClaim});
+}
+function initRenderCoordination() {
+  if(typeof BroadcastChannel==='undefined')return;
+  try {
+    renderChannel=new BroadcastChannel('fantasyland.render-owner.v1');
+    renderChannel.onmessage=({data})=>{
+      if(!data || typeof data.id!=='string' || data.id===renderId)return;
+      if(data.type==='claim' && Number.isFinite(data.stamp)
+        && (data.stamp>renderClaim || (data.stamp===renderClaim && data.id>renderOwner))) {
+        renderClaim=data.stamp;renderOwner=data.id;renderSeen=performance.now();
+        otherViewActive=true;lastFrame=0;
+        canvas.setAttribute('data-render-active','false');
+        releaseMouse();
+        if(benchmark)finishBenchmark(true);
+      } else if(data.type==='heartbeat' && data.id===renderOwner)renderSeen=performance.now();
+      else if(data.type==='release' && data.id===renderOwner)claimRenderer();
+    };
+    claimRenderer();
+    setInterval(()=>{
+      if(document.hidden)return;
+      if(!otherViewActive)renderChannel.postMessage({type:'heartbeat',id:renderId});
+      else if(performance.now()-renderSeen>30000)claimRenderer();
+    },1000);
+    window.addEventListener('focus',claimRenderer);
+    window.addEventListener('pagehide',()=>{
+      if(!otherViewActive)renderChannel?.postMessage({type:'release',id:renderId});
+
+    });
+    document.addEventListener('pointerdown',claimRenderer);
+    document.addEventListener('keydown',claimRenderer);
+    document.addEventListener('visibilitychange',()=>{
+      if(!document.hidden)claimRenderer();
+      else if(!otherViewActive)renderChannel?.postMessage({type:'release',id:renderId});
+    });
+  } catch(_) {renderChannel=null;otherViewActive=false;}
+}
+
+function stopStreamingWorker(error) {
+  streamWorker?.terminate(); streamWorker=null;streamReady=false;
+  streamOutstanding=0;streamResults=[];streamDeadline=0;
+  game?.set_async_streaming(false);
+  if(error) console.warn('Background generation unavailable; using bounded local streaming.',String(error));
+}
+function startStreamingWorker() {
+  if(typeof Worker==='undefined') return;
+  try {
+    streamWorker=new Worker(new URL('./world-worker.js?v=smooth-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamDeadline=performance.now()+120000;
+    streamWorker.onmessage=({data})=>{
+      if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
+      else if(data.type==='mesh') {streamResults.push(data);}
+      else if(data.type==='error') stopStreamingWorker(data.message);
+    };
+    streamWorker.onerror=(event)=>{event.preventDefault();stopStreamingWorker(event.message);};
+    streamWorker.postMessage({type:'init',seed});
+  } catch(error) {stopStreamingWorker(error);}
+}
+function pumpStreaming() {
+  if(!streamWorker)return;
+  const began=performance.now();
+  // Small ready packets may share a frame; expensive packing is already done.
+  // At most two packets exist, so uploads cannot accumulate an unbounded queue.
+  while(streamResults.length && performance.now()-began<2) {
+    const result=streamResults.shift();streamOutstanding--;
+    if(!game.accept_stream_result(result.ticket,result.bytes)){stopStreamingWorker('Invalid mesh packet');return;}
+  }
+  if(streamReady && !streamOutstanding)streamDeadline=0;
+  // Completed packets can span multiple upload frames after an inactive view
+  // resumes. A queued result is evidence of progress, not a stalled worker.
+  if(!streamResults.length && streamDeadline && performance.now()>streamDeadline){stopStreamingWorker('Worker timed out');return;}
+  if(!streamReady)return;
+  while(streamOutstanding<2) {
+    const job=game.next_stream_job();if(!job.length)break;
+    streamWorker.postMessage({type:'generate',job});streamOutstanding++;
+    streamDeadline=performance.now()+120000;
+  }
+  if(!streamOutstanding)streamDeadline=0;
 }
 
 function renderFrame(now) {
   if (fatal) return;
   // Hidden previews must not keep submitting GPU work or advancing the world.
   // Keep one RAF chain: the browser resumes it when this tab becomes visible.
-  if (document.hidden) { lastFrame = 0; requestAnimationFrame(renderFrame); return; }
+  if (document.hidden || otherViewActive) { lastFrame = 0; requestAnimationFrame(renderFrame); return; }
   const frameGap = lastFrame ? now-lastFrame : 0;
   const frameStart = performance.now();
   const dt = lastFrame ? Math.min((now - lastFrame) / 1000, .05) : 1 / 60;
@@ -638,6 +730,7 @@ function renderFrame(now) {
     const length = Math.hypot(forward, strafe); if (length > 1) { forward /= length; strafe /= length; }
     const sprint = moving && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touchMoves.has('sprint'));
     if (benchmark?.walking && benchmark.phase === "sample") { forward=1;strafe=0; }
+    pumpStreaming();
     game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
     if (now-lastHUD > 100) state = game.state();
@@ -673,17 +766,19 @@ function showFatal(error) {
 async function boot() {
   try {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
+    initRenderCoordination();
     $('loading-label').textContent = 'Preparing the world engine…';
     if (navigator.gpu.requestAdapter) {
       const adapter = await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=materials-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=materials-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=smooth-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=smooth-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
+    startStreamingWorker();
     worldSize = Number(game.world_size());
     game.set_quality(quality);
     game.set_render_resolution(renderResolution);
@@ -695,7 +790,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'materials-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'smooth-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -998,7 +1093,7 @@ mapCanvas.addEventListener('wheel', (event) => {
 }, { passive: false });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { resize(); if (modal === 'map') scheduleMapData(); }, 100); });
 window.addEventListener('blur', releaseMouse);
-document.addEventListener('visibilitychange', () => { if (document.hidden) { if (benchmark) finishBenchmark(true); releaseMouse(); saveProgress(); } lastFrame = 0; });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && streamWorker && streamDeadline) streamDeadline=performance.now()+120000; if (document.hidden) { if (benchmark) finishBenchmark(true); releaseMouse(); saveProgress(); } lastFrame = 0; });
 window.addEventListener('pagehide', saveProgress);
 
 // Repeatable frame-pacing comparison through the real browser animation loop.
@@ -1007,6 +1102,8 @@ function finishBenchmark(cancelled = false) {
   if (!benchmark) return;
   game.set_render_resolution(renderResolution);
   const restored=benchmark.restore;
+  game.set_time(restored.hour);
+  $('diagnostics').classList.toggle('hidden',benchmark.diagnosticsHidden);
   if (benchmark.walking) {game.teleport(restored.x,restored.z);game.face(restored.yaw,restored.pitch);}
   else game.face(benchmark.yaw, benchmark.pitch);
   benchmark = null;
@@ -1020,8 +1117,9 @@ function finishBenchmark(cancelled = false) {
 function beginBenchmark(walking = false) {
   if (!game || benchmark) return;
   benchmarkReport = [];
-  benchmark = {height:420,phase:'warm',since:performance.now(),samples:[],cpu:[],yaw:Number(state.yaw),pitch:Number(state.pitch),size:null,walking,restore:{x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch},chunks:new Set(),distance:0};
-  if (walking) {game.return_to_spawn();state=game.state();benchmark.yaw=state.yaw;benchmark.pitch=state.pitch;}
+  benchmark = {height:420,phase:'warm',since:performance.now(),samples:[],cpu:[],yaw:Number(state.yaw),pitch:Number(state.pitch),size:null,walking,hour:Number(state.dayTime ?? 9),diagnosticsHidden:$('diagnostics').classList.contains('hidden'),restore:{x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch,hour:Number(state.dayTime ?? 9)},chunks:new Set(),distance:0};
+  if (walking) {game.return_to_spawn();state=game.state();benchmark.yaw=state.yaw;benchmark.pitch=state.pitch;benchmark.hour=9;}
+  $('diagnostics').classList.add('hidden');
   $('benchmark-start').disabled = true;
   $('benchmark-walk').disabled = true;
   closeModal(); clearMovement();
@@ -1030,9 +1128,10 @@ function beginBenchmark(walking = false) {
 }
 function updateBenchmark(now,gap) {
   const b = benchmark;
+  game.set_time(b.hour);
   if (document.hidden) { finishBenchmark(true); return; }
   if (b.phase === 'warm') {
-    if (now-b.since < 3000 || (game.is_ready && !game.is_ready())) return;
+    if (now-b.since < 3000 || (game.pending_chunks ? game.pending_chunks()>0 : (game.is_ready && !game.is_ready()))) return;
     b.phase='sample'; b.since=now; b.size=Array.from(game.render_resolution());b.walkStart=Number(state.walked || 0);
     toast(`${b.height}p · ${b.walking ? 'walking across streaming boundaries' : 'measuring a slow camera sweep'}`,b.walking?30000:15000);
     return;
@@ -1043,7 +1142,7 @@ function updateBenchmark(now,gap) {
   if (now-b.since<(b.walking?30000:15000)) return;
   const values=[...b.samples].sort((a,b)=>a-b);
   const percentile=q=>values[Math.min(values.length-1,Math.floor(values.length*q))] || 0;
-  benchmarkReport.push({height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,quality,groundCoverDensity,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
+  benchmarkReport.push({hour:b.hour,height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,gpuIntervals:state.gpuTimings,gpuDrawSpan:state.gpuRenderMs,worker:streamReady,pending:game.pending_chunks?.() ?? null,quality,groundCoverDensity,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
   if (b.height===420) {b.height=720;b.phase='warm';b.since=now;b.samples=[];b.cpu=[];b.chunks=new Set();if(b.walking){game.return_to_spawn();game.face(b.yaw,b.pitch);}game.set_render_resolution(720);toast('720p warm-up',3000);}
   else finishBenchmark();
 }

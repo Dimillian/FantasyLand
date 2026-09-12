@@ -8,7 +8,7 @@ use glam::Vec3;
 
 pub const PATCH_SIZE: f32 = 1536.0;
 
-pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
+pub fn patch_parts(world: &World, cx: i32, cz: i32) -> [MeshData; 2] {
     const N: usize = 16;
     let mut grid = Vec::with_capacity((N + 1) * (N + 1));
     for z in 0..=N {
@@ -28,7 +28,7 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
             ));
         }
     }
-    let mut mesh = MeshData::default();
+    let mut meshes = [MeshData::default(), MeshData::default()];
     let at = |x: usize, z: usize| grid[z * (N + 1) + x];
     let half = WORLD_SIZE * 0.5;
     for z in 0..N {
@@ -47,6 +47,7 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
                     .to_array();
                 let ocean = points.iter().all(|p| p.2);
                 let freshwater = points.iter().all(|p| !p.2 && p.3 > 0.0);
+                let mesh = &mut meshes[(ocean || freshwater) as usize];
                 let color = std::array::from_fn(|i| {
                     (points[0].1[i] + points[1].1[i] + points[2].1[i]) / 3.
                 });
@@ -71,7 +72,17 @@ pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
             }
         }
     }
-    mesh
+    meshes
+}
+
+#[cfg(test)]
+pub fn patch(world: &World, cx: i32, cz: i32) -> MeshData {
+    let [mut land, water] = patch_parts(world, cx, cz);
+    let offset = land.vertices.len() as u32;
+    land.vertices.extend(water.vertices);
+    land.indices
+        .extend(water.indices.into_iter().map(|i| i + offset));
+    land
 }
 
 // Distant stands are a separate stream: their material is faded out inside the

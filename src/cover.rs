@@ -13,13 +13,14 @@ use std::{
 use wgpu::util::DeviceExt;
 
 pub const TILE_SIZE: f32 = 48.;
-pub const COVER_DISTANCE: f32 = 420.;
+pub const COVER_DISTANCE: f32 = 300.;
 const GRID_SIZE: usize = 11;
 const HEIGHT_STEP: f32 = 6.;
 const DIVISIONS: i32 = 32;
 const VARIANTS: u32 = 8;
 const TEMPLATE_KINDS: u32 = crate::plants::KINDS;
 const TEMPLATE_VERTICES: u32 = crate::plants::TRIANGLES * 3;
+const LOD_VERTICES: [u32; 3] = [72, 36, 24];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -287,12 +288,41 @@ fn templates() -> Vec<TemplateVertex> {
             }
         }
     }
+    let near = result.clone();
+    for lod in 1..=2 {
+        for kind in 0..TEMPLATE_KINDS {
+            for variant in 0..VARIANTS {
+                let first = ((kind * VARIANTS + variant) * TEMPLATE_VERTICES) as usize;
+                let source = &near[first..first + TEMPLATE_VERTICES as usize];
+                let quads: &[usize] = match (kind, lod) {
+                    (0, 1) => &[0, 2, 3, 5],
+                    (0, _) => &[0, 3],
+                    (1 | 5, 1) => &[0, 2, 4, 6, 7, 8],
+                    (1 | 5, _) => &[0, 3, 6, 8],
+                    (2, 1) => &[0, 1, 4, 5, 8, 9],
+                    (2, _) => &[0, 1, 6, 7],
+                    (3 | 4 | 6, 1) => &[0, 1, 2, 6, 7, 8],
+                    (3 | 4 | 6, _) => &[0, 1, 2],
+                    (_, 1) => &[0, 2, 4, 6],
+                    (_, _) => &[0, 4],
+                };
+                for &q in quads {
+                    result.extend_from_slice(&source[q * 6..q * 6 + 6]);
+                }
+                result.resize(
+                    result.len() + TEMPLATE_VERTICES as usize - quads.len() * 6,
+                    TemplateVertex::zeroed(),
+                );
+            }
+        }
+    }
     result
 }
 struct GpuTile {
     instances: wgpu::Buffer,
     group: wgpu::BindGroup,
     ranks: Vec<f32>,
+    lod: Cell<usize>,
     bounds_min: Vec3,
     bounds_max: Vec3,
     bytes: u64,
@@ -315,7 +345,7 @@ pub struct CoverLayer {
     tiles: HashMap<(i32, i32), GpuTile>,
     pending: VecDeque<(i32, i32)>,
     center: Option<(i32, i32)>,
-    drawn: Cell<(u32, u32)>,
+    drawn: Cell<(u32, u32, u32)>,
 }
 impl CoverLayer {
     pub fn new(
@@ -435,7 +465,7 @@ impl CoverLayer {
             tiles: HashMap::new(),
             pending: VecDeque::new(),
             center: None,
-            drawn: Cell::new((0, 0)),
+            drawn: Cell::new((0, 0, 0)),
         }
     }
     pub fn prepare(&mut self, position: Vec3) {
@@ -471,6 +501,16 @@ impl CoverLayer {
             return false;
         };
         let data = tile_data(world, x, z);
+        self.install(device, x, z, data);
+        true
+    }
+    pub fn next_job(&mut self) -> Option<(i32, i32)> {
+        self.pending.pop_front()
+    }
+    pub fn invalidate_requests(&mut self) {
+        self.center = None;
+    }
+    pub fn install(&mut self, device: &wgpu::Device, x: i32, z: i32, data: TileData) {
         let bytes = data.buffer_bytes();
         // Empty tiles still count as complete so they are not regenerated on movement.
         let empty = CoverInstance::zeroed();
@@ -491,7 +531,7 @@ impl CoverLayer {
         });
         let uniform = TileUniform {
             origin: [data.origin[0], data.origin[1], 0., 0.],
-            grid: [world.seed, (x * 8 - 1) as u32, (z * 8 - 1) as u32, 0],
+            grid: [data.seed, (x * 8 - 1) as u32, (z * 8 - 1) as u32, 0],
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cover tile origin"),
@@ -522,6 +562,7 @@ impl CoverLayer {
                 instances,
                 group,
                 ranks: data.ranks,
+                lod: Cell::new(0),
                 bounds_min: Vec3::from_array(data.bounds_min),
                 bounds_max: Vec3::from_array(data.bounds_max),
                 bytes: bytes
@@ -532,7 +573,6 @@ impl CoverLayer {
                     },
             },
         );
-        true
     }
     pub fn draw<'a>(
         &'a self,
@@ -544,9 +584,24 @@ impl CoverLayer {
     ) -> u32 {
         let mut drawn_tiles = 0;
         let mut drawn_instances = 0;
+        let mut drawn_triangles = 0;
         if density > 0. && density.is_finite() {
             pass.set_pipeline(&self.pipeline);
-            for tile in self.tiles.values() {
+            let mut ordered: Vec<_> = self
+                .tiles
+                .values()
+                .map(|tile| {
+                    (
+                        (eye.clamp(tile.bounds_min, tile.bounds_max) - eye).length(),
+                        tile,
+                    )
+                })
+                .filter(|(d, t)| {
+                    *d < COVER_DISTANCE && visible(t.bounds_min, t.bounds_max, eye, view_projection)
+                })
+                .collect();
+            ordered.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, tile) in ordered {
                 let nearest = eye.clamp(tile.bounds_min, tile.bounds_max);
                 let distance = (nearest - eye).length();
                 let count = prefix_count(&tile.ranks, density * distance_density(distance));
@@ -556,25 +611,30 @@ impl CoverLayer {
                 pass.set_bind_group(2, &tile.group, &[]);
                 pass.set_bind_group(3, materials, &[]);
                 pass.set_vertex_buffer(0, tile.instances.slice(..));
-                pass.draw(0..TEMPLATE_VERTICES, 0..count);
+                let lod = cover_lod(distance, tile.lod.get());
+                tile.lod.set(lod);
+                let bank = lod as u32 * TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES;
+                pass.draw(bank..bank + LOD_VERTICES[lod], 0..count);
+                drawn_triangles += count * LOD_VERTICES[lod] / 3;
                 drawn_tiles += 1;
                 drawn_instances += count;
             }
         }
-        self.drawn.set((drawn_tiles, drawn_instances));
+        self.drawn
+            .set((drawn_tiles, drawn_instances, drawn_triangles));
         drawn_instances
     }
     pub fn clear(&mut self) {
         self.tiles.clear();
         self.pending.clear();
         self.center = None;
-        self.drawn.set((0, 0));
+        self.drawn.set((0, 0, 0));
     }
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
     pub fn stats(&self) -> CoverStats {
-        let (drawn_tiles, drawn_instances) = self.drawn.get();
+        let (drawn_tiles, drawn_instances, drawn_triangles) = self.drawn.get();
         CoverStats {
             tile_count: self.tiles.len(),
             loaded_instances: self.tiles.values().map(|t| t.ranks.len()).sum(),
@@ -582,13 +642,23 @@ impl CoverLayer {
             pending_tiles: self.pending.len(),
             drawn_tiles,
             drawn_instances,
-            drawn_triangles: drawn_instances * crate::plants::TRIANGLES,
+            drawn_triangles,
         }
     }
 }
+fn cover_lod(distance: f32, previous: usize) -> usize {
+    match previous {
+        0 if distance <= 108. => 0,
+        1 if (92.0..=188.0).contains(&distance) => 1,
+        2 if distance >= 172. => 2,
+        _ if distance < 100. => 0,
+        _ if distance < 180. => 1,
+        _ => 2,
+    }
+}
 fn distance_density(distance: f32) -> f32 {
-    let t = ((distance - 180.) / (COVER_DISTANCE - 180.)).clamp(0., 1.);
-    1.0 - 0.85 * t * t * (3.0 - 2.0 * t)
+    let t = ((distance - 80.) / (COVER_DISTANCE - 80.)).clamp(0., 1.);
+    1.0 - t * t * (3.0 - 2.0 * t)
 }
 fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
     let nearest = eye.clamp(min, max);
@@ -615,6 +685,46 @@ fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn distance_lods_preserve_foreground_and_taper_to_zero() {
+        assert_eq!(distance_density(80.), 1.);
+        assert_eq!(distance_density(COVER_DISTANCE), 0.);
+        for d in 0..300 {
+            assert!(distance_density(d as f32) >= distance_density(d as f32 + 1.));
+        }
+        assert_eq!(cover_lod(104., 0), 0);
+        assert_eq!(cover_lod(96., 1), 1);
+        assert_eq!(cover_lod(182., 1), 1);
+        assert_eq!(cover_lod(175., 2), 2);
+        let vertices = templates();
+        let stride = (TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES) as usize;
+        for kind in 0..TEMPLATE_KINDS {
+            for variant in 0..VARIANTS {
+                let source = geometry::cover_template(kind, variant);
+                let start = ((kind * VARIANTS + variant) * TEMPLATE_VERTICES) as usize;
+                for (v, original) in vertices[start..start + source.vertices.len()]
+                    .iter()
+                    .zip(&source.vertices)
+                {
+                    assert_eq!(&v.position[..3], &original.position);
+                    assert_eq!(&v.surface[..2], &original.uv);
+                }
+                for lod in 1..=2 {
+                    let bank = &vertices
+                        [lod * stride + start..lod * stride + start + TEMPLATE_VERTICES as usize];
+                    assert!(bank[LOD_VERTICES[lod] as usize..]
+                        .iter()
+                        .all(|v| v.position[3] == 0.));
+                    // Every reduced triangle is still one of the original cards.
+                    for v in bank.iter().filter(|v| v.position[3] > 0.5) {
+                        assert!(vertices[start..start + TEMPLATE_VERTICES as usize]
+                            .iter()
+                            .any(|n| bytemuck::bytes_of(n) == bytemuck::bytes_of(v)));
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn shoreline_plants_clear_the_rendered_water_surface() {
         let mut count = 0;
@@ -649,7 +759,7 @@ mod tests {
         let vertices = templates();
         assert_eq!(
             vertices.len(),
-            (TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES) as usize
+            (3 * TEMPLATE_KINDS * VARIANTS * TEMPLATE_VERTICES) as usize
         );
         assert!(vertices.iter().all(|v| v
             .position
@@ -749,8 +859,11 @@ mod tests {
                 })
                 .take(64)
             {
-                let first = instance.data[1] as usize * 24;
-                for v in &templates[first..first + 24] {
+                let first = instance.data[1] as usize * TEMPLATE_VERTICES as usize;
+                for v in templates[first..first + TEMPLATE_VERTICES as usize]
+                    .iter()
+                    .filter(|v| v.position[3] > 0.5)
+                {
                     let [s, c] = instance.rotation;
                     let scale = instance.placement[2];
                     let x = tile.origin[0]

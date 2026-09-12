@@ -68,7 +68,7 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=materials-1');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=smooth-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
@@ -407,4 +407,69 @@ async function main(){
   console.log('PASS: browser benchmark cancellation on hidden tab/Escape restores explicit resolution and original walk-test location.');
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+function verifyStreamingLifecycle() {
+// Real worker coordinator: transfers are bounded and failures restore fallback.
+let testWorker;
+context.Worker = class {
+  constructor(){testWorker=this;this.messages=[];}
+  postMessage(message){this.messages.push(message);}
+  terminate(){this.terminated=true;}
+};
+let asyncChanges=[], accepted=[];
+fakeGame.set_async_streaming=v=>asyncChanges.push(v);
+let streamJobs=[[1,0,0,0,0,1],[2,4,0,0,0,0],[3,3,0,0,0,0]];
+fakeGame.next_stream_job=()=>streamJobs.shift() || [];
+fakeGame.accept_stream_result=(ticket,bytes)=>{accepted.push(ticket);return true;};
+run('game=fakeGame; startStreamingWorker();');
+assert.deepEqual(asyncChanges,[],'local streaming continues until the worker is ready');
+testWorker.onmessage({data:{type:'ready'}});assert.deepEqual(asyncChanges,[true]);run('pumpStreaming();');
+assert.equal(testWorker.messages.filter(m=>m.type==='generate').length,2);
+run('pumpStreaming();');
+assert.equal(testWorker.messages.filter(m=>m.type==='generate').length,2,'at most two in-flight packets');
+testWorker.onmessage({data:{type:'mesh',ticket:1,bytes:new Uint8Array(8)}});
+run('pumpStreaming();');assert.deepEqual(accepted,[1]);
+assert.equal(testWorker.messages.filter(m=>m.type==='generate').length,3);
+testWorker.onmessage({data:{type:'error',message:'intentional worker failure test'}});
+assert.equal(testWorker.terminated,true);assert.equal(asyncChanges.at(-1),false);
+assert.equal(run('streamResults.length'),0);
+console.log('Worker lifecycle passed: bounded jobs, deferred uploads, recoverable failure.');
+
+// A tab can be hidden longer than the timeout while the worker finishes.
+asyncChanges=[];streamJobs=[[4,0,0,0,0,1],[5,0,1,0,0,1]];
+run('startStreamingWorker();');testWorker.onmessage({data:{type:'ready'}});run('pumpStreaming();');
+let resumeNow=200000;
+context.performance.now=()=>resumeNow;
+fakeGame.accept_stream_result=(ticket,bytes)=>{accepted.push(ticket);resumeNow+=3;return true;};
+run('streamDeadline=100;');
+testWorker.onmessage({data:{type:'mesh',ticket:4,bytes:new Uint8Array(8)}});
+testWorker.onmessage({data:{type:'mesh',ticket:5,bytes:new Uint8Array(8)}});
+run('pumpStreaming();');
+assert.equal(testWorker.terminated,undefined,'completed packets survive a long hidden tab');
+assert.equal(run('streamOutstanding'),1,'an upload exceeding the frame budget defers the second packet');
+assert.equal(run('streamResults.length'),1,'queued completion must not be mistaken for a timeout');
+run('pumpStreaming();');
+assert.equal(run('streamOutstanding'),0);
+run('stopStreamingWorker();');context.performance.now=()=>0;
+console.log('Worker resume passed: completed results survive elapsed hidden-tab deadlines.');
+
+let coordination;
+context.BroadcastChannel=class { constructor(){coordination=this;this.messages=[];} postMessage(m){this.messages.push(m);} };
+context.setInterval=()=>1;
+run('benchmark=null; document.hidden=false; initRenderCoordination();');
+assert.equal(ids.world.attributes['data-render-active'],'true');
+const ownClaim=run('renderClaim');
+coordination.onmessage({data:{type:'claim',id:'second-view',stamp:ownClaim+100}});
+assert.equal(run('otherViewActive'),true);
+assert.equal(ids.world.attributes['data-render-active'],'false');
+const staleSave=stored['wayfarer.exploration.v4'];
+run('saveProgress(); renderFrame(1000);');
+assert.equal(stored['wayfarer.exploration.v4'],staleSave,'paused previews cannot overwrite progress');
+run('claimRenderer();');assert.equal(run('otherViewActive'),false);
+const messageCount=coordination.messages.length;
+run('claimRenderer();');assert.equal(coordination.messages.length,messageCount,'normal input does not continually reset frame timing');
+coordination.onmessage({data:{type:'claim',id:'second-view',stamp:ownClaim}});
+assert.equal(run('otherViewActive'),false,'stale claims cannot steal the renderer');
+console.log('Single-view rendering passed: pause, input takeover, stale claims and progress protection.');
+
+}
+main().then(verifyStreamingLifecycle).catch(error=>{console.error(error);process.exitCode=1;});

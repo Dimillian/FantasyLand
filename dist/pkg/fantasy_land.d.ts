@@ -5,6 +5,7 @@ export class Game {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    accept_stream_result(ticket: number, bytes: Uint8Array): boolean;
     static create(canvas: HTMLCanvasElement, seed: number): Promise<Game>;
     face(yaw: number, pitch: number): void;
     features(cx: number, cz: number, span: number): any;
@@ -13,9 +14,12 @@ export class Game {
     look(dx: number, dy: number): void;
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
     natural_destinations(): any;
+    next_stream_job(): Int32Array;
+    pending_chunks(): number;
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
+    set_async_streaming(enabled: boolean): void;
     set_enclosure(enabled: boolean): void;
     set_filter(mode: number, strength: number): void;
     set_ground_cover_density(density: number): void;
@@ -35,6 +39,13 @@ export class Game {
     world_size(): number;
 }
 
+export class StreamGenerator {
+    free(): void;
+    [Symbol.dispose](): void;
+    generate(kind: number, x: number, z: number, lod: number, detail: number): Uint8Array;
+    constructor(seed: number);
+}
+
 export function inspect_landscapes(seed: number): any;
 
 export function inspect_map(seed: number, cx: number, cz: number, span: number, res: number): Uint8Array;
@@ -48,6 +59,8 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_game_free: (a: number, b: number) => void;
+    readonly __wbg_streamgenerator_free: (a: number, b: number) => void;
+    readonly game_accept_stream_result: (a: number, b: number, c: number, d: number) => number;
     readonly game_create: (a: any, b: number) => any;
     readonly game_face: (a: number, b: number, c: number) => void;
     readonly game_features: (a: number, b: number, c: number, d: number) => any;
@@ -56,9 +69,12 @@ export interface InitOutput {
     readonly game_look: (a: number, b: number, c: number) => void;
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly game_natural_destinations: (a: number) => any;
+    readonly game_next_stream_job: (a: number) => [number, number];
+    readonly game_pending_chunks: (a: number) => number;
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_set_async_streaming: (a: number, b: number) => void;
     readonly game_set_enclosure: (a: number, b: number) => void;
     readonly game_set_filter: (a: number, b: number, c: number) => void;
     readonly game_set_ground_cover_density: (a: number, b: number) => void;
@@ -80,9 +96,12 @@ export interface InitOutput {
     readonly inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly inspect_routes: (a: number, b: number, c: number, d: number) => any;
     readonly inspect_world: (a: number, b: number, c: number) => any;
+    readonly streamgenerator_generate: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly streamgenerator_new: (a: number) => number;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__41: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
