@@ -3,9 +3,8 @@
 @group(0) @binding(2) var glow_mid: texture_2d<f32>;
 @group(0) @binding(3) var glow_far: texture_2d<f32>;
 @group(0) @binding(4) var linear_sampler: sampler;
-struct Settings { controls: vec4<f32>, output: vec4<f32> };
+struct Settings { controls: vec2<f32>, output: vec2<f32> };
 @group(0) @binding(5) var<uniform> settings: Settings;
-@group(0) @binding(6) var ascii_cells: texture_2d<f32>;
 struct Out { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex fn vs_main(@builtin(vertex_index) i: u32) -> Out {
     let p = array<vec2<f32>, 3>(vec2<f32>(-1., -1.), vec2<f32>(3., -1.), vec2<f32>(-1., 3.));
@@ -22,49 +21,7 @@ fn glow(uv: vec2<f32>) -> vec3<f32> {
         + textureSampleLevel(glow_mid, linear_sampler, uv, 0.).rgb * 0.30
         + textureSampleLevel(glow_far, linear_sampler, uv, 0.).rgb * 0.28;
 }
-fn linear(color: vec3<f32>) -> vec3<f32> { return pow(max(color, vec3<f32>(0.)), vec3<f32>(2.2)); }
-fn display(color: vec3<f32>) -> vec3<f32> { return pow(max(color, vec3<f32>(0.)), vec3<f32>(1. / 2.2)); }
-
-// Original 5x7 glyph recipes; no font downloads or platform font dependency.
-const GLYPHS = array<vec2<u32>, 18>(
-    vec2<u32>(0u, 0u), // space
-    vec2<u32>(134217728u, 1u), // .
-    vec2<u32>(2285895680u, 0u), // ,
-    vec2<u32>(138416256u, 0u), // :
-    vec2<u32>(2285899904u, 0u), // ;
-    vec2<u32>(1015808u, 0u), // -
-    vec2<u32>(32537600u, 0u), // =
-    vec2<u32>(139432064u, 0u), // +
-    vec2<u32>(720353952u, 0u), // *
-    vec2<u32>(2736306176u, 3u), // o
-    vec2<u32>(2736309806u, 3u), // O
-    vec2<u32>(2738542382u, 3u), // 0
-    vec2<u32>(368389098u, 0u), // #
-    vec2<u32>(416354675u, 0u), // %
-    vec2<u32>(2212165166u, 7u), // @
-    vec2<u32>(138547332u, 1u), // |
-    vec2<u32>(1109533200u, 0u), // /
-    vec2<u32>(545392673u, 4u), // backslash
-);
-fn ascii_color(pixel: vec2<f32>) -> vec4<f32> {
-    let scale = settings.controls.z;
-    let cell_size = vec2<f32>(6., 9.) * scale;
-    let cell = clamp(vec2<i32>(floor(pixel / cell_size)), vec2<i32>(0), vec2<i32>(textureDimensions(ascii_cells)) - vec2<i32>(1));
-    let data = textureLoad(ascii_cells, cell, 0);
-    let glyph = min(u32(round(data.a * 255.)), 17u);
-    let local = vec2<u32>(floor((pixel - vec2<f32>(cell) * cell_size) / scale));
-    var ink = false;
-    if local.x < 5u && local.y >= 1u && local.y <= 7u {
-        let bit = (local.y - 1u) * 5u + local.x;
-        let packed = GLYPHS[glyph];
-        if bit < 32u { ink = ((packed.x >> bit) & 1u) != 0u; }
-        else { ink = ((packed.y >> (bit - 32u)) & 1u) != 0u; }
-    }
-    return vec4<f32>(select(vec3<f32>(0.008, 0.012, 0.010), data.rgb, ink), 1.);
-}
-
 @fragment fn fs_main(o: Out) -> @location(0) vec4<f32> {
-    if settings.controls.x > 2.5 { return ascii_color(o.clip.xy); }
     let strength = settings.controls.y;
     if settings.controls.x < 0.5 || strength <= 0. {
         return vec4<f32>(retro_display(nearest(o.uv), o.clip.xy), 1.);

@@ -16,7 +16,6 @@ export class Game {
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
-    set_ascii(cell_scale: number, palette: number): void;
     set_enclosure(enabled: boolean): void;
     set_filter(mode: number, strength: number): void;
     set_ground_cover_density(density: number): void;
@@ -60,7 +59,6 @@ export interface InitOutput {
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
-    readonly game_set_ascii: (a: number, b: number, c: number) => void;
     readonly game_set_enclosure: (a: number, b: number) => void;
     readonly game_set_filter: (a: number, b: number, c: number) => void;
     readonly game_set_ground_cover_density: (a: number, b: number) => void;

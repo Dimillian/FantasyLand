@@ -433,7 +433,6 @@ impl Renderer {
             &device,
             &scene_view,
             [scene.width(), scene.height()],
-            [width, height],
             format,
         );
         let (capture, capture_view) = Self::capture_target(&device, width, height, format);
@@ -696,7 +695,6 @@ impl Renderer {
             &self.device,
             &self.scene_view,
             [self.scene.width(), self.scene.height()],
-            [self.width, self.height],
         );
         self.resize_reflections();
         (self.capture, self.capture_view) =
@@ -716,16 +714,6 @@ impl Renderer {
     pub fn render_resolution(&self) -> [u32; 2] {
         [self.scene.width(), self.scene.height()]
     }
-    pub fn set_ascii(&mut self, scale: u32, palette: u32) {
-        if self.post.set_ascii(scale, palette) {
-            self.post.resize(
-                &self.device,
-                &self.scene_view,
-                self.render_resolution(),
-                [self.width, self.height],
-            );
-        }
-    }
     fn rebuild_scene(&mut self) {
         (self.scene, self.scene_view, self.depth, self.depth_view) = Self::targets(
             &self.device,
@@ -734,12 +722,8 @@ impl Renderer {
             self.quality,
             self.resolution,
         );
-        self.post.resize(
-            &self.device,
-            &self.scene_view,
-            self.render_resolution(),
-            [self.width, self.height],
-        );
+        self.post
+            .resize(&self.device, &self.scene_view, self.render_resolution());
         self.resize_reflections();
     }
     pub fn set_reflections(&mut self, enabled: bool) {

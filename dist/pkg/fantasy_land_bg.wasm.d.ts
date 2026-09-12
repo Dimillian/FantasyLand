@@ -13,7 +13,6 @@ export const game_natural_destinations: (a: number) => any;
 export const game_render_resolution: (a: number) => [number, number];
 export const game_resize: (a: number, b: number, c: number) => void;
 export const game_return_to_spawn: (a: number) => void;
-export const game_set_ascii: (a: number, b: number, c: number) => void;
 export const game_set_enclosure: (a: number, b: number) => void;
 export const game_set_filter: (a: number, b: number, c: number) => void;
 export const game_set_ground_cover_density: (a: number, b: number) => void;

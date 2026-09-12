@@ -104,13 +104,6 @@ export class Game {
         wasm.game_return_to_spawn(this.__wbg_ptr);
     }
     /**
-     * @param {number} cell_scale
-     * @param {number} palette
-     */
-    set_ascii(cell_scale, palette) {
-        wasm.game_set_ascii(this.__wbg_ptr, cell_scale, palette);
-    }
-    /**
      * @param {boolean} enabled
      */
     set_enclosure(enabled) {

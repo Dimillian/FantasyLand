@@ -26,7 +26,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_ascii(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -41,7 +41,7 @@ function filterHarness(snapshot, destinations = []) {
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], asciiCalls = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [];
+  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [];
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
@@ -57,7 +57,6 @@ function filterHarness(snapshot, destinations = []) {
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
     set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
-    set_ascii:(scale,palette)=>{asciiCalls.push([scale,palette]);rendererEvents.push(['ascii',scale,palette]);},
     set_render_resolution:height=>{selectedResolution=height;resolutionCalls.push(height);rendererEvents.push(['resolution',height]);},
     render_resolution:()=>{const height=selectedResolution===1 ? surfaceHeight : selectedResolution || [240,360,450][selectedQuality];return new Uint32Array([Math.round(surfaceWidth/surfaceHeight*height),height]);},
     world_size:()=>384000,
@@ -69,9 +68,9 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=climate-1');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=renderer-2');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,asciiCalls,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -80,14 +79,13 @@ async function verifyFilterSettings() {
   assert.equal(first.run('filterMode'),1); assert.equal(first.run('filterStrength'),1);
   assert.equal(first.ids['filter-select'].value,'1'); assert.equal(first.ids['filter-strength'].value,'100');
   assert.equal(first.ids['filter-strength'].disabled,false);
-  assert.equal(first.run('renderResolution'),0); assert.equal(first.run('asciiScale'),2); assert.equal(first.run('asciiPalette'),0);
-  assert.equal(first.ids['render-resolution'].value,'0'); assert.equal(first.ids['ascii-scale'].value,'2'); assert.equal(first.ids['ascii-palette'].value,'0');
-  assert.equal(first.ids['ascii-options'].classList.contains('hidden'),true);
+  assert.equal(first.run('renderResolution'),0);
+  assert.equal(first.ids['render-resolution'].value,'0');
   await first.run('boot()');
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
-  assert.deepEqual(first.asciiCalls,[[2,0]]); assert.deepEqual(first.resolutionCalls,[0]);
+  assert.deepEqual(first.resolutionCalls,[0]);
   assert.equal(first.ids['render-dimensions'].textContent,'Actual 720 × 450');
-  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','ascii','filter','groundCover','shadows','resize'],'Preferences must apply after world quality and before resize.');
+  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','filter','groundCover','shadows','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
@@ -117,19 +115,11 @@ async function verifyFilterSettings() {
   console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; v4 position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
 }
 
-async function verifyAsciiResolutionSettings() {
-  const existing = {seed:1337,x:810,z:-160,quality:2,sensitivity:1,filterMode:3,filterStrength:0,asciiScale:3,asciiPalette:1,renderResolution:360,waypoint:{x:900,z:-210,name:'The Pass'},atlas:{x:850,z:-180,span:8000}};
+async function verifyResolutionSettings() {
+  const existing = {seed:1337,x:810,z:-160,quality:2,sensitivity:1,filterMode:2,filterStrength:0.8,renderResolution:360,waypoint:{x:900,z:-210,name:'The Pass'},atlas:{x:850,z:-180,span:8000}};
   const selected = filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;');
-  assert.deepEqual(selected.calls,[[3,0]],'ASCII must remain selected even with a saved zero filter strength.');
-  assert.deepEqual(selected.asciiCalls,[[3,1]]); assert.deepEqual(selected.resolutionCalls,[360]);
-  assert.equal(selected.ids['ascii-options'].classList.contains('hidden'),false);
-  assert.equal(selected.ids['filter-strength'].disabled,true);
+  assert.deepEqual(selected.resolutionCalls,[360]);
   assert.equal(selected.ids['render-dimensions'].textContent,'Actual 576 × 360');
-  const before=selected.calls.length;
-  selected.ids['filter-strength'].value='120'; selected.ids['filter-strength'].fire('input');
-  assert.equal(selected.calls.length,before,'ASCII must ignore its disabled blend strength.');
-  selected.ids['ascii-scale'].value='1'; selected.ids['ascii-scale'].fire('change'); assert.deepEqual(selected.asciiCalls.at(-1),[1,1]);
-  selected.ids['ascii-palette'].value='2'; selected.ids['ascii-palette'].fire('change'); assert.deepEqual(selected.asciiCalls.at(-1),[1,2]);
   selected.ids['render-resolution'].value='720'; selected.ids['render-resolution'].fire('change');
   assert.equal(selected.resolutionCalls.at(-1),720); assert.equal(selected.ids['render-dimensions'].textContent,'Actual 1152 × 720');
   const resolutionCallCount=selected.resolutionCalls.length;
@@ -137,10 +127,10 @@ async function verifyAsciiResolutionSettings() {
   assert.equal(selected.qualityCalls.at(-1),0); assert.equal(selected.resolutionCalls.length,resolutionCallCount,'Changing world quality must not overwrite an explicit resolution.');
   assert.equal(selected.ids['render-dimensions'].textContent,'Actual 1152 × 720');
   const persisted=selected.saved();
-  assert.equal(persisted.asciiScale,1); assert.equal(persisted.asciiPalette,2); assert.equal(persisted.renderResolution,720); assert.equal(persisted.filterMode,3);
+  assert.equal(persisted.renderResolution,720); assert.equal(persisted.filterMode,2);
   assert.equal(persisted.x,existing.x); assert.equal(persisted.z,existing.z); assert.deepEqual(persisted.waypoint,existing.waypoint); assert.deepEqual(persisted.atlas,existing.atlas);
   const restored=filterHarness(persisted); await restored.run('boot()'); restored.run('initialReady=true;');
-  assert.deepEqual(restored.asciiCalls,[[1,2]]); assert.deepEqual(restored.resolutionCalls,[720]); assert.deepEqual(restored.calls,[[3,0]]);
+  assert.deepEqual(restored.resolutionCalls,[720]); assert.deepEqual(restored.calls,[[2,0.8]]);
   restored.ids['render-resolution'].value='1'; restored.ids['render-resolution'].fire('change');
   assert.equal(restored.ids['render-dimensions'].textContent,'Actual 800 × 500');
   restored.ids.world.clientWidth=900;restored.ids.world.clientHeight=600;restored.run('resize()');
@@ -149,18 +139,34 @@ async function verifyAsciiResolutionSettings() {
   assert.equal(restored.ids['render-dimensions'].textContent,'Actual 360 × 240');
   restored.ids['quality-select'].value='1'; restored.ids['quality-select'].fire('change');
   assert.equal(restored.ids['render-dimensions'].textContent,'Actual 540 × 360','Auto must follow world quality.');
-  restored.ids['filter-select'].value='1'; restored.ids['filter-select'].fire('change');
-  assert.equal(restored.ids['ascii-options'].classList.contains('hidden'),true); assert.equal(restored.ids['filter-strength'].disabled,false);
-  restored.ids['filter-select'].value='3'; restored.ids['filter-select'].fire('change');
-  assert.equal(restored.ids['ascii-options'].classList.contains('hidden'),false); assert.equal(restored.ids['filter-strength'].disabled,true);
-  assert.equal(restored.ids['ascii-scale'].value,'1'); assert.equal(restored.ids['ascii-palette'].value,'2');
-  const invalid=filterHarness({...existing,renderResolution:999,asciiScale:99,asciiPalette:99});
-  assert.equal(invalid.run('renderResolution'),0);assert.equal(invalid.run('asciiScale'),2);assert.equal(invalid.run('asciiPalette'),0);
-  console.log('PASS: ASCII full-mode preference; size/palette API calls; disabled ASCII strength; resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
+  const invalid=filterHarness({...existing,renderResolution:999});
+  assert.equal(invalid.run('renderResolution'),0);
+  console.log('PASS: resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
+}
+
+async function verifyRemovedFilterMigration() {
+  const existing = {seed:1337,x:810,z:-160,quality:2,sensitivity:1.2,filterMode:3,filterStrength:0,asciiScale:3,asciiPalette:1,renderResolution:360,groundCoverDensity:2.25,sunShadows:false,weatherMode:5,weatherSpeed:3,weatherPaused:true,reflections:false,enclosure:false,waypoint:{x:900,z:-210,name:'The Pass'},atlas:{x:850,z:-180,span:8000}};
+  const selected=filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;saveProgress();');
+  assert.deepEqual(selected.calls,[[1,1]],'The removed filter must migrate to visible Bloom at full strength.');
+  assert.equal(selected.ids['filter-select'].value,'1'); assert.equal(selected.ids['filter-strength'].value,'100');
+  assert.equal(selected.ids['filter-strength'].disabled,false);
+  const persisted=selected.saved();
+  assert.equal(persisted.filterMode,1); assert.equal(persisted.filterStrength,1);
+  assert.ok(!('asciiScale' in persisted)); assert.ok(!('asciiPalette' in persisted));
+  for(const key of Object.keys(existing).filter(key=>!['filterMode','filterStrength','asciiScale','asciiPalette'].includes(key))) assert.deepEqual(persisted[key],existing[key],`Filter migration must preserve ${key}.`);
+  const restored=filterHarness(persisted); await restored.run('boot()');
+  assert.deepEqual(restored.calls,[[1,1]],'Migrated Bloom must survive reload.');
+  const filterOptions=html.match(/<select id="filter-select"[^>]*>([\s\S]*?)<\/select>/)?.[1];
+  assert.deepEqual([...filterOptions.matchAll(/<option value="(\d+)"/g)].map(match=>Number(match[1])).sort(),[0,1,2]);
+  for (const invalid of [3,-1,99,'invalid']) {
+    selected.ids['filter-select'].value=String(invalid); selected.ids['filter-select'].fire('change');
+    assert.deepEqual(selected.calls.at(-1),[1,1],'Unsupported filter modes must never reach the renderer.');
+  }
+  console.log('PASS: removed-filter migration to visible Bloom; obsolete preferences discarded; player, map and other settings retained; valid filter options only; migrated reload.');
 }
 
 async function verifyGroundCoverSettings() {
-  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:3,filterStrength:0.8,renderResolution:720,asciiScale:3,asciiPalette:2,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
+  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:2,filterStrength:0.8,renderResolution:720,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
   const controls = html.match(/<input id="ground-cover-density"[^>]+>/)?.[0];
   assert.ok(controls, 'Ground-cover control must exist in the actual settings HTML.');
   for (const attr of ['type="range"','min="0"','max="400"','step="25"','value="400"','aria-describedby="ground-cover-density-help"']) assert.ok(controls.includes(attr), attr);
@@ -210,7 +216,7 @@ async function verifyGroundCoverSettings() {
 }
 
 async function verifyWeatherSettings() {
-  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:1,filterStrength:.8,renderResolution:720,asciiScale:3,asciiPalette:2,groundCoverDensity:4,sunShadows:false,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
+  const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:1,filterStrength:.8,renderResolution:720,groundCoverDensity:4,sunShadows:false,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
   const slider = html.match(/<input id="weather-speed"[^>]+>/)?.[0];
   assert.ok(slider,'The weather speed slider must exist in the actual HTML.');
   for (const attr of ['type="range"','min="0.25"','max="20"','step="0.25"','value="1"','aria-describedby="weather-speed-help"']) assert.ok(slider.includes(attr),attr);
@@ -275,7 +281,7 @@ async function verifyWeatherSettings() {
 }
 
 async function verifyLandscapeDestinations() {
-  const existing={seed:1337,x:637,z:222,quality:2,sunShadows:false,groundCoverDensity:4,sensitivity:1.2,filterMode:2,filterStrength:1.1,renderResolution:720,asciiScale:3,asciiPalette:2,atlas:{x:640,z:225,span:6000}};
+  const existing={seed:1337,x:637,z:222,quality:2,sunShadows:false,groundCoverDensity:4,sensitivity:1.2,filterMode:2,filterStrength:1.1,renderResolution:720,atlas:{x:640,z:225,span:6000}};
   const names=['Ancient woodland','Granite highlands','Windswept coast','Wet lowlands','Sandstone country','Meadowlands','Alpine heights'];
   const destinations=names.map((name,i)=>({name,x:1000+i*320,z:-1000-i*450,yaw:i*0.3,pitch:-0.04}));
   const h=filterHarness(existing,destinations); await h.run('boot()');h.run('initialReady=true;');
@@ -378,7 +384,8 @@ async function main(){
   assert.equal(key('Space').prevented,true);assert.equal(run('jumpQueued'),true);
   verifyAtlasRoutes();
   await verifyFilterSettings();
-  await verifyAsciiResolutionSettings();
+  await verifyResolutionSettings();
+  await verifyRemovedFilterMigration();
   await verifyGroundCoverSettings();
   await verifyWeatherSettings();
   await verifyLandscapeDestinations();

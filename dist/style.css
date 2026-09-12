@@ -131,9 +131,8 @@ body.mouse-focused #world { cursor: none; }
 #filter-strength-value { font-variant-numeric: tabular-nums; }
 
 /* Resolution changes only scene pixels; settings retain the same text sizes. */
-#render-resolution, #ascii-palette { width: 140px; flex-shrink: 0; }
+#render-resolution { width: 140px; flex-shrink: 0; }
 #render-dimensions { display: inline-block; margin-top: 4px; color: #c4cbb0; font-variant-numeric: tabular-nums; }
-.ascii-options { display: block; }
 
 /* Route hierarchy mirrors the atlas strokes without introducing heavy symbols. */
 .map-legend i.route-key { width: 19px; height: 0; background: none; border-top: 1px solid; }

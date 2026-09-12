@@ -318,9 +318,6 @@ impl Game {
     pub fn set_enclosure(&mut self, enabled: bool) {
         self.renderer.set_enclosure(enabled);
     }
-    pub fn set_ascii(&mut self, cell_scale: u32, palette: u32) {
-        self.renderer.set_ascii(cell_scale, palette);
-    }
     pub fn set_render_resolution(&mut self, height: u32) {
         self.renderer.set_render_resolution(height);
     }

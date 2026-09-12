@@ -26,12 +26,11 @@ let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
 // Existing v4 saves acquire the new visual preferences without moving the player.
-let filterMode = [0, 1, 2, 3].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
-let filterStrength = Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
+let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
+// Removed filter saves return to visible Bloom while all world progress stays intact.
+let filterStrength = Number(saved.filterMode) === 3 ? 1 : Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
 const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 450, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
-let asciiScale = [1, 2, 3].includes(Number(saved.asciiScale ?? 2)) ? Number(saved.asciiScale ?? 2) : 2;
-let asciiPalette = [0, 1, 2].includes(Number(saved.asciiPalette ?? 0)) ? Number(saved.asciiPalette ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
 // Weather preferences extend the same save; position, atlas and filters stay intact.
@@ -62,7 +61,6 @@ $('sun-shadows').value = sunShadows ? 'on' : 'off';
 updateWeatherControls();
 updateGroundCoverControls();
 updateFilterControls();
-updateAsciiControls();
 
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
@@ -74,7 +72,7 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, asciiScale, asciiPalette, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -210,30 +208,18 @@ function updateFilterControls() {
   $('filter-select').value = String(filterMode);
   $('filter-strength').value = String(Math.round(filterStrength * 100));
   $('filter-strength-value').textContent = `${Math.round(filterStrength * 100)}%`;
-  $('filter-strength').disabled = filterMode === 0 || filterMode === 3;
-  $('filter-strength-row').classList.toggle('setting-inactive', filterMode === 0 || filterMode === 3);
-  $('ascii-options').classList.toggle('hidden', filterMode !== 3);
+  $('filter-strength').disabled = filterMode === 0;
+  $('filter-strength-row').classList.toggle('setting-inactive', filterMode === 0);
   $('filter-description').textContent = [
     'Unfiltered, crisp scene colors.',
     'Soft light around bright surfaces.',
     'Classic monitor texture and soft glow.',
-    'The world drawn entirely with colored glyphs.',
   ][filterMode];
 }
 
 function applyFilter() {
   updateFilterControls();
   if (game) game.set_filter(filterMode, filterStrength);
-}
-
-function updateAsciiControls() {
-  $('ascii-scale').value = String(asciiScale);
-  $('ascii-palette').value = String(asciiPalette);
-}
-
-function applyAscii() {
-  updateAsciiControls();
-  if (game) game.set_ascii(asciiScale, asciiPalette);
 }
 
 function updateRenderDimensions() {
@@ -678,15 +664,14 @@ async function boot() {
   try {
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
     $('loading-label').textContent = 'Preparing the world engine…';
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=climate-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=climate-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=renderer-2');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=renderer-2', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
     worldSize = Number(game.world_size());
     game.set_quality(quality);
     game.set_render_resolution(renderResolution);
-    applyAscii();
     applyFilter();
     applyGroundCoverDensity();
     game.set_shadows(sunShadows);
@@ -695,7 +680,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'climate-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, version: 'renderer-2' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -786,12 +771,12 @@ $('enclosure-shading').addEventListener('change', (event) => {
 });
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
-  filterMode = [0, 1, 2, 3].includes(selected) ? selected : 1;
+  filterMode = [0, 1, 2].includes(selected) ? selected : 1;
   applyFilter();
   saveProgress();
 });
 $('filter-strength').addEventListener('input', (event) => {
-  if (filterMode === 0 || filterMode === 3) return;
+  if (filterMode === 0) return;
   const amount = Number(event.target.value);
   filterStrength = Number.isFinite(amount) ? clamp(amount / 100, 0, 1.5) : 1;
   applyFilter();
@@ -803,18 +788,6 @@ $('render-resolution').addEventListener('change', (event) => {
   $('render-resolution').value = String(renderResolution);
   game?.set_render_resolution(renderResolution);
   updateRenderDimensions();
-  saveProgress();
-});
-$('ascii-scale').addEventListener('change', (event) => {
-  const selected = Number(event.target.value);
-  asciiScale = [1, 2, 3].includes(selected) ? selected : 2;
-  applyAscii();
-  saveProgress();
-});
-$('ascii-palette').addEventListener('change', (event) => {
-  const selected = Number(event.target.value);
-  asciiPalette = [0, 1, 2].includes(selected) ? selected : 0;
-  applyAscii();
   saveProgress();
 });
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });

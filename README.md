@@ -14,11 +14,9 @@ A first-person procedural fantasy exploration slice, built with Rust, WebAssembl
 - Dawn, Day, Dusk and Moons buttons change the lighting immediately; the time slider explores the complete cycle.
 - Weather starts in Automatic. Settings offers Clear, Cloudy, Overcast, Rain, Storm, Tempest, Snow and Blizzard overrides, a 0.25–20× weather clock and pause. Overrides blend in gradually. Higher clock speeds make snow buildup and changing fronts easier to inspect; particle and river motion retain real animation speed.
 
-Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the tone-mapped image without a screen effect. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. The complete scene renders into linear HDR. Bloom extraction and blur use small floating-point targets; a shared filmic tone map and subtle final palette reduction preserve highlight energy until presentation. Clean skips the Bloom passes, and ASCII analyzes the same tone-mapped scene.
+Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the tone-mapped image without a screen effect. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. The complete scene renders into linear HDR. Bloom extraction and blur use small floating-point targets; a shared filmic tone map and subtle final palette reduction preserve highlight energy until presentation. Clean skips the Bloom passes.
 
-ASCII renders the view entirely as printable character cells. A GPU pass encodes one glyph and foreground color per cell from the scene's brightness and edge direction; a second draws original 5×7 bitmap glyphs against a terminal background. No original scene pixels show through. Choose Small, Medium or Large text and scene colors, amber or green phosphor. ASCII uses its own text-size controls rather than the effect-strength slider.
-
-Internal resolution is separately selectable from 120p to 1080p, preserving the viewport aspect ratio, with actual dimensions shown. Auto retains the quality preset's 270/450/720p cap; Native matches the game canvas. Explicit resolutions stay fixed when world quality changes and can supersample a smaller viewport. ASCII text size controls its character grid independently of the underlying scene resolution. These preferences preserve the existing player position and atlas view.
+Internal resolution is separately selectable from 120p to 1080p, preserving the viewport aspect ratio, with actual dimensions shown. Auto retains the quality preset's 270/450/720p cap; Native matches the game canvas. Explicit resolutions stay fixed when world quality changes and can supersample a smaller viewport. These preferences preserve the existing player position and atlas view.
 
 Ground cover density ranges from Off to 400% in Settings, independently of world quality. It controls bent grass tufts, flowers, serrated ferns, heather, dry seedheads, reeds, low shrubs and leaf/branch litter; 400% is the default. Eight community families each have eight variants sharing a bounded 24-triangle template. Changing it adjusts the number of submitted instances immediately, keeps existing plants in place, and preserves the saved position, atlas and other settings. F3 reports density, submitted cover instances and mesh buffer memory.
 
@@ -60,7 +58,7 @@ Atmosphere follows local ecology and substrate: woodland shade is cooler, sandst
 
 Beyond the detailed area, simplified trees and rocks continue through the full terrain-chunk range. Separately streamed forest stands follow the same ecological fields out to 5/8.5/11 km on Low/Balanced/High, rooted on the distant terrain surface. Broad hillside pigments, colonies and broken strata stay visible after individual plants become too small to draw. Fine terrain reaches farther around the player so extended ground cover stays anchored.
 
-A 2048 px near shadow map casts tree, rock and terrain shadows onto the ground and cover, with soft comparisons and a gradual distance fade. It follows the player and uses snapped coordinates to reduce crawling. The primary light transitions from Solenne during the day to Aster at night, fading shadows during the handoff. Shadows can be disabled in Settings independently of the Bloom/CRT/ASCII filters. This is directional shadowing with colored ambient light, not screen-space ambient occlusion.
+A 2048 px near shadow map casts tree, rock and terrain shadows onto the ground and cover, with soft comparisons and a gradual distance fade. It follows the player and uses snapped coordinates to reduce crawling. The primary light transitions from Solenne during the day to Aster at night, fading shadows during the handoff. Shadows can be disabled in Settings independently of the Bloom/CRT filters. This is directional shadowing with colored ambient light, not screen-space ambient occlusion.
 
 The fantasy sky shares its celestial directions with illumination and shadows. Solenne supplies warm daylight and amber twilight; pale Aster provides cool directional moonlight and copper Vey follows a different nightly arc. Procedural crater patterns and sun-driven phases shade both moons, which occlude stars before cloud layers pass over them. The Ashen River is a star-and-dust band, and the Keeper's Crown is a seven-star constellation. Two cloud layers receive sun and moon illumination. A restrained blue ambient floor and reduced night pigment saturation keep paths readable. This is an invented repeating 24-hour sky, without orbital seasons or a lunar calendar; there is one active shadow-casting light at a time.
 
@@ -91,7 +89,6 @@ The build script also recognizes the isolated toolchain installed under `.tools/
 cargo test --release --lib
 cargo run --release --bin verify
 cargo run --release --bin verify output/filters 1337 filters
-cargo run --release --bin verify output/ascii-verification 1337 ascii
 cargo run --release --bin verify output/grounding 1337 grounding
 cargo run --release --bin verify output/roads 1337 roads
 cargo run --release --bin verify output/coasts 1337 coasts
@@ -120,7 +117,6 @@ The `cover` verifier compares Off, 100%, 200% and 400% from one fixed camera, ch
 - Trunks, boulders and natural-monument solids block movement. Natural arches have usable openings, but their elevated roofs are not climbable landing surfaces. Earlier survey structures still have limited structural collision.
 - Weather does not yet alter lake levels, freeze lakes into walkable ice, drive seasonal floods or persist its clock across reloads. Cloud layers and overhead enclosure are bounded rendering approximations; water uses one planar landscape reflection at a time and has no full scene refraction.
 - Terrain and props generate incrementally on the browser's main thread. Ground cover is instanced and generated in small jobs; worker scheduling remains a future optimization.
-- ASCII currently converts the rasterized 3D view into character cells; it is not a separate terminal application or a text representation of world geometry.
 
 ## Code
 
