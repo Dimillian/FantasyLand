@@ -108,6 +108,8 @@ pub fn encode(payload: Payload) -> Vec<u8> {
             out.extend(bytemuck::cast_slice(&tile.instances));
             floats(&mut out, &tile.ranks);
             floats(&mut out, &tile.heights);
+            word(&mut out, tile.meadow.len() as u32);
+            out.extend(bytemuck::cast_slice(&tile.meadow));
         }
     }
     out
@@ -183,6 +185,18 @@ pub fn decode(bytes: &[u8]) -> Option<Payload> {
             return None;
         }
         let heights = r.array::<121>()?.to_vec();
+        let n = r.u32()? as usize;
+        if n > 1024 {
+            return None;
+        }
+        let meadow: Vec<crate::meadow::MeadowCell> = r
+            .take(n * 16)?
+            .chunks_exact(16)
+            .map(bytemuck::pod_read_unaligned)
+            .collect();
+        if meadow.iter().any(|c| !c.valid()) {
+            return None;
+        }
         Payload::Cover(cover::TileData {
             seed,
             origin,
@@ -191,6 +205,7 @@ pub fn decode(bytes: &[u8]) -> Option<Payload> {
             instances,
             ranks,
             heights,
+            meadow,
         })
     } else {
         if count > 3 {
@@ -264,6 +279,7 @@ mod tests {
             bounds_max: [48., 2., 48.],
             heights: vec![0.; 121],
             ranks: vec![1.],
+            meadow: Vec::new(),
             instances: vec![cover::CoverInstance {
                 placement: [12., 12., 1.],
                 rotation: [0., 1.],

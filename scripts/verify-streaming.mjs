@@ -16,7 +16,14 @@ for(const kind of [0,1,2,3,4]) {
     assert.equal(count,0xffffffff);assert.equal(view.getUint32(8,true),1337);
     assert.equal(view.getFloat32(12,true),x*48);assert.equal(view.getFloat32(16,true),z*48);
     const plants=view.getUint32(44,true);assert.ok(plants>0 && plants<=1024);
-    assert.equal(packet.length,48+plants*32+121*4);
+    const offset=48+plants*32+121*4;
+    const cells=view.getUint32(offset,true); assert.ok(cells<=1024);
+    assert.equal(packet.length,offset+4+cells*16);
+    for(let i=0;i<cells;i++) {
+      const packed=view.getUint32(offset+4+i*16+12,true);
+      assert.ok((packed&0xffff)<1024);
+      assert.ok((packed>>>16)>0);
+    }
   } else {
     assert.equal(count,kind<=2?2:1);
     let offset=8;

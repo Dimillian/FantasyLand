@@ -36,6 +36,7 @@ const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 420, 450, 540, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
+let meadowCarpet = saved.meadowCarpet !== false;
 // Weather preferences extend the same save; position, atlas and filters stay intact.
 let weatherMode = [0, 1, 2, 3, 4, 5, 6, 7, 8].includes(Number(saved.weatherMode ?? 0)) ? Number(saved.weatherMode ?? 0) : 0;
 let weatherSpeed = Number.isFinite(Number(saved.weatherSpeed ?? 1)) ? clamp(Number(saved.weatherSpeed ?? 1), .25, 20) : 1;
@@ -77,7 +78,7 @@ function saveProgress() {
   if (benchmark || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -199,6 +200,7 @@ function updateWeatherStatus() {
 function updateGroundCoverControls() {
   const percent = Math.round(groundCoverDensity * 100);
   const label = groundCoverDensity === 0 ? 'Off' : `${percent}% · ${Number(groundCoverDensity.toFixed(2))}×`;
+  $('meadow-carpet').value = meadowCarpet ? 'on' : 'off';
   $('ground-cover-density').value = String(percent);
   $('ground-cover-density-value').textContent = label;
   $('ground-cover-density').setAttribute('aria-valuetext', groundCoverDensity === 0 ? 'Off' : `${percent} percent, ${Number(groundCoverDensity.toFixed(2))} times density`);
@@ -206,7 +208,7 @@ function updateGroundCoverControls() {
 
 function applyGroundCoverDensity() {
   updateGroundCoverControls();
-  if (game) game.set_ground_cover_density(groundCoverDensity);
+  if (game) {game.set_ground_cover_density(groundCoverDensity);game.set_meadow(meadowCarpet);}
 }
 
 function updateFilterControls() {
@@ -618,7 +620,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} plants submitted\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -679,7 +681,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=light-cache-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=meadow-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -773,8 +775,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=light-cache-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=light-cache-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=meadow-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=meadow-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -790,7 +792,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'light-cache-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'meadow-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -846,6 +848,9 @@ $('ground-cover-density').addEventListener('input', (event) => {
   // The engine updates a GPU density setting immediately; no terrain regeneration.
   applyGroundCoverDensity();
   saveProgress();
+});
+$('meadow-carpet').addEventListener('change', event => {
+  meadowCarpet = event.target.value !== 'off'; game?.set_meadow(meadowCarpet); saveProgress();
 });
 $('sun-shadows').addEventListener('change', (event) => {
   sunShadows = event.target.value !== 'off';
@@ -1142,7 +1147,7 @@ function updateBenchmark(now,gap) {
   if (now-b.since<(b.walking?30000:15000)) return;
   const values=[...b.samples].sort((a,b)=>a-b);
   const percentile=q=>values[Math.min(values.length-1,Math.floor(values.length*q))] || 0;
-  benchmarkReport.push({hour:b.hour,height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,gpuIntervals:state.gpuTimings,gpuDrawSpan:state.gpuRenderMs,worker:streamReady,pending:game.pending_chunks?.() ?? null,quality,groundCoverDensity,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
+  benchmarkReport.push({hour:b.hour,height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,gpuIntervals:state.gpuTimings,gpuDrawSpan:state.gpuRenderMs,worker:streamReady,pending:game.pending_chunks?.() ?? null,quality,groundCoverDensity,meadowCarpet,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
   if (b.height===420) {b.height=720;b.phase='warm';b.since=now;b.samples=[];b.cpu=[];b.chunks=new Set();if(b.walking){game.return_to_spawn();game.face(b.yaw,b.pitch);}game.set_render_resolution(720);toast('720p warm-up',3000);}
   else finishBenchmark();
 }
@@ -1151,7 +1156,7 @@ $('benchmark-walk').addEventListener('click',()=>beginBenchmark(true));
 $('study-form').addEventListener('submit',event=>{
   event.preventDefault(); if(!game || benchmark)return;
   if(seed!==1337){toast('These studies use seed 1337. Landscape travel works with every seed.');return;}
-  const studies={hearth:[-16211.261,-12684.719,-1.4056476,-.08339161,22],forest:[-10879,58547,1.4,.08,7.5],lake:[-8909.148,-77660.938,-.2618,-.0438,9.3],moon:[-8909.148,-77660.938,-.2618,.12,23],stone:[23512.3,63468.41,-1.9067289,.27,16]};
+  const studies={meadow:[-57269,20719,0,-.20,9], 'meadow-dawn':[-57269,20719,1.7,-.10,6.5], 'meadow-dusk':[-57269,20719,1.7,-.10,17.25],hearth:[-16211.261,-12684.719,-1.4056476,-.08339161,22],forest:[-10879,58547,1.4,.08,7.5],lake:[-8909.148,-77660.938,-.2618,-.0438,9.3],moon:[-8909.148,-77660.938,-.2618,.12,23],stone:[23512.3,63468.41,-1.9067289,.27,16]};
   const v=studies[$('study-select').value]; if(!v)return;
   game.teleport(v[0],v[1]); game.face(v[2],v[3]); game.set_time(v[4]);
   weatherMode=1;game.set_weather_mode(1);updateWeatherControls();

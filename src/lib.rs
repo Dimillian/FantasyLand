@@ -10,6 +10,7 @@ pub mod habitat;
 mod horizon;
 pub mod journeys;
 pub mod materials;
+pub mod meadow;
 pub mod natural;
 mod plants;
 mod player;
@@ -355,6 +356,9 @@ impl Game {
     }
     pub fn set_shadows(&mut self, enabled: bool) {
         self.renderer.set_shadows(enabled);
+    }
+    pub fn set_meadow(&mut self, enabled: bool) {
+        self.renderer.set_meadow(enabled);
     }
     pub fn set_ground_cover_density(&mut self, density: f32) {
         self.renderer.set_ground_cover_density(density);

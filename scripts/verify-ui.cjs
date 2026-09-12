@@ -26,7 +26,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -41,7 +41,7 @@ function filterHarness(snapshot, destinations = []) {
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [];
+  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [];
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
@@ -55,6 +55,7 @@ function filterHarness(snapshot, destinations = []) {
     set_time:hour=>{rendererEvents.push(['time',hour]);playerState.dayTime=hour;},
     landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
+    set_meadow:value=>{meadowCalls.push(value);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
     set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
     set_render_resolution:height=>{selectedResolution=height;resolutionCalls.push(height);rendererEvents.push(['resolution',height]);},
@@ -68,9 +69,9 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=light-cache-1');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=meadow-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -112,6 +113,11 @@ async function verifyFilterSettings() {
   const zero=filterHarness(restored.saved()); await zero.run('boot()'); assert.deepEqual(zero.calls,[[1,0]],'Zero must survive reload instead of becoming the default.');
   restored.ids['filter-strength'].value='200'; restored.ids['filter-strength'].fire('input');
   assert.deepEqual(restored.calls.at(-1),[1,1.5]); assert.equal(restored.ids['filter-strength'].value,'150');
+  assert.deepEqual(first.meadowCalls,[true]);
+  first.ids['meadow-carpet'].value='off'; first.ids['meadow-carpet'].fire('change');
+  assert.equal(first.meadowCalls.at(-1),false);
+  const meadowReload=filterHarness(first.saved()); await meadowReload.run('boot()');
+  assert.deepEqual(meadowReload.meadowCalls,[false]);
   console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; v4 position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
 }
 

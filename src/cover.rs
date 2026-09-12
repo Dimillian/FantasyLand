@@ -50,6 +50,7 @@ struct TileUniform {
 pub struct TileData {
     pub instances: Vec<CoverInstance>,
     pub ranks: Vec<f32>,
+    pub meadow: Vec<crate::meadow::MeadowCell>,
     pub heights: Vec<f32>,
     pub origin: [f32; 2],
     pub bounds_min: [f32; 3],
@@ -62,6 +63,7 @@ impl TileData {
     }
     pub fn buffer_bytes(&self) -> u64 {
         (self.instances.len() * std::mem::size_of::<CoverInstance>()
+            + self.meadow.len() * 16
             + self.heights.len() * 4
             + std::mem::size_of::<TileUniform>()) as u64
     }
@@ -134,6 +136,19 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
     let low = heights.iter().copied().fold(f32::INFINITY, f32::min);
     let high = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut plants = Vec::with_capacity(768);
+    let mut meadow = Vec::with_capacity(1024);
+    // Shared boundary samples cost one additional sample per cell, not sixteen
+    // new world queries per GPU tuft. A carpet cell requires all four corners
+    // to be dry, outside the road and on gentle terrain.
+    let mut dry = [false; 33 * 33];
+    for iz in 0..=32 {
+        for ix in 0..=32 {
+            let local = [ix as f32 * 1.5, iz as f32 * 1.5];
+            let sample = world.sample(origin[0] + local[0], origin[1] + local[1]);
+            let root = surface_height(world.seed, origin, &heights, local);
+            dry[iz * 33 + ix] = crate::meadow::dry_ground(&sample, root);
+        }
+    }
     for iz in 0..DIVISIONS {
         for ix in 0..DIVISIONS {
             let seed = hash(
@@ -162,14 +177,39 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                 continue;
             }
             let ecology = ecology::sample(world.seed, x, z, &sample);
-            if random(seed, 304) > ecology.grass_density {
-                continue;
-            }
             let dx = surface_height(world.seed, origin, &heights, [local[0] + 0.5, local[1]])
                 - surface_height(world.seed, origin, &heights, [local[0] - 0.5, local[1]]);
             let dz = surface_height(world.seed, origin, &heights, [local[0], local[1] + 0.5])
                 - surface_height(world.seed, origin, &heights, [local[0], local[1] - 0.5]);
             if dx * dx + dz * dz > 1.44 {
+                continue;
+            }
+            let corner = iz as usize * 33 + ix as usize;
+            if [corner, corner + 1, corner + 33, corner + 34]
+                .iter()
+                .all(|&i| dry[i])
+                && monuments.iter().all(|n| {
+                    !n.blocks(
+                        origin[0] + (ix as f32 + 0.5) * 1.5,
+                        rendered_root,
+                        origin[1] + (iz as f32 + 0.5) * 1.5,
+                        1.7,
+                        1.8,
+                    )
+                })
+            {
+                if let Some(cell) = crate::meadow::cell(
+                    seed,
+                    ix as u32,
+                    iz as u32,
+                    &sample,
+                    &ecology,
+                    (dx * dx + dz * dz).sqrt(),
+                ) {
+                    meadow.push(cell);
+                }
+            }
+            if random(seed, 304) > ecology.grass_density {
                 continue;
             }
             let r = random(seed, 306);
@@ -249,6 +289,7 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
     TileData {
         instances,
         ranks,
+        meadow,
         heights,
         origin,
         seed: world.seed,
@@ -321,6 +362,10 @@ fn templates() -> Vec<TemplateVertex> {
 struct GpuTile {
     instances: wgpu::Buffer,
     group: wgpu::BindGroup,
+    heights: wgpu::Buffer,
+    uniform: wgpu::Buffer,
+    meadow_cells: wgpu::Buffer,
+    meadow_count: u32,
     ranks: Vec<f32>,
     lod: Cell<usize>,
     bounds_min: Vec3,
@@ -346,6 +391,7 @@ pub struct CoverLayer {
     pending: VecDeque<(i32, i32)>,
     center: Option<(i32, i32)>,
     drawn: Cell<(u32, u32, u32)>,
+    meadow: crate::meadow::MeadowRenderer,
 }
 impl CoverLayer {
     pub fn new(
@@ -457,7 +503,9 @@ impl CoverLayer {
             contents: bytemuck::cast_slice(&data),
             usage: wgpu::BufferUsages::STORAGE,
         });
+        let meadow = crate::meadow::MeadowRenderer::new(device, &pipeline_layout, shader, format);
         Self {
+            meadow,
             pipeline,
             layout,
             templates,
@@ -538,6 +586,16 @@ impl CoverLayer {
             contents: bytemuck::bytes_of(&uniform),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let meadow_cells = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Ecological meadow cells"),
+            contents: if data.meadow.is_empty() {
+                &[0u8; 16]
+            } else {
+                bytemuck::cast_slice(&data.meadow)
+            },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        self.meadow.remove((x, z));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Cover tile"),
             layout: &self.layout,
@@ -561,6 +619,10 @@ impl CoverLayer {
             GpuTile {
                 instances,
                 group,
+                heights,
+                uniform,
+                meadow_cells,
+                meadow_count: data.meadow.len() as u32,
                 ranks: data.ranks,
                 lod: Cell::new(0),
                 bounds_min: Vec3::from_array(data.bounds_min),
@@ -624,7 +686,42 @@ impl CoverLayer {
             .set((drawn_tiles, drawn_instances, drawn_triangles));
         drawn_instances
     }
+    pub fn encode_meadow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        eye: Vec3,
+        projection: Mat4,
+        density: f32,
+    ) {
+        self.meadow.begin(device, queue, eye, projection, density);
+        if density > 0. {
+            for (&key, tile) in &self.tiles {
+                let distance = (eye.clamp(tile.bounds_min, tile.bounds_max) - eye).length();
+                if tile.meadow_count > 0
+                    && distance < crate::meadow::DISTANCE + 2.
+                    && visible(tile.bounds_min, tile.bounds_max, eye, projection)
+                {
+                    self.meadow.prepare_tile(
+                        device,
+                        key,
+                        tile.meadow_count,
+                        &tile.meadow_cells,
+                        &tile.heights,
+                        &tile.uniform,
+                        distance,
+                    );
+                }
+            }
+        }
+        self.meadow.encode(encoder);
+    }
+    pub fn draw_meadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        self.meadow.draw(pass, |key| &self.tiles[&key].group);
+    }
     pub fn clear(&mut self) {
+        self.meadow.clear();
         self.tiles.clear();
         self.pending.clear();
         self.center = None;
@@ -638,7 +735,9 @@ impl CoverLayer {
         CoverStats {
             tile_count: self.tiles.len(),
             loaded_instances: self.tiles.values().map(|t| t.ranks.len()).sum(),
-            buffer_bytes: self.template_bytes + self.tiles.values().map(|t| t.bytes).sum::<u64>(),
+            buffer_bytes: self.template_bytes
+                + self.tiles.values().map(|t| t.bytes).sum::<u64>()
+                + self.meadow.buffer_bytes(),
             pending_tiles: self.pending.len(),
             drawn_tiles,
             drawn_instances,
@@ -833,7 +932,7 @@ mod tests {
         assert_eq!(a.heights.len(), 121);
         assert_eq!(
             a.buffer_bytes(),
-            (a.instances.len() * 28 + 121 * 4 + 32) as u64
+            (a.instances.len() * 28 + a.meadow.len() * 16 + 121 * 4 + 32) as u64
         );
     }
     #[test]

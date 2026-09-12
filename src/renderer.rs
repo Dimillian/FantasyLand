@@ -210,6 +210,7 @@ pub struct Renderer {
     hearths: [[f32; 4]; 8],
     cover: CoverLayer,
     ground_cover_density: f32,
+    meadow_enabled: bool,
     cover_drawn_instances: u32,
     pub width: u32,
     pub height: u32,
@@ -694,6 +695,7 @@ impl Renderer {
             hearths: [[0.0; 4]; 8],
             cover,
             ground_cover_density: 4.0,
+            meadow_enabled: true,
             cover_drawn_instances: 0,
             width,
             height,
@@ -986,6 +988,9 @@ impl Renderer {
     }
     pub fn shadows_enabled(&self) -> bool {
         self.shadows_enabled
+    }
+    pub fn set_meadow(&mut self, enabled: bool) {
+        self.meadow_enabled = enabled;
     }
     pub fn set_ground_cover_density(&mut self, density: f32) {
         // Resident instances are sorted by density threshold. Only each draw's
@@ -1824,6 +1829,18 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("World frame"),
             });
+        self.cover.encode_meadow(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            eye,
+            view_projection,
+            if self.meadow_enabled {
+                self.ground_cover_density
+            } else {
+                0.
+            },
+        );
         if update_clouds {
             self.cloud_shadow.encode(&mut encoder);
         }
@@ -1999,6 +2016,8 @@ impl Renderer {
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
+            self.cover.draw_meadow(&mut pass);
+            pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
             // Draw nearer occluders first. A forest must not shade every distant
             // canopy behind the same trunk before depth can reject those pixels.
