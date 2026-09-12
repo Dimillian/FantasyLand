@@ -20,17 +20,17 @@ Settings includes explicit 420p, 450p, 540p and 720p targets, five lighting stud
 - Click the world to focus and capture the mouse. Escape releases it. When a browser blocks capture, click-focused mouse look still works within the window; touch uses drag look.
 - M or Tab: open the unified atlas. M or Escape closes it; Tab navigates controls inside menus.
 - Drag the atlas to pan, scroll to zoom from the local landscape to the whole continent, select a location to set a waypoint or fast travel. Zoom and position persist between openings.
-- I: bag. C: character. K: skills. O: settings (weather, reflections, landscape travel, shadows, ground cover, filters, seed, quality and time of day). F3: diagnostics.
+- I: bag. C: character. K: skills. O: settings (resolution and mouse sensitivity; advanced graphics and world tools are collapsed). F3: diagnostics.
 - Progress and preferences are stored on this device. Add `?seed=42` to explore another deterministic seed.
-- Settings → Natural wonders visits ten families of generated rock formations. Walking journeys offers three continuous, roughly 6–7 minute routes in the default world, with turns marked in the atlas. These are walking corridors through wilderness; small trees may need a short detour. Discovery is computed and cached the first time each selector is opened.
+- Settings → World tools & experiments → Natural wonders visits ten families of generated rock formations. Walking journeys offers three continuous, roughly 6–7 minute routes in the default world, with turns marked in the atlas. These are walking corridors through wilderness; small trees may need a short detour. Discovery is computed and cached the first time each selector is opened.
 - Dawn, Day, Dusk and Moons buttons change the lighting immediately; the time slider explores the complete cycle.
 - Weather starts in Automatic. Settings offers Clear, Cloudy, Overcast, Rain, Storm, Tempest, Snow and Blizzard overrides, a 0.25–20× weather clock and pause. Overrides blend in gradually. Higher clock speeds make snow buildup and changing fronts easier to inspect; particle and river motion retain real animation speed.
 
-Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the tone-mapped image without a screen effect. Select the filter and set its strength from 0–150% in Settings; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. The complete scene renders into linear HDR. Bloom extraction and blur use small floating-point targets; a shared filmic tone map and subtle final palette reduction preserve highlight energy until presentation. Clean skips the Bloom passes.
+Bloom is the default screen filter, with soft highlights across three blur scales while the original pixel detail stays sharp. CRT adds stable scanlines, an RGB phosphor mask, slight curvature, subtle color separation and a smaller glow. Clean preserves the tone-mapped image without a screen effect. Select the filter and set its strength from 0–150% in Settings → Advanced graphics; the choice persists with the existing save. Filters affect the 3D view, keeping HUD and atlas text crisp. The complete scene renders into linear HDR. Bloom extraction and blur use small floating-point targets; a shared filmic tone map and subtle final palette reduction preserve highlight energy until presentation. Clean skips the Bloom passes.
 
-Internal resolution is separately selectable from 120p to 1080p, preserving the viewport aspect ratio, with actual dimensions shown. Auto retains the quality preset's 270/450/720p cap; Native matches the game canvas. Explicit resolutions stay fixed when world quality changes and can supersample a smaller viewport. These preferences preserve the existing player position and atlas view.
+Resolution offers Native (default), 720p, 540p, 420p and Adaptive, with actual dimensions shown. Native matches the game canvas in CSS pixels, without multiplying by Retina device-pixel ratio. Adaptive adjusts between 420–720p; choosing a fixed resolution turns it off. Existing custom resolutions remain supported and visible when selected. Explicit resolutions stay fixed when world quality changes. Saved player position and atlas view are preserved.
 
-Ground cover density ranges from Off to 400% in Settings, independently of world quality. It controls bent grass tufts, flowers, serrated ferns, heather, dry seedheads, reeds, low shrubs and leaf/branch litter; 400% is the default. Eight community families each have eight variants sharing a bounded 24-triangle template. Changing it adjusts the number of submitted instances immediately, keeps existing plants in place, and preserves the saved position, atlas and other settings. F3 reports density, submitted cover instances and mesh buffer memory.
+Ground cover density ranges from Off to 400% in Settings → Advanced graphics, independently of world quality. It controls bent grass tufts, flowers, serrated ferns, heather, dry seedheads, reeds, low shrubs and leaf/branch litter; 400% is the default. Eight community families each have eight variants sharing a bounded 24-triangle template. Changing it adjusts the number of submitted instances immediately, keeps existing plants in place, and preserves the saved position, atlas and other settings. F3 reports density, submitted cover instances and mesh buffer memory.
 
 Ground cover extends 420 m, thinning distant instance counts while preserving dense nearby plants. Its entire visible range retains the exact 6 m terrain surface for anchored roots. Ground cover streams in 48 m tiles and shares procedural plant templates. A compact placement record replaces duplicated plant vertices. Each tile includes a 6 m terrain-height grid; the vertex shader uses the same alternating triangles as the visible ground to anchor roots on slopes. Whole tiles outside the visible range or camera frustum are rejected before vertex processing. Terrain, water and tree meshes also use full frustum culling. Generation uses small cover jobs and a shared time budget; individual terrain/prop jobs remain non-preemptible.
 
@@ -198,7 +198,7 @@ raw results and limitations of the current lighting-cache build.
 
 ## Anti-aliasing and motion stability (local, September 12)
 
-Settings now has independent Off / FXAA / SMAA edge smoothing, with FXAA as the default.
+Settings → Advanced graphics has independent Off / FXAA / SMAA edge smoothing, with FXAA as the default.
 SMAA uses the three-pass High implementation and canonical area/search tables. Both modes
 run after bloom/tone mapping and before the pixel palette and CRT display; HUD text remains crisp.
 The dense meadow filters unresolved pigment detail, gently widens thin distant ribbons and
@@ -211,3 +211,16 @@ compare all AA modes at fixed daylight, or record an eight-second walk separatel
 
 See [implementation and validation](docs/antialiasing.md). The checkpoint before this change
 is `checkpoint/pre-antialiasing-20260912` (`c8fb458`). This experiment has not been deployed.
+
+## Recommended visual defaults
+
+The baseline is Native resolution, Balanced world detail, FXAA, Bloom at 100%,
+400% ground cover with meadow carpet, sun/moon shadows, water reflections and
+ambient enclosure shading. Godrays retain their current renderer settings.
+Adaptive resolution is opt-in. Existing saved preferences are respected.
+
+The main settings panel contains resolution and mouse sensitivity. Advanced
+graphics and world tools/experiments are collapsed by default. Restore recommended
+defaults applies the complete visual baseline without resetting position, seed,
+atlas, waypoint, sensitivity, time or weather. No engine or shader changes were
+needed for this settings simplification.

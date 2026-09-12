@@ -4,10 +4,10 @@ The pre-change checkpoint is `checkpoint/pre-antialiasing-20260912` (`c8fb458`).
 
 ## Graphics settings
 
-- Anti-aliasing: Off / FXAA / SMAA. FXAA is the default for saves without the preference.
+- Advanced graphics → Anti-aliasing: Off / FXAA / SMAA. FXAA is the default for saves without the preference.
 - Bloom, CRT and Clean remain independent. The HTML HUD is never filtered.
-- Adaptive resolution is opt-in. It adjusts only the internal scene between 420, 480, 540, 600, 660 and 720 pixels high. Manual resolution, world quality, 400% density and godrays remain separate preferences.
-- Compare all AA modes runs all six mode/resolution combinations at a single fixed time of day and restores the selected AA and resolution afterward.
+- Resolution → Adaptive is opt-in; Native is the default. It adjusts only the internal scene between 420, 480, 540, 600, 660 and 720 pixels high. Manual resolution, world quality, 400% density and godrays remain separate preferences.
+- World tools & experiments → Compare all AA modes runs all six mode/resolution combinations at a single fixed time of day and restores the selected AA and resolution afterward.
 - The local Performance check can also record an eight-second walk with the selected AA mode. Video encoding is deliberately separate from FPS benchmarks.
 
 ## Render integration
@@ -34,7 +34,7 @@ The governor freezes during menus, loading, benchmarks, recording, hidden tabs a
 
 Native GPU tests run the actual WGSL pipelines and confirm constant-color preservation, diagonal smoothing, cleared SMAA edge/weight buffers, resolution changes and mode switches. UI tests cover initialization, preference migration/persistence, manual resolution restoration and hidden-preview freezing. A pure timing test covers 60/120Hz cadence, isolated hitches, sustained overload, the 420p floor and failed-probe cooldown.
 
-Actual browser captures, eight-second walks and a draggable comparison are in `output/antialiasing/`. The comparison is available locally at `http://127.0.0.1:4176/antialiasing/comparison.html` while the retained gallery server is running. All image comparisons use this build; Off versus FXAA/SMAA isolates AA, with the grass stability changes present in every view. Wind and daylight continue between shots.
+Actual browser captures, eight-second walks and a draggable comparison are in `output/antialiasing/`. The comparison is available locally at `http://127.0.0.1:4176/antialiasing/comparison.html` while the retained gallery server is running. All image comparisons use this build; Off versus FXAA/SMAA isolates AA, with the grass stability changes present in every view. The camera and time of day match between stills; wind and animation phase continue.
 
 Measured results are recorded in `docs/benchmarks/antialiasing-2026-09-12.json`. No build/test or video encoding runs concurrently with those samples. Apple GPU per-pass intervals overlap and are not treated as additive pass costs.
 

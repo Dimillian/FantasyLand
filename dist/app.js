@@ -38,7 +38,7 @@ let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.fil
 // Removed filter saves return to visible Bloom while all world progress stays intact.
 let filterStrength = Number(saved.filterMode) === 3 ? 1 : Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
 const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 420, 450, 540, 720, 1080];
-let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 0)) ? Number(saved.renderResolution ?? 0) : 0;
+let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 1)) ? Number(saved.renderResolution ?? 1) : 1;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
 let meadowCarpet = saved.meadowCarpet !== false;
@@ -73,6 +73,7 @@ updateWeatherControls();
 updateGroundCoverControls();
 updateFilterControls();
 updateAaControls();
+updateLookSummary();
 
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
@@ -82,6 +83,7 @@ function toast(message, duration = 3500) {
 }
 
 function saveProgress() {
+  updateLookSummary();
   if (benchmark || motionCapture || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
@@ -239,8 +241,34 @@ function applyFilter() {
 function updateAaControls() {
   $('antialiasing').value = String(antialiasing);
   $('antialiasing-help').textContent = ['Sharp pixels, no edge smoothing.', 'Softens jagged edges with a light touch.', 'Sharper edge smoothing, with a higher GPU cost.'][antialiasing];
-  $('adaptive-resolution').value = adaptiveResolution ? 'on' : 'off';
-  $('render-resolution').disabled = adaptiveResolution;
+  // Keep old custom resolutions visible when selected, without crowding the menu.
+  const legacy = $('legacy-resolution');
+  legacy.value = String(renderResolution);
+  legacy.textContent = renderResolution === 0 ? 'Quality scaled' : `${renderResolution}p · custom`;
+  legacy.hidden = [1, 420, 540, 720].includes(renderResolution);
+  $('render-resolution').value = adaptiveResolution ? 'adaptive' : String(renderResolution);
+}
+
+function updateLookSummary() {
+  const recommended = quality === 1 && antialiasing === 1 && filterMode === 1 && filterStrength === 1 && groundCoverDensity === 4 && meadowCarpet && sunShadows && reflections && enclosure;
+  $('look-status').textContent = recommended ? 'Recommended look' : 'Custom look';
+  $('look-description').textContent = recommended
+    ? 'Lush ground cover, soft edges and cinematic light.'
+    : 'Your saved graphics choices. Adjust them under Advanced graphics.';
+}
+
+function restoreVisualDefaults() {
+  quality = 1; antialiasing = 1; filterMode = 1; filterStrength = 1;
+  groundCoverDensity = 4; meadowCarpet = true;
+  sunShadows = true; reflections = true; enclosure = true;
+  renderResolution = 1; adaptiveResolution = false;
+  $('quality-select').value = '1'; $('sun-shadows').value = 'on';
+  game?.set_quality(quality);
+  game?.set_antialiasing(antialiasing);
+  game?.set_shadows(sunShadows);
+  game?.set_reflections(reflections); game?.set_enclosure(enclosure);
+  applyGroundCoverDensity(); applyFilter(); applyResolution(); updateWeatherControls();
+  saveProgress(); toast('Recommended look restored · Native resolution');
 }
 function applyResolution() {
   game?.set_render_resolution(adaptiveResolution ? adaptive.height : renderResolution);
@@ -924,9 +952,7 @@ $('antialiasing').addEventListener('change', event => {
   antialiasing = [0,1,2].includes(selected) ? selected : 1;
   game?.set_antialiasing(antialiasing); adaptive.reset(performance.now()); updateAaControls(); saveProgress();
 });
-$('adaptive-resolution').addEventListener('change', event => {
-  adaptiveResolution = event.target.value === 'on'; applyResolution(); saveProgress();
-});
+$('restore-visual-defaults').addEventListener('click', restoreVisualDefaults);
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
   filterMode = [0, 1, 2].includes(selected) ? selected : 1;
@@ -941,8 +967,11 @@ $('filter-strength').addEventListener('input', (event) => {
   saveProgress();
 });
 $('render-resolution').addEventListener('change', (event) => {
+  if (event.target.value === 'adaptive') {
+    adaptiveResolution = true; applyResolution(); saveProgress(); return;
+  }
   const selected = Number(event.target.value);
-  renderResolution = RESOLUTION_OPTIONS.includes(selected) ? selected : 0;
+  renderResolution = RESOLUTION_OPTIONS.includes(selected) ? selected : 1;
   $('render-resolution').value = String(renderResolution);
   adaptiveResolution = false;
   applyResolution();

@@ -82,12 +82,12 @@ async function verifyFilterSettings() {
   assert.equal(first.run('filterMode'),1); assert.equal(first.run('filterStrength'),1);
   assert.equal(first.ids['filter-select'].value,'1'); assert.equal(first.ids['filter-strength'].value,'100');
   assert.equal(first.ids['filter-strength'].disabled,false);
-  assert.equal(first.run('renderResolution'),0);
-  assert.equal(first.ids['render-resolution'].value,'0');
+  assert.equal(first.run('renderResolution'),1);
+  assert.equal(first.ids['render-resolution'].value,'1');
   await first.run('boot()');
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
-  assert.deepEqual(first.resolutionCalls,[0]);
-  assert.equal(first.ids['render-dimensions'].textContent,'Actual 720 × 450');
+  assert.deepEqual(first.resolutionCalls,[1]);
+  assert.equal(first.ids['render-dimensions'].textContent,'Actual 800 × 500');
   assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','filter','groundCover','shadows','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
@@ -125,12 +125,12 @@ async function verifyFilterSettings() {
   assert.equal(first.aaCalls.at(-1),2);
   const aaReload=filterHarness(first.saved()); await aaReload.run('boot()');
   assert.deepEqual(aaReload.aaCalls,[2]);
-  first.ids['adaptive-resolution'].value='on'; first.ids['adaptive-resolution'].fire('change');
-  assert.equal(first.resolutionCalls.at(-1),540); assert.equal(first.ids['render-resolution'].disabled,true);
+  first.ids['render-resolution'].value='adaptive'; first.ids['render-resolution'].fire('change');
+  assert.equal(first.resolutionCalls.at(-1),540); assert.equal(first.ids['render-resolution'].value,'adaptive');
   const adaptiveReload=filterHarness(first.saved()); await adaptiveReload.run('boot()');
   assert.equal(adaptiveReload.resolutionCalls.at(-1),540);
-  first.ids['adaptive-resolution'].value='off'; first.ids['adaptive-resolution'].fire('change');
-  assert.equal(first.resolutionCalls.at(-1),0); assert.equal(first.ids['render-resolution'].disabled,false);
+  first.ids['render-resolution'].value='1'; first.ids['render-resolution'].fire('change');
+  assert.equal(first.resolutionCalls.at(-1),1); assert.equal(first.saved().adaptiveResolution,false);
   assert.deepEqual(first.teleports,[[637,222]],'AA and adaptive settings must not move the player.');
   const comparison=filterHarness({...existing, antialiasing:2, renderResolution:540, adaptiveResolution:true});
   await comparison.run('boot()');comparison.run('initialReady=true; started=true; game.face(0,-0.1); beginBenchmark(false,true);');
@@ -192,7 +192,23 @@ async function verifyResolutionSettings() {
   restored.ids['quality-select'].value='1'; restored.ids['quality-select'].fire('change');
   assert.equal(restored.ids['render-dimensions'].textContent,'Actual 540 × 360','Auto must follow world quality.');
   const invalid=filterHarness({...existing,renderResolution:999});
-  assert.equal(invalid.run('renderResolution'),0);
+  assert.equal(invalid.run('renderResolution'),1);
+  // Restoring the visual baseline must never restart the world or reset controls.
+  const custom = filterHarness({...existing, groundCoverDensity:1, meadowCarpet:false, antialiasing:2, sunShadows:false, reflections:false, enclosure:false, adaptiveResolution:true, sensitivity:1.45, weatherMode:5, weatherSpeed:3, weatherPaused:true});
+  await custom.run('boot()'); custom.run('initialReady=true;');
+  assert.equal(custom.ids['look-status'].textContent,'Custom look');
+  custom.ids['restore-visual-defaults'].fire('click');
+  const baseline = custom.saved();
+  for (const [key,value] of Object.entries({quality:1,antialiasing:1,filterMode:1,filterStrength:1,groundCoverDensity:4,meadowCarpet:true,sunShadows:true,reflections:true,enclosure:true,renderResolution:1,adaptiveResolution:false})) assert.equal(baseline[key],value,`Default ${key}`);
+  for (const key of ['seed','x','z','waypoint','atlas']) assert.deepEqual(baseline[key],existing[key],`Restore defaults must preserve ${key}`);
+  assert.equal(baseline.sensitivity,1.45); assert.equal(baseline.weatherMode,5); assert.equal(baseline.weatherSpeed,3); assert.equal(baseline.weatherPaused,true);
+  assert.deepEqual(custom.teleports,[[810,-160]],'Restoring graphics never teleports the player.');
+  assert.equal(custom.resolutionCalls.at(-1),1); assert.equal(custom.qualityCalls.at(-1),1);
+  assert.equal(custom.groundCoverCalls.at(-1),4); assert.equal(custom.aaCalls.at(-1),1);
+  assert.deepEqual(custom.calls.at(-1),[1,1]); assert.equal(custom.meadowCalls.at(-1),true);
+  assert.equal(custom.ids['look-status'].textContent,'Recommended look');
+  const baselineReload=filterHarness(baseline); await baselineReload.run('boot()');
+  assert.equal(baselineReload.resolutionCalls.at(-1),1); assert.equal(baselineReload.ids['look-status'].textContent,'Recommended look');
   console.log('PASS: resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
 }
 

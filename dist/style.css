@@ -134,6 +134,24 @@ body.mouse-focused #world { cursor: none; }
 #render-resolution { width: 140px; flex-shrink: 0; }
 #render-dimensions { display: inline-block; margin-top: 4px; color: #c4cbb0; font-variant-numeric: tabular-nums; }
 
+/* Player preferences first; rendering and world experiments stay folded away. */
+.look-summary { padding: 12px 0 6px; }
+.look-summary .overline { display: block; margin-bottom: 9px; }
+.look-summary strong { color: #e0dec5; font-size: 19px; font-weight: 400; }
+.look-summary p { margin: 5px 0 10px; color: #a9b59c; font-size: 14px; line-height: 1.6; }
+.settings-sheet .setting-row select, .settings-sheet .setting-row input[type=number] { font-size: 14px; }
+.settings-sheet .setting-row > span { min-width: 0; }
+.settings-sheet .setting-row select { max-width: 100%; }
+#restore-visual-defaults { margin: 9px 0 18px; font-size: 14px; }
+.settings-disclosure { border-top: 1px solid var(--line); }
+.settings-disclosure summary { cursor: pointer; padding: 17px 0; color: #c9cfb4; font-size: 14px; }
+.settings-disclosure summary:hover { color: #eee4b9; }
+.settings-disclosure summary:focus-visible { outline: 1px solid #cabb86; outline-offset: 4px; }
+.settings-disclosure[open] summary { color: #e1d19b; }
+.settings-disclosure-content { padding-bottom: 18px; }
+.settings-disclosure-content .setting-row:first-child { padding-top: 3px; }
+.settings-sheet .field-notes { padding-top: 18px; }
+
 /* Route hierarchy mirrors the atlas strokes without introducing heavy symbols. */
 .map-legend i.route-key { width: 19px; height: 0; background: none; border-top: 1px solid; }
 .map-legend i.route-main { border-top-width: 1.5px; border-color: #c5a36eaa; }
