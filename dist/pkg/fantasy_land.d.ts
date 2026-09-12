@@ -12,6 +12,7 @@ export class Game {
     landscape_destinations(): any;
     look(dx: number, dy: number): void;
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
+    natural_destinations(): any;
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
@@ -26,6 +27,7 @@ export class Game {
     state(): any;
     teleport(x: number, z: number): void;
     tick(dt: number, forward: number, strafe: number, sprint: boolean, jump: boolean): void;
+    walking_journeys(): any;
     world_size(): number;
 }
 
@@ -49,6 +51,7 @@ export interface InitOutput {
     readonly game_landscape_destinations: (a: number) => any;
     readonly game_look: (a: number, b: number, c: number) => void;
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly game_natural_destinations: (a: number) => any;
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
@@ -63,6 +66,7 @@ export interface InitOutput {
     readonly game_state: (a: number) => any;
     readonly game_teleport: (a: number, b: number, c: number) => void;
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly game_walking_journeys: (a: number) => any;
     readonly game_world_size: (a: number) => number;
     readonly inspect_landscapes: (a: number) => any;
     readonly inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];

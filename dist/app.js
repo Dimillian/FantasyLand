@@ -41,6 +41,8 @@ let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 384000;
 let landscapeDestinations = null;
+let walkingJourneys = null, loadingWalks = false, activeJourney = null;
+let naturalWonders = null, loadingWonders = false;
 const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.atlas.span) ? saved.atlas : null;
 const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [], routes: null }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
@@ -95,6 +97,55 @@ function loadLandscapeDestinations() {
     $('landscape-destination-help').textContent = 'Could not find landscapes. Focus this list to retry.';
   }
   $('travel-landscape').disabled = !selectedLandscapeDestination();
+}
+
+async function loadNaturalWonders() {
+  if (naturalWonders !== null || loadingWonders || !game || !initialReady) return;
+  loadingWonders = true; $('wonders-help').textContent = 'Finding natural wonders…';
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  try {
+    const found = game.natural_destinations();
+    if (!Array.isArray(found)) throw new Error('Invalid natural wonders');
+    naturalWonders = found.filter(d => d && typeof d.name === 'string' && [d.x,d.z,d.yaw,d.pitch].every(Number.isFinite));
+    for (const [i,d] of naturalWonders.entries()) {
+      const option = document.createElement('option'); option.value = String(i); option.textContent = d.name; $('wonders-select').append(option);
+    }
+    $('wonders-help').textContent = naturalWonders.length ? 'Travel to a viewpoint beside a real formation.' : 'No suitable viewpoints found in this seed.';
+  } catch (error) { console.error(error); $('wonders-help').textContent = 'Could not find wonders. Focus the list to retry.'; }
+  finally { loadingWonders = false; }
+}
+function selectedWonder() {
+  const value = $('wonders-select').value, index = Number(value);
+  return value !== '' && Number.isInteger(index) && index >= 0 ? naturalWonders?.[index] || null : null;
+}
+
+async function loadWalkingJourneys() {
+  if (walkingJourneys !== null || loadingWalks || !game || !initialReady) return;
+  loadingWalks = true; $('walking-help').textContent = 'Finding a path through the terrain…';
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  try {
+    const found = game.walking_journeys();
+    if (!Array.isArray(found)) throw new Error('Invalid journeys');
+    walkingJourneys = found.filter(j => j && typeof j.name === 'string' && Number.isFinite(j.x) && Number.isFinite(j.z) && Number.isFinite(j.yaw) && Number.isFinite(j.minutes) && Array.isArray(j.points) && j.points.length >= 2 && j.points.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite)));
+    for (const [i, j] of walkingJourneys.entries()) {
+      const option = document.createElement('option'); option.value = String(i);
+      option.textContent = `${j.name} · ${Math.round(j.minutes)} min`; $('walking-select').append(option);
+    }
+    $('walking-help').textContent = walkingJourneys.length ? 'Follow the route in the atlas. Trees may call for small detours.' : 'No suitable walks found for this seed.';
+  } catch (error) { console.error(error); $('walking-help').textContent = 'Could not find walks. Focus the list to retry.'; }
+  finally { loadingWalks = false; }
+}
+function selectedWalk() {
+  const value = $('walking-select').value; const index = Number(value);
+  return value !== '' && Number.isInteger(index) && index >= 0 ? walkingJourneys?.[index] || null : null;
+}
+function updateWalk() {
+  if (!activeJourney) return;
+  const j = activeJourney;
+  while (j.next < j.points.length && Math.hypot(j.points[j.next][0] - state.x, j.points[j.next][1] - state.z) < 38) j.next++;
+  if (j.next >= j.points.length) { toast(`${j.name} completed.`); activeJourney = null; waypoint = null; saveProgress(); return; }
+  const point = j.points[j.next];
+  waypoint = { name: j.name, x: point[0], z: point[1], kind: 'walk' };
 }
 
 function updateGroundCoverControls() {
@@ -384,6 +435,11 @@ function drawMap(now) {
   for (let z = Math.ceil(left.z / gridStep) * gridStep; z < right.z; z += gridStep) { const p = worldToScreen(0, z); ctx.moveTo(0, p.y); ctx.lineTo(w, p.y); }
   ctx.stroke();
   drawMapRoutes(ctx, map.features, map.span);
+  if (activeJourney) {
+    ctx.save(); ctx.beginPath(); ctx.strokeStyle = '#f4d695'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    activeJourney.points.forEach((point, i) => { const p = worldToScreen(point[0], point[1]); if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
+    ctx.stroke(); ctx.restore();
+  }
   const visible = [];
   const occupied = [];
   const features = [...map.features.sites.map((f) => ({ ...f, isSite: true })), ...map.features.landmarks];
@@ -504,10 +560,11 @@ function updateHUD(now) {
     $(name + '-value').textContent = amount;
     $(name + '-meter').setAttribute('aria-valuenow', amount);
   }
+  updateWalk();
   if (waypoint) {
     const distance = Math.hypot(waypoint.x - state.x, waypoint.z - state.z);
     $('journey-target').textContent = `◇ ${waypoint.name}`;
-    $('journey-distance').textContent = distance < 40 ? 'Destination reached.' : `${fmtDistance(distance)} · ~${Math.max(1, Math.round(distance / 330))} min on foot`;
+    $('journey-distance').textContent = activeJourney ? `${fmtDistance(distance)} to the next turn · route in atlas` : distance < 40 ? 'Destination reached.' : `${fmtDistance(distance)} · ~${Math.max(1, Math.round(distance / 330))} min on foot`;
     const bearing = Math.atan2(waypoint.x - state.x, -(waypoint.z - state.z));
     const angle = wrapAngle(bearing - radians);
     const markerVisible = Math.abs(angle) < .8 && distance >= 40 && !modal;
@@ -625,7 +682,7 @@ $('center-map').addEventListener('click', () => { map.x = state.x; map.z = state
 $('fit-map').addEventListener('click', fitWorld);
 $('set-waypoint').addEventListener('click', () => {
   if (!map.selected) return;
-  waypoint = { ...map.selected };
+  activeJourney = null; waypoint = { ...map.selected };
   saveProgress(); updateSelection();
   toast(`Waypoint set: ${waypoint.name}`);
   closeModal();
@@ -634,11 +691,11 @@ $('fast-travel').addEventListener('click', () => {
   if (!map.selected) return;
   const destination = { ...map.selected };
   game.teleport(destination.x, destination.z);
-  state = game.state(); waypoint = destination;
+  activeJourney = null; state = game.state(); waypoint = destination;
   saveProgress(); closeModal();
   toast(`Arrived at ${destination.name}.`);
 });
-$('clear-waypoint').addEventListener('click', () => { waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
+$('clear-waypoint').addEventListener('click', () => { activeJourney = null; waypoint = null; saveProgress(); updateSelection(); toast('Waypoint cleared.'); });
 $('quality-select').addEventListener('change', (event) => { quality = Number(event.target.value); game?.set_quality(quality); updateRenderDimensions(); saveProgress(); });
 $('ground-cover-density').addEventListener('input', (event) => {
   const percent = Number(event.target.value);
@@ -687,6 +744,13 @@ $('ascii-palette').addEventListener('change', (event) => {
 });
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });
 $('time-setting').addEventListener('input', (event) => { game?.set_time(Number(event.target.value)); $('time-setting-label').textContent = formatTime(Number(event.target.value)); });
+for (const [id, hour] of [['sky-dawn', 6.4], ['sky-day', 12], ['sky-dusk', 17.7], ['sky-night', 22]]) {
+  $(id).addEventListener('click', () => {
+    game?.set_time(hour);
+    $('time-setting').value = String(hour);
+    $('time-setting-label').textContent = formatTime(hour);
+  });
+}
 $('seed-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const nextSeed = clamp(Math.floor(Number($('seed-input').value) || DEFAULT_SEED), 1, 4294967295);
@@ -704,12 +768,30 @@ $('landscape-travel-form').addEventListener('submit', (event) => {
   if (!destination || !game || !initialReady) return;
   game.teleport(destination.x, destination.z);
   game.face?.(destination.yaw, destination.pitch);
-  state = game.state(); waypoint = { ...destination };
+  activeJourney = null; state = game.state(); waypoint = { ...destination };
   saveProgress(); closeModal();
   toast(`Arrived at ${destination.name}.`);
 });
+$('wonders-select').addEventListener('focus', loadNaturalWonders);
+$('wonders-select').addEventListener('pointerdown', loadNaturalWonders);
+$('wonders-select').addEventListener('change', () => { $('wonders-travel').disabled = !selectedWonder(); });
+$('wonders-form').addEventListener('submit', event => {
+  event.preventDefault(); const d = selectedWonder(); if (!d || !game || !initialReady) return;
+  activeJourney = null; game.teleport(d.x, d.z); game.face?.(d.yaw,d.pitch); state = game.state();
+  waypoint = {name:d.name,x:d.landmark_x ?? d.x,z:d.landmark_z ?? d.z,kind:'natural'};
+  saveProgress(); closeModal(); toast(`Arrived beside ${d.name}.`);
+});
+$('walking-select').addEventListener('focus', loadWalkingJourneys);
+$('walking-select').addEventListener('pointerdown', loadWalkingJourneys);
+$('walking-select').addEventListener('change', () => { $('walking-start').disabled = !selectedWalk(); });
+$('walking-form').addEventListener('submit', event => {
+  event.preventDefault(); const walk = selectedWalk(); if (!walk || !game || !initialReady) return;
+  game.teleport(walk.x, walk.z); game.face?.(walk.yaw, walk.pitch); state = game.state();
+  activeJourney = { ...walk, next: 1 }; updateWalk(); map.dirty = true;
+  saveProgress(); closeModal(); toast(`${walk.name} · follow the route in your atlas.`);
+});
 $('return-to-spawn').addEventListener('click', () => {
-  game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');
+  activeJourney = null; game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');
 });
 
 const menuKeys = { KeyM: 'map', Tab: 'map', KeyI: 'bag', KeyC: 'character', KeyK: 'skills', KeyO: 'settings' };

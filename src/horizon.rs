@@ -527,17 +527,78 @@ mod canopy_tests {
     #[test]
     fn open_clearings_and_ocean_do_not_become_a_forest_wall() {
         let world = World::new(1337);
-        let forest = canopy(&world, -8, 38).indices.len();
-        let exposed = canopy(&world, -49, 45).indices.len();
-        let ocean = canopy(&world, 110, -110).indices.len();
+        // Select from ecology inputs, never from the renderer's resulting tree
+        // count. Landform changes may move forest/clearing boundaries entirely.
+        let mut forests = Vec::new();
+        let mut exposed = Vec::new();
+        let mut oceans = Vec::new();
+        'scan: for cz in (-108..=108).step_by(3) {
+            for cx in (-108..=108).step_by(3) {
+                let mut density = 0.;
+                let mut granite = 0;
+                let mut water = 0;
+                let mut rockiness = 0.;
+                for iz in 0..4 {
+                    for ix in 0..4 {
+                        let x = (cx as f32 + (ix as f32 + 0.5) / 4.) * PATCH_SIZE;
+                        let z = (cz as f32 + (iz as f32 + 0.5) / 4.) * PATCH_SIZE;
+                        let s = world.natural_sample(x, z);
+                        let r = crate::regions::sample(world.seed, x, z, &s);
+                        density += ecology::tree_density(world.seed, x, z, &s);
+                        granite += usize::from(r.geology == crate::regions::Geology::Granite);
+                        water += usize::from(s.ocean);
+                        rockiness += r.rockiness;
+                    }
+                }
+                density /= 16.;
+                rockiness /= 16.;
+                if forests.len() < 3 && water == 0 && density > 0.46 {
+                    forests.push((cx, cz));
+                }
+                if exposed.len() < 3
+                    && water == 0
+                    && granite >= 12
+                    && rockiness > 0.60
+                    && density < 0.050
+                {
+                    exposed.push((cx, cz));
+                }
+                if oceans.len() < 3 && water == 16 {
+                    oceans.push((cx, cz));
+                }
+                if forests.len() == 3 && exposed.len() == 3 && oceans.len() == 3 {
+                    break 'scan;
+                }
+            }
+        }
+        assert_eq!(
+            (forests.len(), exposed.len(), oceans.len()),
+            (3, 3, 3),
+            "need representative ecological fixtures"
+        );
+        let forest: usize = forests
+            .iter()
+            .map(|&(cx, cz)| canopy(&world, cx, cz).indices.len())
+            .sum();
+        let exposed: usize = exposed
+            .iter()
+            .map(|&(cx, cz)| canopy(&world, cx, cz).indices.len())
+            .sum();
         assert!(
-            forest > 48 * 40,
-            "ancient forest patch should have substantial cover"
+            forest > 3 * 48 * 40,
+            "forested ecology must keep substantial distant cover"
         );
         assert!(
             exposed < forest / 3,
-            "exposed granite should remain mostly open"
+            "exposed granite must remain mostly open"
         );
-        assert_eq!(ocean, 0);
+        for (cx, cz) in oceans {
+            assert_eq!(canopy(&world, cx, cz).indices.len(), 0);
+        }
+        println!(
+            "canopy regression: {} forest trees vs {} open-granite trees across three patches each",
+            forest / 48,
+            exposed / 48
+        );
     }
 }

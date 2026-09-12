@@ -361,6 +361,23 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
             bg[1] * 170. + hg[1] * 110. + mesa_d * 710. * (cg[1] + cg[0] * 0.19),
         ],
     ];
+    // Explicit continental ranges organize the macro relief. Geological noise
+    // supplies subordinate ridges/plateaus; basins suppress that local uplift.
+    // The product rule keeps slope identical to the height actually returned.
+    let geography = crate::geography::sample(seed, x, z);
+    let relief = 0.48 + geography.mountain * 0.28 - geography.basin * 0.22;
+    let relief_gradient = [
+        geography.mountain_gradient[0] * 0.28 - geography.basin_gradient[0] * 0.22,
+        geography.mountain_gradient[1] * 0.28 - geography.basin_gradient[1] * 0.22,
+    ];
+    for k in 0..5 {
+        let old = profiles[k] - 85.;
+        profiles[k] = 85. + old * relief + geography.uplift;
+        for a in 0..2 {
+            gradients[k][a] =
+                gradients[k][a] * relief + old * relief_gradient[a] + geography.gradient[a];
+        }
+    }
     let climate_profiles = profiles;
     let climate_gradients = gradients;
     let forms = local_forms(seed, x, z);
@@ -403,19 +420,50 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
             gradient[a] += (roll - 0.5) * [18., 40., 14., 12., 28.][k] * weight_gradient[k][a];
         }
     }
+    // Walk-scale hollows and shallow drainage grooves. Amplitude follows
+    // substrate continuously; these do not alter the macro climate derivative.
+    let (pocket, pocket_gradient) = field(seed ^ 0x7358, x, z, 110.);
+    let hollow = Differential {
+        v: pocket,
+        g: pocket_gradient,
+    }
+    .step(0.22, 0.52)
+    .scaled(4.6)
+    .shifted(-2.3);
+    let groove = Differential {
+        v: pocket,
+        g: pocket_gradient,
+    }
+    .shifted(-0.51)
+    .abs()
+    .step(0.025, 0.18)
+    .complement()
+    .scaled(-2.4);
+    let micro = hollow.plus(groove);
+    let amplitudes = [1.0, 0.26, 0.52, 0.83, 0.40];
+    let capacity: f32 = (0..5).map(|k| weights[k] * amplitudes[k]).sum();
+    height += micro.v * capacity;
+    for a in 0..2 {
+        gradient[a] += micro.g[a] * capacity
+            + micro.v
+                * (0..5)
+                    .map(|k| weight_gradient[k][a] * amplitudes[k])
+                    .sum::<f32>();
+    }
     let slope = gradient[0].hypot(gradient[1]);
     // Moist ocean winds travel east-northeast. Analytic upslope lift and lee
     // shelter respond to the same relief that shapes the visible ridgelines.
     // Rain and shelter respond to hills/ridges, not to a two-metre ledge face.
     let lift = (climate_gradient[0] * 0.91 - climate_gradient[1] * 0.41).clamp(-0.35, 0.35);
     let regional_rain = field(seed ^ 0x7315, x, z, 38000.).0;
-    let rainfall =
-        (0.45 + regional_rain * 0.40 + lift * 0.62 - weights[2] * 0.16).clamp(0.10, 0.98);
+    let rainfall = (0.45 + regional_rain * 0.40 + lift * 0.72 - weights[2] * 0.16
+        + geography.windward * 0.18
+        - geography.rain_shadow * 0.28)
+        .clamp(0.10, 0.98);
     let exposure =
         (0.12 + smooth(300., 1300., height) * 0.60 + ridge2 * weights[1] * 0.24 + lift.abs() * 0.5)
             .clamp(0., 1.);
-    let shelter = (0.90
-        - exposure * 0.64
+    let shelter = (0.90 - exposure * 0.64 + geography.basin * 0.10
         - smooth(0.06, 0.6, climate_gradient[0].hypot(climate_gradient[1])) * 0.18)
         .clamp(0., 1.);
     let fertility = (weights[0] * 0.94

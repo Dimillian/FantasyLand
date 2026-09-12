@@ -26,6 +26,11 @@ struct Globals {
     distant: [f32; 4],
     climate: [f32; 4],
     air: [f32; 4],
+    solenne: [f32; 4],
+    aster: [f32; 4],
+    vey: [f32; 4],
+    direct: [f32; 4],
+    ambient: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -860,17 +865,16 @@ impl Renderer {
             0.08,
             36000.0,
         );
-        let daylight = ((hour - 6.0) / 12.0 * std::f32::consts::PI).sin().max(0.0);
-        let brightness = 0.44 + daylight * 0.76;
-        let sun_angle = (hour - 6.0) / 12.0 * std::f32::consts::PI;
-        let sun = Vec3::new(sun_angle.cos(), sun_angle.sin(), -0.25).normalize();
-        let fog_color = [0.48 * brightness, 0.64 * brightness, 0.76 * brightness];
+        let sky = crate::celestial::state(hour);
+        let sun = sky.primary;
+        let brightness = sky.exposure;
+        let fog_color = [0.50, 0.64, 0.76];
         let view_projection = projection * view;
         let frustum = frustum_planes(view_projection);
         let shadow_matrix = self
             .shadow
             .update(&self.queue, eye, sun, self.elapsed, self.air[1]);
-        let shadow_active = self.shadows_enabled && sun.y > 0.035;
+        let shadow_active = self.shadows_enabled && sky.shadow_strength > 0.001;
         let globals = Globals {
             view_projection: view_projection.to_cols_array_2d(),
             camera: [eye.x, eye.y, eye.z, self.width as f32 / self.height as f32],
@@ -894,7 +898,7 @@ impl Renderer {
                 1. / SHADOW_SIZE as f32,
                 SHADOW_RADIUS,
                 shadow_active as u32 as f32,
-                0.,
+                sky.shadow_strength,
             ],
             distant: [
                 [8., 12., 16.][self.quality as usize] * CHUNK_SIZE - 300.,
@@ -904,6 +908,11 @@ impl Renderer {
             ],
             climate: self.climate,
             air: self.air,
+            solenne: sky.sun.extend(sky.daylight).to_array(),
+            aster: sky.aster.extend(crate::celestial::ASTER_RADIUS).to_array(),
+            vey: sky.vey.extend(crate::celestial::VEY_RADIUS).to_array(),
+            direct: sky.direct_color.extend(sky.direct_strength).to_array(),
+            ambient: sky.ambient_color.extend(sky.stars).to_array(),
         };
         self.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&globals));
@@ -934,7 +943,7 @@ impl Renderer {
         if shadow_active {
             let planes = frustum_planes(shadow_matrix);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Nearby sun shadows"),
+                label: Some("Nearby celestial shadows"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.shadow.view,

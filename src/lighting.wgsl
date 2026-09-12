@@ -16,5 +16,5 @@ fn sun_visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
         + textureSampleCompareLevel(sun_depth, sun_comparison, uv + vec2<f32>(offset,-offset), z)
         + textureSampleCompareLevel(sun_depth, sun_comparison, uv + vec2<f32>(-offset,offset), z)
         + textureSampleCompareLevel(sun_depth, sun_comparison, uv + vec2<f32>(offset,offset), z)) * 0.25;
-    return mix(1.0, shade, influence);
+    return mix(1.0, shade, influence * clamp(u.shadow_params.w, 0.0, 1.0));
 }

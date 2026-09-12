@@ -1184,7 +1184,32 @@ mod terrain_character_regressions {
             ([14580., 39380.], crate::regions::Formation::ChalkScarp),
             ([32560., 87120.], crate::regions::Formation::BasaltBench),
         ];
-        for (p, kind) in cases {
+        for (origin, kind) in cases {
+            // Keep the visual threshold, but find a dry surviving face near the
+            // old fixture as continental relief and drainage now move valleys.
+            let mut selected = None;
+            'search: for dz in (-2400..=2400).step_by(80) {
+                for dx in (-2400..=2400).step_by(80) {
+                    let p = [origin[0] + dx as f32, origin[1] + dz as f32];
+                    let l = w.landscape(p[0], p[1]);
+                    if l.formation != kind || l.formation_strength <= 0.60 {
+                        continue;
+                    }
+                    let s = w.sample(p[0], p[1]);
+                    if s.ocean || s.height < s.water_height + 8. || s.road > 0.1 {
+                        continue;
+                    }
+                    let q = [
+                        p[0] - l.formation_axis[1] * 110.,
+                        p[1] + l.formation_axis[0] * 110.,
+                    ];
+                    if (w.height(q[0], q[1]) - w.height(p[0], p[1])).abs() > 35. {
+                        selected = Some(p);
+                        break 'search;
+                    }
+                }
+            }
+            let p = selected.expect("geological province lost every visible dry face");
             let l = w.landscape(p[0], p[1]);
             assert_eq!(l.formation, kind);
             assert!(l.formation_strength > 0.60);

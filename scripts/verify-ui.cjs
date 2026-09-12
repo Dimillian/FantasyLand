@@ -45,6 +45,7 @@ function filterHarness(snapshot, destinations = []) {
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
   const engine = {
+    set_time:hour=>{rendererEvents.push(['time',hour]);playerState.dayTime=hour;},
     landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
@@ -261,6 +262,22 @@ function verifyAtlasRoutes() {
   console.log('PASS: atlas route precedence; three thin road classes; trail dash/zoom visibility; world-coordinate projection; legacy fallback; drawing state isolation.');
 }
 
+async function verifySkyAndWalkControls() {
+  const h = filterHarness({seed:1337,x:100,z:200,quality:1}); await h.run('boot()'); h.run('initialReady=true;');
+  for (const [id,hour] of [['sky-dawn',6.4],['sky-day',12],['sky-dusk',17.7],['sky-night',22]]) {
+    h.ids[id].fire('click'); assert.deepEqual(h.rendererEvents.at(-1),['time',hour]); assert.equal(h.ids['time-setting'].value,String(hour));
+  }
+  h.run(`walkingJourneys=[{name:'Test pass',x:100,z:200,yaw:1,pitch:0,minutes:6,points:[[100,200],[300,200],[300,500]]}];`);
+  h.ids['walking-select'].value='0';h.ids['walking-select'].fire('change');assert.equal(h.ids['walking-start'].disabled,false);
+  h.ids['walking-form'].fire('submit');assert.deepEqual(h.teleports.at(-1),[100,200]);assert.equal(h.run('activeJourney.next'),1);
+  h.run('state.x=300;state.z=200;updateWalk();');assert.equal(h.run('waypoint.z'),500);
+  h.run('state.x=300;state.z=500;updateWalk();');assert.equal(h.run('activeJourney'),null);assert.equal(h.run('waypoint'),null);
+  h.run(`naturalWonders=[{name:'Stone arch',x:500,z:800,yaw:0.4,pitch:0.1,landmark_x:530,landmark_z:850}];`);
+  h.ids['wonders-select'].value='0';h.ids['wonders-select'].fire('change');assert.equal(h.ids['wonders-travel'].disabled,false);
+  h.ids['wonders-form'].fire('submit');assert.deepEqual(h.teleports.at(-1),[500,800]);assert.equal(h.run('waypoint.x'),530);assert.equal(h.run('waypoint.z'),850);
+  console.log('PASS: celestial presets; natural-wonder viewpoint travel; continuous walk navigation and completion.');
+}
+
 async function main(){
   assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),undefined); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
@@ -292,6 +309,7 @@ async function main(){
   await verifyAsciiResolutionSettings();
   await verifyGroundCoverSettings();
   await verifyLandscapeDestinations();
+  await verifySkyAndWalkControls();
   console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

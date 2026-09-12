@@ -1,14 +1,20 @@
+pub mod celestial;
 pub mod cover;
 pub mod ecology;
 pub mod exploration;
+pub mod geography;
 pub mod geometry;
+pub mod habitat;
 mod horizon;
+pub mod journeys;
+pub mod natural;
 mod plants;
 mod player;
 mod postprocess;
 pub mod regions;
 pub mod renderer;
 mod shadow;
+pub mod traversal;
 pub mod world;
 
 use player::Player;
@@ -210,11 +216,54 @@ impl Game {
             let stride = (span / 10000.0).ceil() as u32;
             sites.retain(|s| s.id % stride == 0);
         }
-        let landmarks = if span < 14000.0 {
+        let mut landmarks = if span < 14000.0 {
             self.world.landmarks_near(cx, cz, radius)
         } else {
             Vec::new()
         };
+        if span < 14000. {
+            landmarks.extend(
+                natural::landmarks_near(&self.world, cx, cz, radius)
+                    .into_iter()
+                    .map(|n| world::Landmark {
+                        id: n.id,
+                        name: n.name,
+                        x: n.x,
+                        z: n.z,
+                        kind: n.kind.name().into(),
+                    }),
+            );
+        }
+        if span < 100000. {
+            for p in geography::landmarks(self.world.seed) {
+                if p.kind != geography::GeoLandmarkKind::MountainPass
+                    || (p.position[0] - cx).hypot(p.position[1] - cz) > radius
+                {
+                    continue;
+                }
+                let s = self.world.natural_sample(p.position[0], p.position[1]);
+                if s.ocean || s.height < s.water_height + 0.5 {
+                    continue;
+                }
+                let names = [
+                    "Greywind",
+                    "Aster",
+                    "Cloudrest",
+                    "Raven",
+                    "Ashen",
+                    "Vey",
+                    "Highwater",
+                    "Cinder",
+                ];
+                landmarks.push(world::Landmark {
+                    id: p.id,
+                    name: format!("{} Pass", names[(p.id as usize) % names.len()]),
+                    x: p.position[0],
+                    z: p.position[1],
+                    kind: "mountain_pass".into(),
+                });
+            }
+        }
         let routes = self.world.road_map_routes(cx, cz, span);
         let roads = routes.iter().map(|route| route.points.clone()).collect();
         serde_wasm_bindgen::to_value(&Features {
@@ -228,6 +277,12 @@ impl Game {
     pub fn landscape_destinations(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&exploration::destinations(&self.world))
             .unwrap_or(JsValue::NULL)
+    }
+    pub fn walking_journeys(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&journeys::discover(&self.world)).unwrap_or(JsValue::NULL)
+    }
+    pub fn natural_destinations(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&natural::destinations(&self.world)).unwrap_or(JsValue::NULL)
     }
     pub fn world_size(&self) -> f32 {
         world::WORLD_SIZE
@@ -289,6 +344,7 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         vegetation_density: f32,
         hydrology: world::HydrologyStats,
         landscape: regions::Landscape,
+        suitability: habitat::Suitability,
         lakes: Vec<world::LakeInfo>,
         spawn: [f32; 2],
         sites: Vec<world::Site>,
@@ -307,6 +363,7 @@ pub fn inspect_world(seed: u32, x: f32, z: f32) -> JsValue {
         vegetation_density: ecology::tree_density(seed, x, z, &s),
         hydrology: world.hydrology_stats(),
         landscape: regions::sample(seed, x, z, &s),
+        suitability: habitat::sample(&world, x, z),
         lakes: world.lakes().to_vec(),
         spawn: world.spawn(),
         sites: world.sites_near(x, z, 4000.0),

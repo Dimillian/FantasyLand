@@ -17,6 +17,12 @@ struct Globals {
     distant: vec4<f32>,
     climate: vec4<f32>,
     air: vec4<f32>,
+    // Actual bodies are independent of the dominant light stored in u.light.
+    solenne: vec4<f32>, // direction, daylight
+    aster: vec4<f32>,   // direction, angular radius
+    vey: vec4<f32>,     // direction, angular radius
+    direct: vec4<f32>, // primary light RGB, intensity
+    ambient: vec4<f32>, // hemispheric tint, star visibility
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
@@ -74,37 +80,35 @@ fn bayer(p: vec2<f32>) -> f32 {
     return matrix[y * 4u + x] / 16.0 - 0.5;
 }
 
-fn solar_elevation() -> f32 {
-    return sin((u.params.w - 6.0) * 0.261799388);
-}
-
-fn daylight() -> f32 {
-    return smoothstep(-0.08, 0.18, solar_elevation());
-}
-
+fn solar_elevation() -> f32 { return u.solenne.y; }
+fn daylight() -> f32 { return u.solenne.w; }
 fn twilight() -> f32 {
     let elevation = solar_elevation();
-    return smoothstep(-0.18, 0.02, elevation) * (1.0 - smoothstep(0.08, 0.42, elevation));
+    return smoothstep(-0.21, -0.01, elevation) * (1.0 - smoothstep(0.10, 0.43, elevation));
 }
 
 fn horizon_color(direction: vec3<f32>) -> vec3<f32> {
-    let sunward = pow(max(dot(direction, normalize(u.light.xyz)), 0.0), 3.0);
+    let sunward = pow(max(dot(direction, u.solenne.xyz), 0.0), 4.0);
     let day_haze = u.fog.rgb;
-    let night_haze = vec3<f32>(0.115, 0.155, 0.205);
+    let night_haze = vec3<f32>(0.048, 0.073, 0.12);
     let haze = mix(night_haze, day_haze, daylight());
-    return mix(haze, vec3<f32>(0.67, 0.39, 0.24), twilight() * (0.15 + sunward * 0.45));
+    let twilight_haze = mix(vec3<f32>(0.245, 0.205, 0.33), vec3<f32>(0.78, 0.365, 0.16), sunward);
+    return mix(haze, twilight_haze, twilight() * (0.38 + sunward * 0.40));
 }
 
 fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     let day = daylight();
-    let zenith = mix(vec3<f32>(0.025, 0.040, 0.078), vec3<f32>(0.235, 0.445, 0.685), day);
+    let zenith = mix(vec3<f32>(0.008, 0.015, 0.035), vec3<f32>(0.105, 0.295, 0.57), day);
     let height = max(direction.y, 0.0);
-    var color = mix(horizon_color(direction), zenith, pow(clamp(height, 0.0, 1.0), 0.52));
-    // A wide atmospheric glow locates the sun without washing out the sky.
-    let sunward = max(dot(direction, normalize(u.light.xyz)), 0.0);
-    let glow = pow(sunward, 11.0) * 0.085 + pow(sunward, 80.0) * 0.07;
-    let glow_color = mix(vec3<f32>(0.93, 0.43, 0.19), vec3<f32>(0.92, 0.86, 0.65), smoothstep(0.04, 0.5, solar_elevation()));
-    color += glow_color * glow * day;
+    var color = mix(horizon_color(direction), zenith, pow(clamp(height, 0.0, 1.0), 0.43));
+    // Purple upper twilight and a compact amber forward scatter preserve depth.
+    color = mix(color, vec3<f32>(0.125, 0.105, 0.235), twilight() * height * 0.40);
+    let sunward = max(dot(direction, u.solenne.xyz), 0.0);
+    let glow = pow(sunward, 14.0) * 0.095 + pow(sunward, 100.0) * 0.09;
+    let glow_color = mix(vec3<f32>(1.0, 0.43, 0.15), vec3<f32>(1.0, 0.88, 0.60), smoothstep(0.04, 0.5, solar_elevation()));
+    color += glow_color * glow * smoothstep(-0.13, 0.04, solar_elevation());
+    let moonward = max(dot(direction, u.aster.xyz), 0.0);
+    color += vec3<f32>(0.055, 0.080, 0.15) * pow(moonward, 32.0) * u.ambient.w * smoothstep(0.0, 0.10, u.aster.y);
     return color;
 }
 
@@ -209,7 +213,8 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let half_vector = half_sum / sqrt(max(dot(half_sum, half_sum), 0.00001));
     let specular = pow(max(dot(normal, half_vector), 0.0), 120.0);
     let glint = smoothstep(0.48, 0.88, specular) * (0.45 + breaks * 0.55);
-    color += vec3<f32>(0.32, 0.30, 0.20) * glint * daylight() * (0.18 + near_detail * 0.30);
+    // One reflected light path: the same sun/moon that illuminates the bank.
+    color += u.direct.rgb * 0.35 * glint * u.direct.w * (0.20 + near_detail * 0.32);
 
     // The wet contact line is subdued. Only broken, moving ocean wash gets a
     // little reflected sky; rivers and lakes do not inherit surf foam.
@@ -375,7 +380,7 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     let regional = 1.0 - smoothstep(1800.0, 6500.0, distance);
     let woodland = clamp(u.climate.x, 0.0, 1.0) * regional;
     let sandstone = clamp(u.climate.z, 0.0, 1.0) * regional;
-    let sunlight = mix(vec3<f32>(1.03, 0.98, 0.87), vec3<f32>(1.075, 0.93, 0.735), sandstone * 0.68);
+    let sunlight = u.direct.rgb * mix(vec3<f32>(1.0), vec3<f32>(1.04, 0.97, 0.87), sandstone * daylight() * 0.48);
     var ambient = mix(vec3<f32>(0.42, 0.43, 0.35), vec3<f32>(0.60, 0.65, 0.68), up);
     var direct = floor(diffuse * 5.0 + 0.5) / 5.0 * 0.43;
     if material < 0.5 || (material > 6.5 && material < 7.5) {
@@ -396,7 +401,16 @@ fn surface_lighting(base: vec3<f32>, normal: vec3<f32>, material: f32, visibilit
     let shade = 1.0 - diffuse * visibility;
     ambient *= mix(vec3<f32>(1.0), vec3<f32>(0.79, 0.93, 1.16), woodland * (0.42 + shade * 0.58));
     direct *= smoothstep(-0.03, 0.06, sun.y);
-    return base * (ambient + sunlight * direct * visibility) * u.light.w;
+    // Moonlight is cool and directional, with a low independent sky floor.
+    // Do not multiply the surface by water exposure again: that would erase night detail.
+    // Low-light vision loses pigment saturation before it loses silhouette.
+    // Raising blue illumination alone keeps yellow-green grass murky because
+    // its albedo contains very little blue. This gentle night-only adaptation
+    // lets the cool hemisphere light describe the terrain's actual forms.
+    let pigment_luma = dot(base, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let nocturne = (1.0 - daylight()) * 0.72;
+    let reflectance = mix(base, vec3<f32>(pigment_luma), nocturne);
+    return reflectance * (ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w);
 }
 
 // Mean density of a height-fog layer along the actual sightline. The integral
@@ -434,7 +448,7 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
                        * (0.00015 + ribbons * 0.00009);
         let mist = min(1.0 - exp(-mist_depth), 0.34);
         let mist_day = mix(vec3<f32>(0.44, 0.53, 0.55), vec3<f32>(0.52, 0.565, 0.53), twilight() * 0.30);
-        let mist_color = mix(vec3<f32>(0.115, 0.155, 0.19), mist_day * u.light.w, daylight());
+        let mist_color = mix(vec3<f32>(0.045, 0.075, 0.12), mist_day, daylight());
         result = mix(result, mist_color, mist);
     }
     return result;
@@ -516,56 +530,168 @@ fn sky_ray(uv: vec2<f32>) -> vec3<f32> {
     return normalize(forward + right * ndc.x * max(u.camera.w, 0.1) * 0.72654253 + up * ndc.y * 0.72654253);
 }
 
-fn cloud_layer(ray: vec3<f32>, altitude: f32, scale: f32, drift: vec2<f32>, threshold: f32) -> vec2<f32> {
-    let horizon_fade = smoothstep(0.018, 0.15, ray.y);
+// Bounded procedural sky. Two cloud planes approximate sunlit volumes; there
+// are no textures, ray marches or temporal accumulation requirements.
+fn cloud_layer(ray: vec3<f32>, altitude: f32, scale: f32, drift: vec2<f32>, threshold: f32) -> vec3<f32> {
+    let horizon_fade = smoothstep(0.018, 0.13, ray.y);
     let plane_distance = max(altitude - u.camera.y, 100.0) / max(ray.y, 0.015);
     let p = (u.camera.xz + ray.xz * plane_distance) * scale + drift;
     let weather = noise(p * 0.23 + vec2<f32>(13.4, 7.7));
-    let density_field = fbm(p + vec2<f32>(noise(p * 0.6), noise(p * 0.6 + vec2<f32>(9.1, 2.4))) * 0.6);
-    let density = smoothstep(threshold, threshold + 0.19, density_field + (weather - 0.5) * 0.17);
-    // Coherent denser undersides and bright broken edges make clouds read as
-    // large forms. The few tones match the flat-shaded geometry below.
-    let thickness = smoothstep(threshold + 0.04, threshold + 0.25, density_field);
-    return vec2<f32>(density * horizon_fade, floor(thickness * 4.0 + 0.5) / 4.0);
+    let warp = vec2<f32>(noise(p * 0.6), noise(p * 0.6 + vec2<f32>(9.1, 2.4))) * 0.6;
+    let field = fbm(p + warp) + (weather - 0.5) * 0.17;
+    let density = smoothstep(threshold, threshold + 0.19, field);
+    let thickness = smoothstep(threshold + 0.025, threshold + 0.25, field);
+    // A cheap directional derivative gives billows a consistent illuminated side.
+    let light_offset = normalize(u.light.xz + vec2<f32>(0.001)) * 0.25;
+    let neighbor = noise((p + warp + light_offset) * 1.05);
+    let facing = clamp((field - neighbor) * 2.8 + 0.5, 0.0, 1.0);
+    return vec3<f32>(density * horizon_fade, thickness, facing);
+}
+
+fn star_plane(direction: vec3<f32>) -> vec2<f32> {
+    let a = abs(direction);
+    if a.x > a.y && a.x > a.z {
+        return direction.yz / a.x + vec2<f32>(select(-7.0, 7.0, direction.x > 0.0), 0.0);
+    }
+    if a.z > a.y {
+        return direction.xy / a.z + vec2<f32>(select(-13.0, 13.0, direction.z > 0.0), 5.0);
+    }
+    return direction.xz / a.y + vec2<f32>(0.0, select(-9.0, 9.0, direction.y > 0.0));
+}
+
+fn star_layer(plane: vec2<f32>, scale: f32, cutoff: f32, aa: f32) -> vec3<f32> {
+    let q = plane * scale;
+    let cell = floor(q);
+    let key = hash21(cell + vec2<f32>(11.13, -7.71));
+    let center = vec2<f32>(hash21(cell + vec2<f32>(31.1, 2.8)), hash21(cell + vec2<f32>(-4.6, 19.7))) * 0.66 + 0.17;
+    let distance = length(fract(q) - center);
+    let radius = 0.035 + pow(hash21(cell + vec2<f32>(6.1, 28.5)), 9.0) * 0.11;
+    let pixel = clamp(aa * scale, 0.012, 0.4);
+    let intensity = (1.0 - smoothstep(max(radius - pixel, 0.0), radius + pixel, distance)) * step(cutoff, key);
+    let temperature = hash21(cell + vec2<f32>(1.7, 43.1));
+    let tint = mix(vec3<f32>(1.0, 0.70, 0.44), vec3<f32>(0.57, 0.77, 1.0), temperature);
+    return tint * intensity * (0.65 + hash21(cell + vec2<f32>(-7.9, 1.1)) * 0.35);
+}
+
+fn night_heavens(ray: vec3<f32>, aa: f32) -> vec3<f32> {
+    if u.ambient.w <= 0.001 { return vec3<f32>(0.0); }
+    // Rotate the heavens with the clock; the field is fixed to the sky and never
+    // follows camera yaw. The inclined pale band is lore's Ashen River.
+    let angle = (u.params.w - 22.0) * 0.261799388;
+    let s = sin(angle);
+    let c = cos(angle);
+    let direction = vec3<f32>(ray.x * c - ray.z * s, ray.y, ray.x * s + ray.z * c);
+    let plane = star_plane(direction);
+    let stars = star_layer(plane, 110.0, 0.995, aa) + star_layer(plane + vec2<f32>(21.7, 4.1), 265.0, 0.996, aa) * 0.72;
+    let band_axis = normalize(vec3<f32>(0.42, 0.61, -0.67));
+    let band_distance = abs(dot(direction, band_axis));
+    let band = exp(-band_distance * band_distance * 145.0);
+    let filaments = fbm(direction.xz * 6.0 + direction.y * vec2<f32>(-3.0, 7.0));
+    let rifts = noise(direction.xz * 19.0 + direction.y * vec2<f32>(7.0, -13.0));
+    let galaxy = vec3<f32>(0.036, 0.042, 0.077) * band * (0.23 + filaments * 0.95) * (0.55 + rifts * 0.45);
+    // Seven clustered navigational stars form the Keeper's Crown; no drawn
+    // connecting lines. Each is a true angular disc, not a screen-space icon.
+    let crown = array<vec3<f32>, 7>(
+        vec3<f32>(-0.55, 0.70, -0.45), vec3<f32>(-0.42, 0.80, -0.43),
+        vec3<f32>(-0.27, 0.78, -0.55), vec3<f32>(-0.14, 0.84, -0.52),
+        vec3<f32>(0.00, 0.77, -0.64), vec3<f32>(-0.31, 0.69, -0.65),
+        vec3<f32>(-0.19, 0.67, -0.72));
+    var clustered = 0.0;
+    for (var i = 0u; i < 7u; i += 1u) {
+        let distance = length(direction - normalize(crown[i]));
+        clustered += 1.0 - smoothstep(0.0012, 0.0018 + aa, distance);
+    }
+    return (stars + galaxy + vec3<f32>(0.80, 0.88, 1.0) * clustered)
+        * smoothstep(0.015, 0.25, ray.y) * u.ambient.w;
+}
+
+fn moon_disc(ray: vec3<f32>, body: vec4<f32>, copper: f32, aa: f32) -> vec4<f32> {
+    let direction = body.xyz;
+    let radius = body.w;
+    let alignment = dot(ray, direction);
+    // A conservative cap skips surface work for almost all sky fragments.
+    if alignment < cos(radius + aa * 2.0) || ray.y < -0.02 {
+        return vec4<f32>(0.0);
+    }
+    let reference = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), abs(direction.y) > 0.98);
+    let right = normalize(cross(reference, direction));
+    let up = cross(direction, right);
+    let local = vec2<f32>(dot(ray, right), dot(ray, up)) / sin(radius);
+    let r2 = dot(local, local);
+    let softness = max(aa / radius, 0.008);
+    let alpha = (1.0 - smoothstep(1.0 - softness, 1.0 + softness, sqrt(r2)))
+        * smoothstep(-0.015, 0.025, ray.y);
+    let relief = sqrt(max(1.0 - min(r2, 1.0), 0.0));
+    let surface_normal = normalize(right * local.x + up * local.y - direction * relief);
+    let incidence = dot(surface_normal, u.solenne.xyz);
+    let sunlit = smoothstep(-0.065, 0.075, incidence);
+    // Procedural maria and crater rings remain broad enough for a 20-40px moon.
+    let maria = fbm(local * 3.8 + vec2<f32>(11.1, 7.9) + copper * 17.0);
+    let q = local * 9.0;
+    let cell = floor(q);
+    let crater_center = vec2<f32>(hash21(cell + 13.0), hash21(cell + 37.0)) * 0.60 + 0.20;
+    let crater_distance = length(fract(q) - crater_center);
+    let crater_radius = 0.13 + hash21(cell + 5.1) * 0.19;
+    let bowl = 1.0 - smoothstep(crater_radius * 0.55, crater_radius, crater_distance);
+    let ring = (1.0 - smoothstep(0.035, 0.10, abs(crater_distance - crater_radius)));
+    let rock = clamp(0.83 + (maria - 0.5) * 0.52 - bowl * 0.12 + ring * 0.08, 0.5, 1.0);
+    let albedo = mix(vec3<f32>(0.87, 0.89, 0.80), vec3<f32>(0.88, 0.47, 0.255), copper);
+    let illuminated = albedo * rock * (0.34 + max(incidence, 0.0) * 0.65);
+    // Warm reflected light from the world's atmosphere reveals Vey's copper
+    // unlit hemisphere while preserving the actual sun-driven terminator.
+    let planetshine = mix(vec3<f32>(0.075, 0.095, 0.14), vec3<f32>(0.22, 0.16, 0.12), copper);
+    let earthshine = albedo * rock * planetshine;
+    var color = mix(earthshine, illuminated, sunlit);
+    // Daylight scatters over the disc, but its entire silhouette still occludes
+    // the stars before clouds are composited on top.
+    color = mix(color, color * 0.55 + sky_gradient(ray) * 0.72, daylight());
+    return vec4<f32>(color, alpha);
 }
 
 @fragment fn fs_sky(v: SkyOut) -> @location(0) vec4<f32> {
     let ray = sky_ray(v.uv);
+    let aa = max(length(dpdx(ray)), length(dpdy(ray)));
     let day = daylight();
-    let sun_dir = normalize(u.light.xyz);
     var color = sky_gradient(ray);
+    color += night_heavens(ray, aa);
 
-    // A compact warm sun is drawn before the clouds, so clouds occlude it.
-    let sun_alignment = dot(ray, sun_dir);
-    let sun_disk = smoothstep(0.99987, 0.99995, sun_alignment) * smoothstep(-0.015, 0.025, ray.y) * day;
-    let sun_color = mix(vec3<f32>(1.0, 0.58, 0.27), vec3<f32>(1.0, 0.94, 0.74), smoothstep(0.02, 0.50, solar_elevation()));
+    // Solenne and both moons are painted before weather. Nothing shines through
+    // opaque lunar silhouettes or the substantial part of a cloud bank.
+    let sun_distance = length(ray - u.solenne.xyz);
+    let sun_disk = (1.0 - smoothstep(0.0105 - aa, 0.0105 + aa, sun_distance))
+        * smoothstep(-0.020, 0.010, ray.y);
+    let sun_color = mix(vec3<f32>(1.0, 0.48, 0.14), vec3<f32>(1.0, 0.96, 0.78), smoothstep(0.02, 0.50, solar_elevation()));
     color = mix(color, sun_color, sun_disk);
+    let aster = moon_disc(ray, u.aster, 0.0, aa);
+    color = mix(color, aster.rgb, aster.a);
+    let vey = moon_disc(ray, u.vey, 1.0, aa);
+    color = mix(color, vey.rgb, vey.a);
 
     if ray.y > 0.0 {
         let t = u.params.x;
-        // Thin high cloud streaks sit behind slower, substantial low cumulus.
-        let high = cloud_layer(ray, 4800.0, 0.00029, vec2<f32>(t * 0.00055 + 21.0, -t * 0.00022), 0.51);
-        let high_color = mix(vec3<f32>(0.13, 0.18, 0.25), vec3<f32>(0.70, 0.76, 0.76), day);
-        color = mix(color, high_color, high.x * 0.35);
+        let high = cloud_layer(ray, 5200.0, 0.00029, vec2<f32>(t * 0.00055 + 21.0, -t * 0.00022), 0.535);
+        let high_color = mix(vec3<f32>(0.055, 0.080, 0.13), vec3<f32>(0.72, 0.76, 0.77), day);
+        color = mix(color, high_color, high.x * 0.29);
 
-        let low = cloud_layer(ray, 2300.0, 0.00048, vec2<f32>(t * 0.00095, t * 0.00024), 0.48);
-        let edge_light = pow(max(dot(ray, sun_dir), 0.0), 8.0);
-        let cloud_lit = mix(vec3<f32>(0.25, 0.29, 0.34), vec3<f32>(0.85, 0.85, 0.77), day);
-        let cloud_shade = mix(vec3<f32>(0.10, 0.135, 0.20), vec3<f32>(0.53, 0.60, 0.63), day);
-        var cloud_color = mix(cloud_lit, cloud_shade, low.y * 0.8);
-        cloud_color += vec3<f32>(0.09, 0.065, 0.025) * edge_light * (1.0 - low.y) * day;
-        cloud_color = mix(cloud_color, vec3<f32>(0.75, 0.44, 0.28), twilight() * edge_light * 0.5);
-        color = mix(color, cloud_color, low.x * 0.88);
-
-        // Sparse world-oriented stars appear only above the night haze. Cubic
-        // directional cells avoid a screen-space starfield that follows yaw.
-        let stars_cell = floor(ray.xz / max(ray.y + 0.25, 0.25) * 195.0);
-        let star = step(0.9978, hash21(stars_cell)) * smoothstep(0.15, 0.50, ray.y);
-        let star_strength = (1.0 - day) * (1.0 - low.x) * (1.0 - high.x * 0.5);
-        color += vec3<f32>(0.62, 0.68, 0.74) * star * star_strength;
+        let low = cloud_layer(ray, 2800.0, 0.00048, vec2<f32>(t * 0.00095, t * 0.00024), 0.515);
+        let alignment = max(dot(ray, normalize(u.light.xyz)), 0.0);
+        let edge_light = pow(alignment, 12.0);
+        let lit_day = mix(vec3<f32>(0.90, 0.58, 0.34), vec3<f32>(0.86, 0.87, 0.80), smoothstep(0.04, 0.55, solar_elevation()));
+        let cloud_lit = mix(vec3<f32>(0.10, 0.145, 0.235), lit_day, day);
+        let cloud_shade = mix(vec3<f32>(0.025, 0.041, 0.075), vec3<f32>(0.34, 0.43, 0.51), day);
+        let shading = clamp(low.y * 0.86 + (1.0 - low.z) * 0.15, 0.0, 1.0);
+        var cloud_color = mix(cloud_lit, cloud_shade, shading);
+        let silver = edge_light * (1.0 - smoothstep(0.15, 0.80, low.y)) * u.direct.w;
+        cloud_color += u.direct.rgb * silver * mix(0.32, 0.19, day);
+        // Low sunlight paints cloud rims amber; their undersides keep a cool hue.
+        cloud_color = mix(cloud_color, vec3<f32>(0.86, 0.40, 0.20), twilight() * edge_light * (1.0 - low.y) * 0.55);
+        color = mix(color, cloud_color, low.x * 0.94);
     }
 
-    let dither = bayer(v.clip.xy) * 0.60;
-    color = floor(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)) * 80.0 + dither) / 80.0;
+    let dither = bayer(v.clip.xy) * 0.45;
+    // More night steps retain dim nebulae and moon phase detail without banding;
+    // the screen's final CRT/ASCII stage still controls the retro presentation.
+    let levels = mix(160.0, 96.0, day);
+    color = floor(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)) * levels + dither) / levels;
     return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
 }

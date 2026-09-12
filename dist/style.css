@@ -140,3 +140,5 @@ body.mouse-focused #world { cursor: none; }
 .map-legend i.route-main { border-top-width: 1.5px; border-color: #c5a36eaa; }
 .map-legend i.route-lane { border-color: #b5a27b85; }
 .map-legend i.route-trail { border-top-style: dashed; border-color: #a8ad8770; }
+
+.sky-presets { display:flex; gap:8px; padding-top:14px; flex-wrap:wrap; }.sky-presets .plain-button { flex:1; font-size:13px; min-height:36px; }.sky-lore { color:#a7b4a0; font-size:13px; line-height:1.6; margin:12px 0 18px; }

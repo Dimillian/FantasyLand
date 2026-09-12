@@ -78,6 +78,13 @@ export class Game {
         return v1;
     }
     /**
+     * @returns {any}
+     */
+    natural_destinations() {
+        const ret = wasm.game_natural_destinations(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {Uint32Array}
      */
     render_resolution() {
@@ -175,6 +182,13 @@ export class Game {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @returns {any}
+     */
+    walking_journeys() {
+        const ret = wasm.game_walking_journeys(this.__wbg_ptr);
+        return ret;
     }
     /**
      * @returns {number}
@@ -1183,7 +1197,7 @@ function __wbg_get_imports() {
             arg0.writeBuffer(arg1, arg2, arg3, arg4, arg5);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 73, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 74, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_);
             return ret;
         },

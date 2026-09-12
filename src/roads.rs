@@ -970,6 +970,15 @@ fn plan_land_route(
         }
     }
     out.dedup_by(|a, b| distance2(*a, *b) < 0.01);
+    let grade = match kind {
+        RoadKind::Main => 0.28,
+        RoadKind::Lane => 0.36,
+        RoadKind::Trail => 0.52,
+    };
+    let repaired = crate::traversal::repair_approaches(world, out.clone(), grade);
+    if land_path(world, &repaired, landmass) {
+        return repaired;
+    }
     if land_path(world, &out, landmass) {
         out
     } else {

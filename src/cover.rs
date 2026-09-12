@@ -115,6 +115,7 @@ pub fn surface_height(seed: u32, origin: [f32; 2], heights: &[f32], local: [f32;
 }
 pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
     let origin = [tx as f32 * TILE_SIZE, tz as f32 * TILE_SIZE];
+    let monuments = crate::natural::landmarks_near(world, origin[0] + 24., origin[1] + 24., 36.);
     let mut heights = Vec::with_capacity(GRID_SIZE * GRID_SIZE);
     for z in 0..GRID_SIZE {
         for x in 0..GRID_SIZE {
@@ -150,6 +151,12 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                 continue;
             }
             if sample.water_height > rendered_root + 0.12 {
+                continue;
+            }
+            if monuments
+                .iter()
+                .any(|n| n.blocks(x, rendered_root, z, 0.65, 1.8))
+            {
                 continue;
             }
             let ecology = ecology::sample(world.seed, x, z, &sample);

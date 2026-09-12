@@ -194,11 +194,21 @@ fn retain_lakes(
         let top = cells.iter().map(|&j| conditioned[j]).fold(0., f32::max);
         let depth = level - raw[minimum];
         let maxflow = cells.iter().map(|&j| flow[j]).fold(0., f32::max);
-        if !(10.0..=55.0).contains(&depth) || level > 420. || top - level > 2.5 || maxflow < 26. {
+        // Retain suitable perched basins as well as lowland water. Their same
+        // bounded footprint, compatible ancestors and spillway checks prevent
+        // high lakes from flooding unrelated catchments or creating water walls.
+        let upland = smooth(450., 1100., level);
+        let maximum_depth = lerp(55., 82., upland);
+        if !(10.0..=maximum_depth).contains(&depth)
+            || level > 1550.
+            || top - level > 2.5
+            || maxflow < 26.
+        {
             continue;
         }
         let score = cells.len() as f32 * 0.20
             + depth * 0.12
+            + upland * 10.
             + rand01(hash(seed ^ 0x6c11, minimum as i32, 0)) * 8.;
         candidates.push((score, minimum, level));
     }
@@ -433,6 +443,12 @@ fn normalize(v: [f32; 2]) -> [f32; 2] {
 }
 fn width(flow: f32) -> f32 {
     (2.5 + 1.5 * (flow * 0.25).sqrt()).min(90.0)
+}
+fn reach_width(flow: f32, level: f32) -> f32 {
+    // A low-gradient tidal reach broadens smoothly as it approaches sea level.
+    // Accumulation and downstream drop only increase this width, preserving
+    // confluence continuity and the no-narrowing downstream invariant.
+    width(flow) * (1. + smooth(180., 2200., flow) * (1. - smooth(2., 30., level)) * 0.85)
 }
 fn bezier(a: [f32; 2], b: [f32; 2], ta: [f32; 2], tb: [f32; 2], t: f32) -> [f32; 2] {
     let length = distance2(a, b).sqrt();
@@ -682,7 +698,7 @@ impl Hydrology {
         for &id in order.iter().rev() {
             let i = id as usize;
             let target = receiver[i];
-            if target == NONE {
+            if target == NONE || !active[i] {
                 continue;
             }
             let d = target as usize;
@@ -706,7 +722,12 @@ impl Hydrology {
                         (t + 0.01).min(1.0),
                     );
                     let dir = normalize([after[0] - before[0], after[1] - before[1]]);
-                    let bank = lerp(width(accumulation[i]), width(accumulation[d]), t) * 2.1 + 8.0;
+                    let bank = lerp(
+                        reach_width(accumulation[i], water_level[i]),
+                        reach_width(accumulation[d], water_level[d]),
+                        t,
+                    ) * 2.1
+                        + 8.0;
                     for side in [-1.0, 0.0, 1.0] {
                         let q = [p[0] + dir[1] * bank * side, p[1] - dir[0] * bank * side];
                         lowest = lowest.min((height_at(q[0], q[1]) - 1.5).max(SEA_LEVEL));
@@ -714,6 +735,17 @@ impl Hydrology {
                 }
             }
             water_level[d] = water_level[d].min((lowest - EPS).max(minimum_level[d]));
+        }
+        // Non-channel runoff uses the conditioned drainage surface. Small
+        // closed pockets cannot burn a distant, deeply incised trunk river.
+        // This virtual profile never renders water: only active reaches below
+        // the real terrain enter the segment mesh below. Preserve downstream
+        // ordering for every receiver, including these unrendered runoff cells.
+        for &id in &order {
+            let i = id as usize;
+            if !active[i] && receiver[i] != NONE {
+                water_level[i] = water_level[i].max(water_level[receiver[i] as usize] + EPS);
+            }
         }
         let mut segments = Vec::new();
         let mut coastal_outlets = 0usize;
@@ -728,7 +760,7 @@ impl Hydrology {
             let d = receiver[i] as usize;
             let mut last = positions[i];
             let mut last_level = water_level[i];
-            let mut last_width = width(accumulation[i]);
+            let mut last_width = reach_width(accumulation[i], water_level[i]);
             for n in 1..=SUBDIV {
                 let t = n as f32 / SUBDIV as f32;
                 let candidate = if n == SUBDIV {
@@ -742,7 +774,12 @@ impl Hydrology {
                 let p = shore.unwrap_or(candidate);
                 let mouth = shore.is_some();
                 let dir = normalize([p[0] - last[0], p[1] - last[1]]);
-                let bank = lerp(width(accumulation[i]), width(accumulation[d]), t) * 2.1 + 8.0;
+                let bank = lerp(
+                    reach_width(accumulation[i], water_level[i]),
+                    reach_width(accumulation[d], water_level[d]),
+                    t,
+                ) * 2.1
+                    + 8.0;
                 let mut clearance = (height_at(p[0], p[1]) - 1.5).max(SEA_LEVEL);
                 for side in [-1.0, 1.0] {
                     clearance = clearance.min(
@@ -761,7 +798,7 @@ impl Hydrology {
                         .min(last_level - EPS * 0.1)
                         .max(water_level[d])
                 };
-                let w = width(lerp(accumulation[i], accumulation[d], t));
+                let w = reach_width(lerp(accumulation[i], accumulation[d], t), level);
                 let middle = [(last[0] + p[0]) * 0.5, (last[1] + p[1]) * 0.5];
                 let incision =
                     (height_at(middle[0], middle[1]) - (last_level + level) * 0.5).max(0.0);
@@ -799,8 +836,15 @@ impl Hydrology {
                         width_a: last_width,
                         width_b: w,
                         flow: accumulation[i],
-                        influence: (160.0 + deposition * 430. + incision * 1.5 + w * 2.0)
-                            .min(2200.0),
+                        // Low-flow headwaters stay narrow. Large gentle reaches
+                        // spread onto floodplains; deep spill cuts widen enough
+                        // to read as valleys instead of thin vertical slits.
+                        influence: (105.0
+                            + smooth(24., 1700., accumulation[i]) * 330.
+                            + deposition * 610.
+                            + incision * 2.4
+                            + w * 2.4)
+                            .min(3000.0),
                         deposition,
                         bend,
                     });
@@ -1001,13 +1045,17 @@ impl Hydrology {
             let bank_end = h.width * 1.9;
             let bank = smooth(h.width * 0.70, bank_end, h.distance);
             let floor = h.level - depth;
-            let valley_weight = 1.0 - smooth(bank_end + 20.0, segment.influence, h.distance);
+            // A river has a cross-section hierarchy: headwaters form a V,
+            // downstream alluvium opens into a broad floor with raised terraces.
+            let floodplain_end =
+                (bank_end + 20. + segment.deposition * 195.).min(segment.influence * 0.56);
+            let valley_weight = 1.0 - smooth(floodplain_end, segment.influence, h.distance);
             let bank_land =
                 raw.min(h.level + 3.5 + (raw - h.level - 3.5).max(0.0) * (1.0 - valley_weight));
             let terrace = segment.deposition
-                * 1.6
-                * smooth(bank_end + 25., bank_end + 90., h.distance)
-                * (1. - smooth(bank_end + 100., segment.influence, h.distance));
+                * (2.2 * smooth(bank_end + 30., floodplain_end + 50., h.distance)
+                    + 3.5 * smooth(floodplain_end + 85., floodplain_end + 155., h.distance))
+                * (1. - smooth(segment.influence * 0.62, segment.influence, h.distance));
             let shaped = lerp(floor, bank_land + terrace, bank);
             // Smooth, local corridor ownership prevents a lower adjacent reach
             // from cutting the ground out beneath an upper river. Compact
@@ -1489,6 +1537,35 @@ mod coastal_tests {
             }
             assert!(offshore > 500);
             println!("seed{seed} actual coastal hydrology {elapsed:?}, max queried mouth level{max_mouth_level:.4}, max coast bed depth{max_coast_bed:.3}; {:?}", h.stats);
+        }
+    }
+}
+
+#[cfg(test)]
+mod geography_hydrology_regressions {
+    use super::*;
+    #[test]
+    fn perched_cirques_retain_flat_mountain_lakes_with_real_outlets() {
+        for seed in [1337, 42, 2026] {
+            let h = Hydrology::new(seed);
+            let high: Vec<_> = h.lakes.iter().filter(|l| l.surface > 600.).collect();
+            assert!(!high.is_empty(), "seed{seed} has no retained mountain lake");
+            for lake in high {
+                let center = h.terrain(
+                    lake.center[0],
+                    lake.center[1],
+                    raw_height(seed, lake.center[0], lake.center[1]),
+                );
+                assert!((center.water - lake.surface).abs() < 0.002);
+                assert!(center.water > center.height + 1.);
+                let out = h.terrain(
+                    lake.outlet[0],
+                    lake.outlet[1],
+                    raw_height(seed, lake.outlet[0], lake.outlet[1]),
+                );
+                assert!(out.water > out.height && out.water <= lake.surface + 0.01);
+                assert!(lake.area_km2 > 0. && lake.area_km2 < 45. && lake.max_depth <= 82.);
+            }
         }
     }
 }

@@ -57,7 +57,7 @@ impl Player {
         let bound = WORLD_SIZE * 0.5 - 12.0;
         let mut destination = [x.clamp(-bound, bound), z.clamp(-bound, bound)];
         if geometry::blocks_player(world, destination[0], destination[1]) {
-            'search: for radius in [1.0, 2.0, 4.0, 8.0, 12.0, 20.0] {
+            'search: for radius in [1.0, 2.0, 4.0, 8.0, 12.0, 20.0, 40.0, 80.0, 120.0] {
                 for i in 0..16 {
                     let angle = i as f32 * std::f32::consts::TAU / 16.0;
                     let p = [
@@ -139,7 +139,7 @@ impl Player {
             let rise = h - self.position.y;
             let can_climb = rise < 0.10 + 1.45 * (dx * dx + dz * dz).sqrt()
                 || (!self.grounded && h < self.position.y + 0.22);
-            if can_climb && !geometry::blocks_player(world, x, z) {
+            if can_climb && !geometry::blocks_body(world, x, self.position.y.max(h), z) {
                 self.position.x = x;
                 self.position.z = z;
                 self.precise_x = px;

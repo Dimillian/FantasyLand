@@ -6,6 +6,12 @@ const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
 assert.deepEqual(a, b, 'the compiled WASM reproduces its seed');
 assert.ok(Number.isFinite(a.height));
+assert.equal(typeof a.suitability.dryGround, 'boolean');
+for (const field of ['buildable', 'freshWater', 'shelter', 'fertility', 'crossing', 'harbor', 'habitation']) {
+  assert.ok(Number.isFinite(a.suitability[field]) && a.suitability[field] >= 0 && a.suitability[field] <= 1, `${field} suitability is bounded in compiled WASM`);
+}
+assert.equal(typeof Game.prototype.walking_journeys, 'function');
+assert.equal(typeof Game.prototype.natural_destinations, 'function');
 assert.ok(a.hydrology.confluences > 100, 'the compiled drainage network joins tributaries');
 assert.ok(a.hydrology.outlets > 0 && a.hydrology.outlets < a.hydrology.headwaters, 'catchments merge toward outlets');
 assert.ok(a.vegetation_density >= 0 && a.vegetation_density <= 1, 'ecology provides bounded tree occupancy');

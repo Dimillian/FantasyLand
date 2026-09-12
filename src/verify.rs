@@ -60,6 +60,187 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("epic") {
+        renderer.set_quality(1);
+        renderer.set_render_resolution(720);
+        renderer.set_ground_cover_density(4.);
+        renderer.set_filter(1, 0.90);
+        let time = Instant::now();
+        let wonders = fantasy_land::natural::destinations(&world);
+        println!(
+            "Found {} natural wonder viewpoints in {:?}",
+            wonders.len(),
+            time.elapsed()
+        );
+        fs::write(
+            format!("{dir}/wonders.json"),
+            serde_json::to_string_pretty(&wonders).unwrap(),
+        )
+        .unwrap();
+        let mut cameras = Vec::new();
+        for w in &wonders {
+            let label = format!("{:?}", w.kind).to_lowercase();
+            cameras.push((label, w.x, w.z, w.yaw, w.pitch, 10.2));
+        }
+        let views = fantasy_land::exploration::destinations(&world);
+        for v in views
+            .iter()
+            .filter(|v| ["Ancient woodland", "Granite highlands", "Meadowlands"].contains(&v.name))
+        {
+            cameras.push((
+                v.name.to_lowercase().replace(' ', "-"),
+                v.x,
+                v.z,
+                v.yaw,
+                v.pitch,
+                if v.name == "Ancient woodland" {
+                    16.1
+                } else {
+                    9.5
+                },
+            ));
+        }
+        // Find a real dry edge on the highest retained lake, facing its water.
+        if let Some(lake) = world
+            .lakes()
+            .iter()
+            .max_by(|a, b| a.surface.total_cmp(&b.surface))
+        {
+            let mut best = None;
+            let mut score = f32::NEG_INFINITY;
+            for radius in [150., 300., 500., 800., 1200.] {
+                for i in 0..32 {
+                    let a = i as f32 * std::f32::consts::TAU / 32.;
+                    let x = lake.center[0] + a.sin() * radius;
+                    let z = lake.center[1] + a.cos() * radius;
+                    let s = world.natural_sample(x, z);
+                    let h = geometry::walk_height(&world, x, z);
+                    if s.ocean || h < s.water_height + 0.5 || geometry::blocks_player(&world, x, z)
+                    {
+                        continue;
+                    }
+                    let v = -(h - lake.surface - 35.).abs() - (radius - 500.).abs() * 0.015;
+                    if v > score {
+                        score = v;
+                        best = Some((
+                            x,
+                            z,
+                            (lake.center[0] - x).atan2(z - lake.center[1]),
+                            ((lake.surface - h - 1.72) / radius)
+                                .atan()
+                                .clamp(-0.24, 0.08),
+                        ));
+                    }
+                }
+            }
+            if let Some((x, z, yaw, pitch)) = best {
+                cameras.push(("mountain-lake".into(), x, z, yaw, pitch, 9.2));
+            }
+        }
+        if let Some(w) = wonders.first() {
+            cameras.push(("solenne-sunset".into(), w.x, w.z, w.yaw, w.pitch, 17.1));
+        }
+        for (label, hour) in [("aster-and-vey", 19.4)] {
+            let sky = fantasy_land::celestial::state(hour);
+            let d = if hour > 19. {
+                (sky.aster + sky.vey).normalize()
+            } else {
+                sky.sun
+            };
+            let horizontal = glam::Vec2::new(d.x, d.z).normalize();
+            let mut chosen = None;
+            for w in wonders.iter().filter(|w| {
+                matches!(
+                    w.kind,
+                    fantasy_land::natural::NaturalKind::Arch
+                        | fantasy_land::natural::NaturalKind::StoneWindow
+                        | fantasy_land::natural::NaturalKind::Pinnacles
+                )
+            }) {
+                for radius in [70., 100., 140.] {
+                    let x = w.landmark_x - horizontal.x * radius;
+                    let z = w.landmark_z - horizontal.y * radius;
+                    let s = world.natural_sample(x, z);
+                    let y = geometry::walk_height(&world, x, z);
+                    if s.ocean || y < s.water_height + 0.5 || geometry::blocks_player(&world, x, z)
+                    {
+                        continue;
+                    }
+                    let grade = (world.height(x + 3., z) - world.height(x - 3., z))
+                        .hypot(world.height(x, z + 3.) - world.height(x, z - 3.))
+                        / 6.;
+                    if grade > 0.55 {
+                        continue;
+                    }
+                    chosen = Some((
+                        label.into(),
+                        x,
+                        z,
+                        horizontal.x.atan2(-horizontal.y),
+                        if hour > 19. { 0.36 } else { 0.10 },
+                        hour,
+                    ));
+                    break;
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            if let Some(c) = chosen {
+                cameras.push(c);
+            }
+        }
+        fs::write(
+            format!("{dir}/cameras.json"),
+            serde_json::to_string_pretty(&cameras).unwrap(),
+        )
+        .unwrap();
+        for (label, x, z, yaw, pitch, hour) in cameras {
+            let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+            renderer.clear_chunks();
+            renderer.update_chunks(&world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye, false);
+            }
+            renderer.render(eye, yaw, pitch, hour).unwrap();
+            let pixels = renderer.capture_rgba().unwrap();
+            assert_image(&pixels, 1280, 720, &label);
+            save_png(&format!("{dir}/{label}.png"), 1280, 720, &pixels);
+            println!(
+                "Captured {label}: {x:.1},{z:.1} hour{hour:.1} mesh{:.1}MB",
+                renderer.mesh_bytes() as f64 / 1e6
+            );
+        }
+        return;
+    }
+    if check.as_deref() == Some("journeys") {
+        let journeys = fantasy_land::journeys::discover(&world);
+        for j in &journeys {
+            assert!((5.0..=10.0).contains(&j.minutes));
+            assert!(j.points.len() >= 2);
+            for p in &j.points {
+                let s = world.natural_sample(p[0], p[1]);
+                assert!(!s.ocean && s.height > s.water_height + 0.3);
+            }
+            println!(
+                "Journey {}: {:.1} minutes, {} turns",
+                j.name,
+                j.minutes,
+                j.points.len()
+            );
+        }
+        fs::write(
+            format!("{dir}/journeys.json"),
+            serde_json::to_string_pretty(&journeys).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            journeys.len(),
+            3,
+            "all three walking landscapes should produce a route"
+        );
+        return;
+    }
     if check.as_deref() == Some("vista") {
         // Exact position/orientation from the user's empty-valley feedback.
         // Keep this camera stable even when the default spawn selection changes.

@@ -984,12 +984,24 @@ pub fn props_chunk_at_lod(world: &World, cx: i32, cz: i32, cover: bool, lod: u32
     let midz = oz + CHUNK_SIZE / 2.0;
     let sites = world.sites_near(midx, midz, CHUNK_SIZE + 90.0);
     let landmarks = world.landmarks_near(midx, midz, CHUNK_SIZE + 40.0);
+    let natural = crate::natural::landmarks_near(world, midx, midz, CHUNK_SIZE * 0.72 + 24.0);
     let start_x = (ox / PROP_GRID).round() as i32;
     let start_z = (oz / PROP_GRID).round() as i32;
     let count = (CHUNK_SIZE / PROP_GRID) as i32;
     for z in start_z..start_z + count {
         for x in start_x..start_x + count {
             if let Some(mut p) = prop_at(world, x, z) {
+                let clearance = if p.kind == PropKind::Boulder {
+                    rock_radius(p) + 0.4
+                } else {
+                    5.0
+                };
+                if natural
+                    .iter()
+                    .any(|n| n.clears_props(p.position[0], p.position[2], clearance))
+                {
+                    continue;
+                }
                 if sites.iter().any(|s| {
                     (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 45.0_f32.powi(2)
                 }) {
@@ -1060,6 +1072,7 @@ pub fn props_chunk_at_lod(world: &World, cx: i32, cz: i32, cover: bool, lod: u32
         ground_cover_lod(world, &mut mesh, ox, oz, lod);
     }
     bridges(world, &mut mesh, ox, oz, lod);
+    crate::natural::append_chunk(world, &mut mesh, cx, cz, false, lod);
     mesh
 }
 /// Cheap tree-only silhouettes for the outer streaming ring. Candidate positions,
@@ -1082,6 +1095,12 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
         oz + CHUNK_SIZE / 2.0,
         CHUNK_SIZE + 40.0,
     );
+    let natural = crate::natural::landmarks_near(
+        world,
+        ox + CHUNK_SIZE * 0.5,
+        oz + CHUNK_SIZE * 0.5,
+        CHUNK_SIZE * 0.72 + 24.0,
+    );
     let gx = (ox / PROP_GRID).round() as i32;
     let gz = (oz / PROP_GRID).round() as i32;
     let count = (CHUNK_SIZE / PROP_GRID) as i32;
@@ -1093,6 +1112,17 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
             let Some(mut p) = prop_at(world, x, z) else {
                 continue;
             };
+            let clearance = if p.kind == PropKind::Boulder {
+                rock_radius(p) + 0.4
+            } else {
+                5.0
+            };
+            if natural
+                .iter()
+                .any(|n| n.clears_props(p.position[0], p.position[2], clearance))
+            {
+                continue;
+            }
             if sites.iter().any(|s| {
                 (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 45.0_f32.powi(2)
             }) {
@@ -1122,6 +1152,7 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
             anchor_prop(world, &mut mesh, first, p, lod);
         }
     }
+    crate::natural::append_chunk(world, &mut mesh, cx, cz, true, lod);
     mesh
 }
 
@@ -1200,10 +1231,20 @@ fn owns(ox: f32, oz: f32, x: f32, z: f32) -> bool {
 /// Collision matches the deterministic tree trunks and boulders used by props_chunk.
 /// Landmark structures are intentionally open-sided in this first exploration slice.
 pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
+    blocks_body(world, x, terrain_surface_height_lod(world, x, z, 0), z)
+}
+
+/// Body-height collision preserves the empty space underneath arches and roofs.
+pub fn blocks_body(world: &World, x: f32, feet: f32, z: f32) -> bool {
+    blocks_legacy_props(world, x, z) || crate::natural::blocks_player(world, x, feet, z, 0.35, 1.80)
+}
+
+fn blocks_legacy_props(world: &World, x: f32, z: f32) -> bool {
     let gx = (x / PROP_GRID).floor() as i32;
     let gz = (z / PROP_GRID).floor() as i32;
     let sites = world.sites_near(x, z, 70.0);
     let landmarks = world.landmarks_near(x, z, 40.0);
+    let natural = crate::natural::landmarks_near(world, x, z, 35.0);
     for dz in -2..=2 {
         for dx in -2..=2 {
             let cell_x = (gx + dx) as f32 * PROP_GRID;
@@ -1216,6 +1257,17 @@ pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
                 continue;
             }
             if let Some(p) = prop_at(world, gx + dx, gz + dz) {
+                let clearance = if p.kind == PropKind::Boulder {
+                    rock_radius(p) + 0.4
+                } else {
+                    5.0
+                };
+                if natural
+                    .iter()
+                    .any(|n| n.clears_props(p.position[0], p.position[2], clearance))
+                {
+                    continue;
+                }
                 let radius = match p.kind {
                     PropKind::Pine
                     | PropKind::Fir
@@ -5047,28 +5099,103 @@ mod character_asset_tests {
     fn narrow_analytic_banks_cannot_spawn_submerged_tree_trunks() {
         let w = World::new(1337);
         let mut checked = 0;
-        for z in 2920..2950 {
-            for x in 535..560 {
-                if let Some(p) = prop_at(&w, x, z) {
-                    if matches!(
-                        p.kind,
-                        PropKind::Pine
-                            | PropKind::Fir
-                            | PropKind::Broadleaf
-                            | PropKind::Birch
-                            | PropKind::Willow
-                            | PropKind::DeadTree
-                    ) {
-                        let s = w.natural_sample(p.position[0], p.position[2]);
-                        if s.water_height > -999. {
-                            assert!(p.position[1] >= s.water_height + 0.299);
-                            checked += 1;
-                        }
+        let mut banks = 0;
+        let mut visited = std::collections::HashSet::new();
+        // Follow actual retained lake shores. A fixed old river-bank coordinate
+        // can become dry land when the continental watershed changes.
+        'lakes: for lake in w.lakes() {
+            let reach = (lake.bounds[2] - lake.bounds[0]).hypot(lake.bounds[3] - lake.bounds[1]);
+            for ray in 0..12 {
+                let angle = ray as f32 * TAU / 12.;
+                let direction = [angle.cos(), angle.sin()];
+                let mut inside = 0.;
+                let mut outside = None;
+                for step in 1..=64 {
+                    let distance = reach * step as f32 / 64.;
+                    let x = lake.center[0] + direction[0] * distance;
+                    let z = lake.center[1] + direction[1] * distance;
+                    let sample = w.natural_sample(x, z);
+                    if sample.water_height < -999. || sample.height > sample.water_height + 0.4 {
+                        outside = Some(distance);
+                        break;
                     }
+                    inside = distance;
+                }
+                let Some(mut outside) = outside else {
+                    continue;
+                };
+                for _ in 0..10 {
+                    let distance = (inside + outside) * 0.5;
+                    let x = lake.center[0] + direction[0] * distance;
+                    let z = lake.center[1] + direction[1] * distance;
+                    let sample = w.natural_sample(x, z);
+                    if sample.water_height < -999. || sample.height > sample.water_height + 0.4 {
+                        outside = distance;
+                    } else {
+                        inside = distance;
+                    }
+                }
+                let gx = ((lake.center[0] + direction[0] * outside) / PROP_GRID).floor() as i32;
+                let gz = ((lake.center[1] + direction[1] * outside) / PROP_GRID).floor() as i32;
+                let before = checked;
+                for z in gz - 5..=gz + 5 {
+                    for x in gx - 5..=gx + 5 {
+                        if !visited.insert((x, z)) {
+                            continue;
+                        }
+                        let Some(p) = prop_at(&w, x, z) else {
+                            continue;
+                        };
+                        if !matches!(
+                            p.kind,
+                            PropKind::Pine
+                                | PropKind::Fir
+                                | PropKind::Broadleaf
+                                | PropKind::Birch
+                                | PropKind::Willow
+                                | PropKind::DeadTree
+                        ) {
+                            continue;
+                        }
+                        let s = w.natural_sample(p.position[0], p.position[2]);
+                        if s.water_height < -999. {
+                            continue;
+                        }
+                        assert!(
+                            p.position[1] >= s.water_height + 0.299,
+                            "tree root submerged in actual shore triangles"
+                        );
+                        for i in 0..8 {
+                            let angle = i as f32 * TAU / 8.;
+                            let radius = tree_radius(p) * 1.3;
+                            let x = p.position[0] + angle.sin() * radius;
+                            let z = p.position[2] + angle.cos() * radius;
+                            let edge = w.natural_sample(x, z);
+                            assert!(
+                                !edge.ocean
+                                    && terrain_surface_height(&w, x, z) - 0.08
+                                        >= edge.water_height + 0.299,
+                                "tree footing crosses the rendered water surface"
+                            );
+                        }
+                        checked += 1;
+                    }
+                }
+                if checked > before {
+                    banks += 1;
+                }
+                if checked >= 24 && banks >= 4 {
+                    break 'lakes;
                 }
             }
         }
-        assert!(checked > 3);
+        assert!(
+            checked >= 24 && banks >= 4,
+            "checked {checked} wet-bank trees on {banks} actual shores"
+        );
+        println!(
+            "tree footing regression: {checked} trees across {banks} actual shore neighborhoods"
+        );
     }
     #[test]
     fn enlarged_formations_remain_grounded_bounded_and_deterministic() {
