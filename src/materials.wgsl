@@ -4,7 +4,23 @@
 @group(3) @binding(2) var material_sampler: sampler;
 @group(3) @binding(3) var foliage_sampler: sampler;
 struct PixelMaterial { pigment:vec3<f32>, normal:vec3<f32>, roughness:f32, metal:f32, emission:f32, alpha:f32 };
-fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad) -> PixelMaterial {
+fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> PixelMaterial {
+    // Tree crowns share two tiny illustrations. Do the alpha test before any
+    // terrain projection or material work; distant leaves need only albedo.
+    if v.texture == 5.0 || v.texture == 6.0 {
+        let layer=i32(v.texture);
+        let tex=textureSampleGrad(material_color,foliage_sampler,v.uv,layer,grad.uv_x,grad.uv_y);
+        if tex.a<0.4 {discard;}
+        var n=normalize(v.normal);
+        var roughness=0.64;
+        if distance<36.0 {
+            let packed=textureSampleGrad(material_surface,foliage_sampler,v.uv,layer,grad.uv_x,grad.uv_y);
+            let detail=(1.0-smoothstep(16.0,36.0,distance))*(1.0-smoothstep(0.30,1.8,footprint));
+            n=normalize(n+vec3<f32>(packed.x*2.0-1.0,0.0,packed.y*2.0-1.0)*(0.14*detail));
+            roughness=mix(0.64,packed.b,detail);
+        }
+        return PixelMaterial(v.color*tex.rgb*1.45*vec3<f32>(0.94,1.06,0.96),n,roughness,0.0,0.0,tex.a);
+    }
     let n = normalize(v.normal);
     let a = abs(n);
     var uv = v.world.xz * 0.22;

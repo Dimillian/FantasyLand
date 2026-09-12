@@ -7,6 +7,8 @@ pub const SIZE: u32 = 128;
 pub const LAYERS: u32 = 17;
 pub const LEVELS: u32 = 8;
 pub const ALPHA_CUTOFF: f32 = 0.4;
+/// Empty top corners removed from conifer cards; shared with the mask guard.
+pub const NEEDLE_CARD_INSET: f32 = 0.24;
 const DRAW: usize = 64;
 const CUTOUTS: std::ops::RangeInclusive<usize> = 5..=9;
 
@@ -781,6 +783,26 @@ impl MaterialLibrary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tapered_needle_cards_keep_the_authored_mask() {
+        let atlas = super::MaterialPixels::generate();
+        let size = super::SIZE as usize;
+        let layer = &atlas.albedo[0][6 * size * size * 4..7 * size * size * 4];
+        let mut covered = 0;
+        for y in 0..size {
+            let v = (y as f32 + 0.5) / size as f32;
+            let inset = super::NEEDLE_CARD_INSET * (1. - v);
+            for x in 0..size {
+                if layer[(y * size + x) * 4 + 3] as f32 / 255. < super::ALPHA_CUTOFF {
+                    continue;
+                }
+                let u = (x as f32 + 0.5) / size as f32;
+                assert!(u >= inset && u <= 1. - inset, "needle clipped at {x},{y}");
+                covered += 1;
+            }
+        }
+        assert!(covered > size * size / 6);
+    }
     use super::*;
 
     #[test]

@@ -26,6 +26,7 @@ fn main() {
     let cover_only = check.as_deref() == Some("cover");
     let regions_only = check.as_deref() == Some("regions");
     let vista_only = check.as_deref() == Some("vista");
+    let foliage_only = check.as_deref() == Some("foliage");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -50,6 +51,7 @@ fn main() {
         && !cover_only
         && !regions_only
         && !vista_only
+        && !foliage_only
     {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
@@ -60,13 +62,25 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
-    if check.as_deref() == Some("materials") {
-        renderer.set_quality(1);
+    if check.as_deref() == Some("materials") || foliage_only {
+        renderer.set_quality(if foliage_only { 2 } else { 1 });
         renderer.set_render_resolution(720);
         renderer.set_ground_cover_density(4.0);
         renderer.set_filter(1, 1.0);
+        if foliage_only {
+            renderer.set_antialiasing(1);
+        }
         let mut reports = Vec::new();
         for (name, x, z, yaw, pitch, hour, weather) in [
+            (
+                "orins-woodland",
+                109764.,
+                -15885.,
+                -0.9424778,
+                0.04,
+                12.0,
+                1,
+            ),
             ("amberwood", -10879., 58547., 1.4, 0.08, 7.5, 1),
             (
                 "silverwater",
@@ -89,6 +103,12 @@ fn main() {
             ),
             ("moonwater", -8909.148, -77660.938, -0.2618, 0.12, 23.0, 1),
         ] {
+            if foliage_only && name != "orins-woodland" {
+                continue;
+            }
+            if !foliage_only && name == "orins-woodland" {
+                continue;
+            }
             let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
             renderer.clear_chunks();
             renderer.set_weather_mode(weather);

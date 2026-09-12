@@ -224,3 +224,11 @@ graphics and world tools/experiments are collapsed by default. Restore recommend
 defaults applies the complete visual baseline without resetting position, seed,
 atlas, waypoint, sensitivity, time or weather. No engine or shader changes were
 needed for this settings simplification.
+
+## Forest foliage refinement
+
+Foliage uses fewer overlapping broadleaf cards, volumetric crown normals and
+tapered conifer sprays. Distant leaves use one atlas lookup and a lightweight
+wet sheen; directional shadows, wind and godrays remain. See
+[forest foliage notes](docs/forest-foliage.md) for exact changes, Safari scene
+observations and validation limits.

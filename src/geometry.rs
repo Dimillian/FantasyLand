@@ -4414,19 +4414,36 @@ fn foliage_card(
     color: [f32; 3],
     texture: f32,
     pendant: bool,
+    crown_center: [f32; 3],
+    crown_radii: [f32; 3],
 ) {
     let corner =
         |sx: f32, sy: f32| std::array::from_fn(|i| center[i] + side[i] * sx + rise[i] * sy);
     let first = mesh.vertices.len();
+    // Needle sprays taper toward their tip. Clip only empty atlas corners,
+    // keeping affine UVs and the same two triangles in every rendering pass.
+    let inset = if texture == 6. {
+        crate::materials::NEEDLE_CARD_INSET
+    } else {
+        0.
+    };
+    let top = 1. - inset * 2.;
     mesh.quad(
         corner(-1., -1.),
         corner(1., -1.),
-        corner(1., 1.),
-        corner(-1., 1.),
+        corner(top, 1.),
+        corner(-top, 1.),
         color,
         1.,
     );
-    let uv = [[0., 1.], [1., 1.], [1., 0.], [0., 1.], [1., 0.], [0., 0.]];
+    let uv = [
+        [0., 1.],
+        [1., 1.],
+        [1. - inset, 0.],
+        [0., 1.],
+        [1. - inset, 0.],
+        [inset, 0.],
+    ];
     for (vertex, uv) in mesh.vertices[first..].iter_mut().zip(uv) {
         vertex.uv = uv;
         vertex.texture = texture;
@@ -4434,6 +4451,13 @@ fn foliage_card(
         // fronds reverse this gradient so their lower tips carry the motion.
         let free = if pendant { uv[1] } else { 1. - uv[1] };
         vertex.material = 1.20 - free * 0.20;
+        // Lighting follows the crown volume instead of revealing each crossed
+        // sheet. A small upward bias keeps the interpolated center well defined.
+        let radial = glam::Vec3::from_array(std::array::from_fn(|i| {
+            (vertex.position[i] - crown_center[i]) / crown_radii[i].max(0.1)
+        }));
+        let normal = (radial.normalize_or_zero() * 0.72 + glam::Vec3::Y * 0.64).normalize_or_zero();
+        vertex.normal = normal.to_array();
     }
 }
 
@@ -4447,9 +4471,9 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
     let count = if conifer {
         3
     } else if p.kind == PropKind::Broadleaf {
-        5
-    } else {
         4
+    } else {
+        3
     };
     for i in 0..count {
         // Keep exact planes from the full crown; distant foliage has the same
@@ -4463,13 +4487,18 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
         let (tilt, half_width, half_height, lift) = if conifer {
             // Open, overlapping needle sprays replace the old solid cones.
             // A third inclined spray gives each branch volume from above.
-            if i == 2 && !c.pointed {
-                (0.29, width * 0.91, c.radii[2] * 0.82, c.radii[1] * 0.20)
+            if i == 2 {
+                if c.pointed {
+                    (0.62, width * 0.91, c.radii[1] * 0.64, c.radii[1] * 0.20)
+                } else {
+                    // Wind-flattened coastal crowns keep their broad upper fan.
+                    (0.29, width * 0.91, c.radii[2] * 0.82, c.radii[1] * 0.20)
+                }
             } else {
                 (1.44 + jitter, width, c.radii[1] * 0.52, c.radii[1] * 0.24)
             }
         } else if willow {
-            if i == 3 {
+            if i == count - 1 {
                 (0.23, width * 0.85, c.radii[2] * 0.82, c.radii[1] * 0.59)
             } else {
                 (1.43 + jitter, width * 0.90, c.radii[1] * 0.91, 0.)
@@ -4490,6 +4519,7 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
                 (1.45 + jitter, width, c.radii[1] * 0.88, 0.)
             }
         };
+        let half_width = half_width * if conifer { 1. } else { 0.94 };
         let side = [yaw.cos() * half_width, 0., -yaw.sin() * half_width];
         let rise = [
             yaw.sin() * tilt.cos() * half_height,
@@ -4497,9 +4527,9 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
             yaw.cos() * tilt.cos() * half_height,
         ];
         let base = [
-            center[0] + jitter * c.radii[0] * 0.25,
+            center[0] + yaw.sin() * c.radii[0] * 0.18 + jitter * c.radii[0] * 0.25,
             center[1] + lift,
-            center[2] - jitter * c.radii[2] * 0.25,
+            center[2] + yaw.cos() * c.radii[2] * 0.18 - jitter * c.radii[2] * 0.25,
         ];
         foliage_card(
             mesh,
@@ -4508,7 +4538,9 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
             rise,
             mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
             if conifer { 6. } else { 5. },
-            willow && i < 3,
+            willow && i < count - 1,
+            center,
+            c.radii,
         );
     }
 }

@@ -623,7 +623,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
         return vec4<f32>(atmospheric_color(water_color(v.world,distance,v.color,water_footprint,v.normal),v.world,distance),1.0);
     }
-    let pixel = pixel_material(v, material_footprint,grad);
+    let pixel = pixel_material(v, material_footprint,grad,distance);
     if pixel.alpha < 0.40 { discard; }
     let normal = pixel.normal;
     if v.material > 9.5 && v.material < 10.5 {
@@ -650,9 +650,10 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     let vegetation = (v.material>0.5 && v.material<1.5)
         || (v.material>5.5 && v.material<6.5) || (v.material>8.5 && v.material<9.5);
     if distance < 450.0 {
-        if vegetation && distance > 24.0 {
+        let tree_leaf = v.texture == 5.0 || v.texture == 6.0;
+        if vegetation && (tree_leaf || distance > 24.0) {
             var highlight = vegetation_highlight(normal,view,light,roughness,wet,visibility);
-            if distance < 64.0 {
+            if !tree_leaf && distance < 64.0 {
                 highlight = mix(material_highlight(pigment_linear,normal,view,light,roughness,pixel.metal,wet,visibility),
                     highlight,smoothstep(24.0,64.0,distance));
             }
@@ -661,8 +662,8 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
             color += material_highlight(pigment_linear,normal,view,light,roughness,pixel.metal,wet,visibility);
         }
     }
-    // Keep the exact alpha/depth and sunlight paths for leaf transmission and
-    // godrays. Only the reflected highlight is simplified beyond the foreground.
+    // Leaf transmission and godrays retain exact cutout depth and sunlight.
+    // A broad waxy leaf sheen avoids expensive, glittering reflected-sky lobes.
     if v.texture >= 5.0 && v.texture < 10.0 {
         let forward_scatter = pow(max(dot(-view,light),0.0),3.0);
         color += pigment_linear*u.direct.rgb*u.direct.w*visibility*(0.12+forward_scatter*0.52);
