@@ -21,6 +21,15 @@ fn glow(uv: vec2<f32>) -> vec3<f32> {
         + textureSampleLevel(glow_mid, linear_sampler, uv, 0.).rgb * 0.30
         + textureSampleLevel(glow_far, linear_sampler, uv, 0.).rgb * 0.28;
 }
+// AA consumes display-encoded color. Quantization and CRT optics stay later.
+@fragment fn fs_tonemap(o: Out) -> @location(0) vec4<f32> {
+    var radiance = nearest(o.uv);
+    if settings.controls.x > 0.5 && settings.controls.y > 0.0 {
+        let amount = select(0.55, 0.22, settings.controls.x > 1.5);
+        radiance += glow(o.uv) * settings.controls.y * amount;
+    }
+    return vec4<f32>(filmic_display(radiance), 1.0);
+}
 @fragment fn fs_main(o: Out) -> @location(0) vec4<f32> {
     let strength = settings.controls.y;
     if settings.controls.x < 0.5 || strength <= 0. {

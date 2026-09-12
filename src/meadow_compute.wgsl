@@ -55,9 +55,16 @@ fn expand(@builtin(global_invocation_id) id:vec3<u32>) {
     let fade=select(near_fade,select(middle_fade,1.0,mid),quarter)
         *(1.0-smoothstep(38.0,frame.settings.y,distance));
     if fade<0.015 {return;}
-    let height=f32(cell.z&255u)/255.0*(0.85+random(seed+5u)*0.30)*fade;
+    let base_height=f32(cell.z&255u)/255.0*(0.85+random(seed+5u)*0.30);
     let root=surface(world-tile.origin.xy)-0.012;
-    let clip=frame.projection*vec4<f32>(world.x-frame.eye.x,root+height*0.5-frame.eye.y,world.y-frame.eye.z,1.0);
+    let clip=frame.projection*vec4<f32>(world.x-frame.eye.x,root+base_height*0.5-frame.eye.y,world.y-frame.eye.z,1.0);
+    let metres_per_pixel=max(clip.w,0.2)/max(frame.settings.z,1.0);
+    let projected_height=base_height/metres_per_pixel;
+    // Remove only unresolved remnants. Use the original height so LOD shrinkage
+    // cannot feed back into this decision, and protect the full near meadow.
+    let pixel_fade=mix(smoothstep(0.45,1.4,projected_height),1.0,1.0-smoothstep(6.0,10.0,distance));
+    let height=base_height*fade*pixel_fade;
+    if pixel_fade<0.015 {return;}
     // Conservative world-radius expansion includes bent tips and near-plane crossings.
     let margin=height+0.8;
     let rows=transpose(frame.projection);
@@ -68,10 +75,14 @@ fn expand(@builtin(global_invocation_id) id:vec3<u32>) {
     if clip.x < -clip.w-left || clip.x > clip.w+right
         || clip.y < -clip.w-bottom || clip.y > clip.w+top {return;}
     let angle=random(seed+6u)*6.2831853;
-    let width=(0.026+random(seed+7u)*0.019)*mix(1.0,2.25,smoothstep(15.0,36.0,distance))*sqrt(fade);
+    let base_width=(0.026+random(seed+7u)*0.019)*mix(1.0,2.25,smoothstep(15.0,36.0,distance));
+    // A blade has two half-widths. Aim for 0.6 pixels across, with a strict
+    // expansion cap; distant blades never become broad billboard rectangles.
+    let stable_width=max(base_width,min(metres_per_pixel*0.30,base_width*1.45));
+    let width=mix(base_width,stable_width,smoothstep(7.0,22.0,distance))*sqrt(fade*pixel_fade);
     // One invocation appends at most one instance. Capacity is cells*64, so the
     // indirect count cannot overflow even if every candidate passes all tests.
     let output=atomicAdd(&args.count,1u);
     instances[output]=Instance(vec4<f32>(local,root,height),vec4<u32>(cell.y,
-        pack2x16snorm(vec2<f32>(sin(angle),cos(angle))),pack2x16float(vec2<f32>(width,fade)),seed));
+        pack2x16snorm(vec2<f32>(sin(angle),cos(angle))),pack2x16float(vec2<f32>(width,fade*pixel_fade)),seed));
 }

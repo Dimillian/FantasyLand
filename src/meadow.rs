@@ -215,6 +215,7 @@ impl MeadowRenderer {
         queue: &wgpu::Queue,
         eye: Vec3,
         projection: Mat4,
+        focal_pixels: f32,
         density: f32,
     ) {
         self.frame = self.frame.wrapping_add(1);
@@ -224,7 +225,7 @@ impl MeadowRenderer {
             bytemuck::bytes_of(&Frame {
                 projection: projection.to_cols_array_2d(),
                 eye: eye.extend(1.).to_array(),
-                settings: [density.clamp(0., 4.) / 4., DISTANCE, 0., 0.],
+                settings: [density.clamp(0., 4.) / 4., DISTANCE, focal_pixels, 0.],
             }),
         );
     }

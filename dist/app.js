@@ -1,3 +1,4 @@
+import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
 const $ = (id) => document.getElementById(id);
@@ -29,6 +30,10 @@ let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
 // Existing v4 saves acquire the new visual preferences without moving the player.
+let antialiasing = [0, 1, 2].includes(Number(saved.antialiasing ?? 1)) ? Number(saved.antialiasing ?? 1) : 1;
+let adaptiveResolution = saved.adaptiveResolution === true;
+const adaptive = new AdaptiveResolution();
+let adaptivePosition = null;
 let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
 // Removed filter saves return to visible Bloom while all world progress stays intact.
 let filterStrength = Number(saved.filterMode) === 3 ? 1 : Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
@@ -46,6 +51,7 @@ let groundCoverDensity = Number.isFinite(Number(saved.groundCoverDensity ?? 4)) 
 let waypoint = saved.seed === seed && saved.waypoint ? saved.waypoint : null;
 let keys = new Set(), touchMoves = new Set(), jumpQueued = false, dragLook = null;
 let lastFrame = 0, lastHUD = 0, lastSaved = 0, frames = 0, fps = 0, fpsTime = 0;
+let motionCapture = null, motionGeneration = 0;
 let benchmark = null, benchmarkReport = [], adapterLabel = 'WebGPU';
 let fatal = false, toastTimer, mapTimer, resizeTimer, initialReady = false;
 let worldSize = 384000;
@@ -66,6 +72,7 @@ $('sun-shadows').value = sunShadows ? 'on' : 'off';
 updateWeatherControls();
 updateGroundCoverControls();
 updateFilterControls();
+updateAaControls();
 
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
@@ -75,10 +82,10 @@ function toast(message, duration = 3500) {
 }
 
 function saveProgress() {
-  if (benchmark || otherViewActive) return;
+  if (benchmark || motionCapture || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -229,10 +236,30 @@ function applyFilter() {
   if (game) game.set_filter(filterMode, filterStrength);
 }
 
+function updateAaControls() {
+  $('antialiasing').value = String(antialiasing);
+  $('antialiasing-help').textContent = ['Sharp pixels, no edge smoothing.', 'Softens jagged edges with a light touch.', 'Sharper edge smoothing, with a higher GPU cost.'][antialiasing];
+  $('adaptive-resolution').value = adaptiveResolution ? 'on' : 'off';
+  $('render-resolution').disabled = adaptiveResolution;
+}
+function applyResolution() {
+  game?.set_render_resolution(adaptiveResolution ? adaptive.height : renderResolution);
+  adaptive.reset(performance.now());
+  updateAaControls(); updateRenderDimensions();
+}
+function updateAdaptiveResolution(now, gap) {
+  if (Number.isFinite(state.x) && Number.isFinite(state.z)) {
+    if (adaptivePosition && Math.hypot(state.x-adaptivePosition.x,state.z-adaptivePosition.z)>96) adaptive.reset(now);
+    adaptivePosition = {x:state.x,z:state.z};
+  }
+  const height = adaptive.sample(now, gap, adaptiveResolution && initialReady && started && !modal && !benchmark && !motionCapture && !document.hidden && !otherViewActive);
+  if (height !== null) { game.set_render_resolution(height); updateRenderDimensions(); }
+}
+
 function updateRenderDimensions() {
   if (!game) return;
   const actual = game.render_resolution();
-  if (actual && actual.length >= 2) $('render-dimensions').textContent = `Actual ${actual[0]} × ${actual[1]}`;
+  if (actual && actual.length >= 2) $('render-dimensions').textContent = `Actual ${actual[0]} × ${actual[1]}${adaptiveResolution ? " · adaptive 420–720p" : ""}`;
 }
 
 function resize() {
@@ -276,7 +303,7 @@ function lockFailed(epoch = lockEpoch) {
 }
 
 function captureMouse(event) {
-  if (!started || modal || fatal || matchMedia('(pointer: coarse)').matches) return;
+  if (!started || modal || fatal || benchmark || motionCapture || matchMedia('(pointer: coarse)').matches) return;
   canvas.focus({ preventScroll: true });
   focusedLook = true;
   lastMouse = event && Number.isFinite(event.clientX) ? { x: event.clientX, y: event.clientY } : null;
@@ -306,6 +333,8 @@ function releaseMouse() {
 
 function openModal(type) {
   if (!game || !initialReady) return;
+  if (motionCapture) finishMotionCapture(true);
+  if (benchmark) finishBenchmark(true);
   modal = type;
   releaseMouse();
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.toggle('hidden', name !== type);
@@ -620,7 +649,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -649,6 +678,7 @@ function initRenderCoordination() {
         canvas.setAttribute('data-render-active','false');
         releaseMouse();
         if(benchmark)finishBenchmark(true);
+        if(motionCapture)finishMotionCapture(true);
       } else if(data.type==='heartbeat' && data.id===renderOwner)renderSeen=performance.now();
       else if(data.type==='release' && data.id===renderOwner)claimRenderer();
     };
@@ -681,7 +711,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=meadow-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=aa-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -718,20 +748,24 @@ function renderFrame(now) {
   if (fatal) return;
   // Hidden previews must not keep submitting GPU work or advancing the world.
   // Keep one RAF chain: the browser resumes it when this tab becomes visible.
-  if (document.hidden || otherViewActive) { lastFrame = 0; requestAnimationFrame(renderFrame); return; }
+  if (document.hidden || otherViewActive) { adaptive.sample(now, 0, false); lastFrame = 0; requestAnimationFrame(renderFrame); return; }
+  if (!lastFrame) adaptive.reset(now);
   const frameGap = lastFrame ? now-lastFrame : 0;
   const frameStart = performance.now();
   const dt = lastFrame ? Math.min((now - lastFrame) / 1000, .05) : 1 / 60;
   lastFrame = now;
   try {
     if (benchmark) updateBenchmark(now, frameGap);
-    const moving = started && !modal && !document.hidden && !benchmark;
+    if (motionCapture) updateMotionCapture(now);
+    updateAdaptiveResolution(now, frameGap);
+    const moving = started && !modal && !document.hidden && !benchmark && !motionCapture;
     let forward = moving ? Number(keys.has('KeyW') || keys.has('ArrowUp') || touchMoves.has('forward')) - Number(keys.has('KeyS') || keys.has('ArrowDown') || touchMoves.has('back')) : 0;
     let strafe = moving ? Number(keys.has('KeyD') || keys.has('ArrowRight') || touchMoves.has('right')) - Number(keys.has('KeyA') || keys.has('ArrowLeft') || touchMoves.has('left')) : 0;
     // Avoid diagonal movement being faster than walking straight.
     const length = Math.hypot(forward, strafe); if (length > 1) { forward /= length; strafe /= length; }
     const sprint = moving && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touchMoves.has('sprint'));
     if (benchmark?.walking && benchmark.phase === "sample") { forward=1;strafe=0; }
+    if (motionCapture?.phase === "record") {forward=1;strafe=0;}
     pumpStreaming();
     game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
@@ -775,15 +809,16 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=meadow-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=meadow-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=aa-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=aa-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
     startStreamingWorker();
     worldSize = Number(game.world_size());
     game.set_quality(quality);
-    game.set_render_resolution(renderResolution);
+    applyResolution();
+    game.set_antialiasing(antialiasing);
     applyFilter();
     applyGroundCoverDensity();
     game.set_shadows(sunShadows);
@@ -792,7 +827,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'meadow-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'aa-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -884,6 +919,14 @@ $('enclosure-shading').addEventListener('change', (event) => {
   game?.set_enclosure(enclosure);
   saveProgress();
 });
+$('antialiasing').addEventListener('change', event => {
+  const selected = Number(event.target.value);
+  antialiasing = [0,1,2].includes(selected) ? selected : 1;
+  game?.set_antialiasing(antialiasing); adaptive.reset(performance.now()); updateAaControls(); saveProgress();
+});
+$('adaptive-resolution').addEventListener('change', event => {
+  adaptiveResolution = event.target.value === 'on'; applyResolution(); saveProgress();
+});
 $('filter-select').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
   filterMode = [0, 1, 2].includes(selected) ? selected : 1;
@@ -901,8 +944,8 @@ $('render-resolution').addEventListener('change', (event) => {
   const selected = Number(event.target.value);
   renderResolution = RESOLUTION_OPTIONS.includes(selected) ? selected : 0;
   $('render-resolution').value = String(renderResolution);
-  game?.set_render_resolution(renderResolution);
-  updateRenderDimensions();
+  adaptiveResolution = false;
+  applyResolution();
   saveProgress();
 });
 $('sensitivity').addEventListener('input', (event) => { sensitivity = Number(event.target.value); saveProgress(); });
@@ -962,6 +1005,7 @@ document.addEventListener('keydown', (event) => {
   const editing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName);
   if (event.code === 'Escape') {
     event.preventDefault();
+    if (motionCapture) {finishMotionCapture(true);toast('Recording cancelled.');}
     if (benchmark) {finishBenchmark(true);toast('Performance check cancelled.');}
     if (modal) closeModal();
     releaseMouse();
@@ -1021,7 +1065,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.addEventListener('pointerlockerror', () => lockFailed());
 document.addEventListener('mousemove', (event) => {
-  if (!started || modal || !game) return;
+  if (!started || modal || !game || benchmark || motionCapture) return;
   if (locked) {
     game.look(event.movementX * sensitivity, event.movementY * sensitivity);
   } else if (focusedLook && !matchMedia('(pointer: coarse)').matches) {
@@ -1037,7 +1081,7 @@ canvas.addEventListener('click', (event) => {
   else if (!modal && !locked) captureMouse(event);
 });
 canvas.addEventListener('pointerdown', (event) => {
-  if (!started || modal || !game || locked) return;
+  if (!started || modal || !game || locked || benchmark || motionCapture) return;
   canvas.focus({ preventScroll: true });
   // Desktop lock uses click; mouse drag fallback is document-level, so there is
   // no setPointerCapture call racing requestPointerLock. Touch keeps capture.
@@ -1045,7 +1089,7 @@ canvas.addEventListener('pointerdown', (event) => {
   if (dragLook.touch) canvas.setPointerCapture(event.pointerId);
 });
 document.addEventListener('pointermove', (event) => {
-  if (dragLook?.id !== event.pointerId || locked || modal || !started || (focusedLook && !dragLook.touch)) return;
+  if (benchmark || motionCapture || dragLook?.id !== event.pointerId || locked || modal || !started || (focusedLook && !dragLook.touch)) return;
   game.look((event.clientX - dragLook.x) * sensitivity, (event.clientY - dragLook.y) * sensitivity);
   dragLook.x = event.clientX; dragLook.y = event.clientY;
 });
@@ -1098,34 +1142,94 @@ mapCanvas.addEventListener('wheel', (event) => {
 }, { passive: false });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { resize(); if (modal === 'map') scheduleMapData(); }, 100); });
 window.addEventListener('blur', releaseMouse);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && streamWorker && streamDeadline) streamDeadline=performance.now()+120000; if (document.hidden) { if (benchmark) finishBenchmark(true); releaseMouse(); saveProgress(); } lastFrame = 0; });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && streamWorker && streamDeadline) streamDeadline=performance.now()+120000; if (document.hidden) { if (motionCapture) finishMotionCapture(true); if (benchmark) finishBenchmark(true); adaptive.reset(performance.now()); releaseMouse(); saveProgress(); } lastFrame = 0; });
 window.addEventListener('pagehide', saveProgress);
+
+// Short real-browser motion evidence. Encoding never runs during FPS checks.
+function finishMotionCapture(cancelled = false) {
+  const capture = motionCapture; if (!capture) return;
+  motionCapture = null;
+  if (cancelled) motionGeneration++;
+  if (capture.recorder.state !== 'inactive') capture.recorder.stop();
+  for (const track of capture.stream.getTracks()) track.stop();
+  game.set_time(capture.hour); game.teleport(capture.x,capture.z); game.face(capture.yaw,capture.pitch);
+  state=game.state();
+  adaptive.reset(performance.now());
+  $('motion-record').disabled = false;
+  $('motion-status').textContent = cancelled ? 'Recording interrupted.' : 'Preparing walking clip…';
+  openModal('settings');
+}
+function updateMotionCapture(now) {
+  const capture = motionCapture;
+  game.set_time(capture.hour);
+  if (capture.phase === 'warm') {
+    if (now-capture.since<2500 || game.pending_chunks()>0) return;
+    capture.phase='record';capture.since=now;capture.recorder.start();
+    toast('Recording 8-second walk · current AA setting',8000);
+  }
+  game.face(capture.yaw + Math.sin((now-capture.since)/8000*Math.PI*2)*0.07,capture.pitch);
+  if (capture.phase==='record' && now-capture.since>=8000) finishMotionCapture();
+}
+$('motion-record').addEventListener('click', () => {
+  if (!game || benchmark || motionCapture) return;
+  if (!canvas.captureStream || typeof MediaRecorder==='undefined') {toast('Canvas recording is unavailable in this browser.');return;}
+  const mime=['video/mp4','video/webm;codecs=vp9','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+  let stream, recorder;
+  try {stream=canvas.captureStream(30);recorder=new MediaRecorder(stream,mime?{mimeType:mime,videoBitsPerSecond:10000000}:{videoBitsPerSecond:10000000});}
+  catch(error) {stream?.getTracks().forEach(t=>t.stop());toast('This browser could not start canvas recording.');return;}
+  $('motion-download').classList.add('hidden');
+  $('motion-status').textContent='Warming up the current view…';
+  const token=++motionGeneration;
+  const chunks=[];const mode=['off','fxaa','smaa'][antialiasing];const height=game.render_resolution()[1];
+  recorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data);};
+  recorder.onstop=()=>{
+    if (token!==motionGeneration) return;
+    const blob=new Blob(chunks,{type:recorder.mimeType});
+    if (!blob.size) {$('motion-status').textContent='The browser returned an empty recording.';return;}
+    const reader=new FileReader();reader.onload=()=>{
+      if (token!==motionGeneration) return;
+      $('motion-download').href=reader.result;
+      $('motion-download').download=`fantasyland-${mode}-${height}p.${recorder.mimeType.includes('mp4')?'mp4':'webm'}`;
+      $('motion-download').classList.remove('hidden');
+      $('motion-status').textContent=`${mode.toUpperCase()} · ${height}p · 8-second browser capture ready.`;
+    };reader.readAsDataURL(blob);
+  };
+  recorder.onerror=()=>{if(token===motionGeneration && motionCapture?.recorder===recorder){finishMotionCapture(true);toast('Canvas recording was interrupted.');}};
+  state=game.state();motionCapture={recorder,stream,phase:'warm',since:performance.now(),x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch,hour:state.dayTime};
+  $('motion-record').disabled=true;closeModal();clearMovement();
+});
 
 // Repeatable frame-pacing comparison through the real browser animation loop.
 // Initialization/streaming warm-up is shown separately, never included as steady FPS.
 function finishBenchmark(cancelled = false) {
   if (!benchmark) return;
-  game.set_render_resolution(renderResolution);
+  applyResolution();
   const restored=benchmark.restore;
   game.set_time(restored.hour);
+  game.set_antialiasing(antialiasing);
   $('diagnostics').classList.toggle('hidden',benchmark.diagnosticsHidden);
   if (benchmark.walking) {game.teleport(restored.x,restored.z);game.face(restored.yaw,restored.pitch);}
   else game.face(benchmark.yaw, benchmark.pitch);
   benchmark = null;
   state=game.state();saveProgress();
   $('benchmark-start').disabled = false;
+  $('benchmark-aa').disabled = false;
   $('benchmark-walk').disabled = false;
-  $('benchmark-result').textContent = (cancelled ? 'Interrupted; keep this tab visible to measure.\n' : '') + benchmarkReport.map(r => `${r.width} × ${r.actualHeight} · ${r.fps.toFixed(1)} FPS · p95 ${r.p95.toFixed(1)} ms · p99 ${r.p99.toFixed(1)} ms · CPU ${r.cpu.toFixed(1)} ms · ${r.hitches} frames >33 ms${r.walking ? ` · walked ${r.distance.toFixed(0)} m / ${r.chunks} chunks` : ""}`).join('\n');
+  $('benchmark-result').textContent = (cancelled ? 'Interrupted; keep this tab visible to measure.\n' : '') + benchmarkReport.map(r => `${["Off","FXAA","SMAA"][r.antialiasing]} · ${r.width} × ${r.actualHeight} · ${r.fps.toFixed(1)} FPS · p95 ${r.p95.toFixed(1)} ms · p99 ${r.p99.toFixed(1)} ms · CPU ${r.cpu.toFixed(1)} ms · ${r.hitches} frames >33 ms${r.walking ? ` · walked ${r.distance.toFixed(0)} m / ${r.chunks} chunks` : ""}`).join('\n');
   $('benchmark-result').setAttribute('data-report',JSON.stringify(benchmarkReport));
   if (!cancelled) openModal('settings');
 }
-function beginBenchmark(walking = false) {
-  if (!game || benchmark) return;
+function beginBenchmark(walking = false, compareAa = false) {
+  if (!game || benchmark || motionCapture) return;
+  state = game.state();
   benchmarkReport = [];
-  benchmark = {height:420,phase:'warm',since:performance.now(),samples:[],cpu:[],yaw:Number(state.yaw),pitch:Number(state.pitch),size:null,walking,hour:Number(state.dayTime ?? 9),diagnosticsHidden:$('diagnostics').classList.contains('hidden'),restore:{x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch,hour:Number(state.dayTime ?? 9)},chunks:new Set(),distance:0};
+  $('benchmark-result').textContent = ''; $('benchmark-result').setAttribute('data-report', '');
+  benchmark = {compareAa,aa:compareAa?0:antialiasing,height:420,phase:'warm',since:performance.now(),samples:[],cpu:[],yaw:Number(state.yaw),pitch:Number(state.pitch),size:null,walking,hour:Number(state.dayTime ?? 9),diagnosticsHidden:$('diagnostics').classList.contains('hidden'),restore:{x:state.x,z:state.z,yaw:state.yaw,pitch:state.pitch,hour:Number(state.dayTime ?? 9)},chunks:new Set(),distance:0};
   if (walking) {game.return_to_spawn();state=game.state();benchmark.yaw=state.yaw;benchmark.pitch=state.pitch;benchmark.hour=9;}
   $('diagnostics').classList.add('hidden');
   $('benchmark-start').disabled = true;
+  $('benchmark-aa').disabled = true;
+  game.set_antialiasing(benchmark.aa);
   $('benchmark-walk').disabled = true;
   closeModal(); clearMovement();
   game.set_render_resolution(420);
@@ -1138,7 +1242,7 @@ function updateBenchmark(now,gap) {
   if (b.phase === 'warm') {
     if (now-b.since < 3000 || (game.pending_chunks ? game.pending_chunks()>0 : (game.is_ready && !game.is_ready()))) return;
     b.phase='sample'; b.since=now; b.size=Array.from(game.render_resolution());b.walkStart=Number(state.walked || 0);
-    toast(`${b.height}p · ${b.walking ? 'walking across streaming boundaries' : 'measuring a slow camera sweep'}`,b.walking?30000:15000);
+    toast(`${['Off','FXAA','SMAA'][b.aa]} · ${b.height}p · ${b.walking ? 'walking across streaming boundaries' : 'measuring a slow camera sweep'}`,b.walking?30000:15000);
     return;
   }
   if (!b.walking) game.face(b.yaw + Math.sin((now-b.since)/15000*Math.PI*2)*0.20,b.pitch);
@@ -1147,11 +1251,16 @@ function updateBenchmark(now,gap) {
   if (now-b.since<(b.walking?30000:15000)) return;
   const values=[...b.samples].sort((a,b)=>a-b);
   const percentile=q=>values[Math.min(values.length-1,Math.floor(values.length*q))] || 0;
-  benchmarkReport.push({hour:b.hour,height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,gpuIntervals:state.gpuTimings,gpuDrawSpan:state.gpuRenderMs,worker:streamReady,pending:game.pending_chunks?.() ?? null,quality,groundCoverDensity,meadowCarpet,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
+  benchmarkReport.push({hour:b.hour,height:b.height,width:b.size[0],actualHeight:b.size[1],frames:values.length,fps:1000/(b.samples.reduce((a,b)=>a+b,0)/values.length),p95:percentile(.95),p99:percentile(.99),hitches:values.filter(t=>t>33.4).length,cpu:b.cpu.reduce((a,b)=>a+b,0)/Math.max(b.cpu.length,1),cover:Number(state.coverInstances),meshMB:Number(state.meshMegabytes),weather:state.weather?.kind||state.weather?.name||weatherMode,adapter:adapterLabel,gpuIntervals:state.gpuTimings,gpuDrawSpan:state.gpuRenderMs,worker:streamReady,pending:game.pending_chunks?.() ?? null,quality,groundCoverDensity,meadowCarpet,antialiasing:b.aa,adaptiveSuspended:adaptiveResolution,shadows:sunShadows,reflections,enclosure,walking:b.walking,distance:Number(state.walked || 0)-b.walkStart,chunks:b.chunks.size});
   if (b.height===420) {b.height=720;b.phase='warm';b.since=now;b.samples=[];b.cpu=[];b.chunks=new Set();if(b.walking){game.return_to_spawn();game.face(b.yaw,b.pitch);}game.set_render_resolution(720);toast('720p warm-up',3000);}
-  else finishBenchmark();
+  else if (b.compareAa && b.aa<2) {
+    b.aa++;b.height=420;b.phase='warm';b.since=now;b.samples=[];b.cpu=[];b.chunks=new Set();
+    game.set_antialiasing(b.aa);game.set_render_resolution(420);
+    toast(`${['Off','FXAA','SMAA'][b.aa]} · 420p warm-up`,3000);
+  } else finishBenchmark();
 }
 $('benchmark-start').addEventListener('click',()=>beginBenchmark(false));
+$('benchmark-aa').addEventListener('click',()=>beginBenchmark(false,true));
 $('benchmark-walk').addEventListener('click',()=>beginBenchmark(true));
 $('study-form').addEventListener('submit',event=>{
   event.preventDefault(); if(!game || benchmark)return;

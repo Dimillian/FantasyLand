@@ -983,6 +983,9 @@ impl Renderer {
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.post.set_filter(mode, strength);
     }
+    pub fn set_antialiasing(&mut self, mode: u32) {
+        self.post.set_antialiasing(&self.device, &self.queue, mode);
+    }
     pub fn set_shadows(&mut self, enabled: bool) {
         self.shadows_enabled = enabled;
     }
@@ -1835,6 +1838,7 @@ impl Renderer {
             &mut encoder,
             eye,
             view_projection,
+            self.scene.height() as f32 * 0.5 / 36.0_f32.to_radians().tan(),
             if self.meadow_enabled {
                 self.ground_cover_density
             } else {

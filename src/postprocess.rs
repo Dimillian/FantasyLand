@@ -28,6 +28,11 @@ pub struct PostProcess {
     horizontal: wgpu::RenderPipeline,
     vertical: wgpu::RenderPipeline,
     presentation: wgpu::RenderPipeline,
+    tone_map: wgpu::RenderPipeline,
+    aa: crate::antialias::AntiAlias,
+    aa_layout: wgpu::BindGroupLayout,
+    aa_presentation: wgpu::RenderPipeline,
+    aa_group: wgpu::BindGroup,
     scene_source: wgpu::BindGroup,
     presentation_group: wgpu::BindGroup,
     levels: Vec<Level>,
@@ -173,6 +178,36 @@ impl PostProcess {
             format,
         );
         let scene_source = Self::source(device, &source_layout, scene, &sampler);
+        let tone_map = pipeline(
+            "Display color before AA",
+            &shader,
+            &presentation_layout,
+            "fs_tonemap",
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let aa = crate::antialias::AntiAlias::new(device, size);
+        let aa_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("AA display composition"),
+            entries: &[texture(0), sampler_entry(1), uniform_entry(2)],
+        });
+        let aa_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("AA palette and CRT presentation"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("tonemap.wgsl"),
+                    include_str!("aa/present.wgsl")
+                )
+                .into(),
+            ),
+        });
+        let aa_presentation = pipeline(
+            "AA world presentation",
+            &aa_shader,
+            &aa_layout,
+            "fs_main",
+            format,
+        );
+        let aa_group = Self::aa_group(device, &aa_layout, aa.output(), &sampler, &uniform);
         let levels = Self::levels(device, &source_layout, &sampler, size);
         let presentation_group = Self::composition(
             device,
@@ -192,12 +227,43 @@ impl PostProcess {
             horizontal,
             vertical,
             presentation,
+            tone_map,
+            aa,
+            aa_layout,
+            aa_presentation,
+            aa_group,
             scene_source,
             presentation_group,
             levels,
             mode: 1,
             strength: 1.0,
         }
+    }
+    fn aa_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        uniform: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("AA display input"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform.as_entire_binding(),
+                },
+            ],
+        })
     }
     fn source(
         device: &wgpu::Device,
@@ -299,6 +365,14 @@ impl PostProcess {
         })
     }
     pub fn resize(&mut self, device: &wgpu::Device, scene: &wgpu::TextureView, size: [u32; 2]) {
+        self.aa.resize(device, size);
+        self.aa_group = Self::aa_group(
+            device,
+            &self.aa_layout,
+            self.aa.output(),
+            &self.sampler,
+            &self.uniform,
+        );
         self.levels = Self::levels(device, &self.source_layout, &self.sampler, size);
         self.scene_source = Self::source(device, &self.source_layout, scene, &self.sampler);
         self.presentation_group = Self::composition(
@@ -317,6 +391,9 @@ impl PostProcess {
         } else {
             1.0
         };
+    }
+    pub fn set_antialiasing(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mode: u32) {
+        self.aa.set_mode(device, queue, mode);
     }
     pub fn render(
         &self,
@@ -367,6 +444,24 @@ impl PostProcess {
                     profile.pass(9 + i as u32 * 3),
                 );
             }
+        }
+        if self.aa.mode != 0 {
+            Self::pass(
+                encoder,
+                self.aa.input(),
+                &self.tone_map,
+                &self.presentation_group,
+                None,
+            );
+            self.aa.render(encoder);
+            Self::pass(
+                encoder,
+                output,
+                &self.aa_presentation,
+                &self.aa_group,
+                profile.pass(16),
+            );
+            return;
         }
         Self::pass(
             encoder,

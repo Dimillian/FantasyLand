@@ -693,9 +693,11 @@ impl CoverLayer {
         encoder: &mut wgpu::CommandEncoder,
         eye: Vec3,
         projection: Mat4,
+        focal_pixels: f32,
         density: f32,
     ) {
-        self.meadow.begin(device, queue, eye, projection, density);
+        self.meadow
+            .begin(device, queue, eye, projection, focal_pixels, density);
         if density > 0. {
             for (&key, tile) in &self.tiles {
                 let distance = (eye.clamp(tile.bounds_min, tile.bounds_max) - eye).length();

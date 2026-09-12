@@ -1,3 +1,4 @@
+mod antialias;
 pub mod celestial;
 mod cloud_shadow;
 pub mod cover;
@@ -353,6 +354,9 @@ impl Game {
     }
     pub fn set_filter(&mut self, mode: u32, strength: f32) {
         self.renderer.set_filter(mode, strength);
+    }
+    pub fn set_antialiasing(&mut self, mode: u32) {
+        self.renderer.set_antialiasing(mode);
     }
     pub fn set_shadows(&mut self, enabled: bool) {
         self.renderer.set_shadows(enabled);

@@ -84,8 +84,11 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     let variation=0.90+f32(input.data.w&255u)/255.0*0.20;
     let pigment=tint*variation*mix(0.68,1.13,q.y);
     let n=normalize(vec3<f32>(-axis.y*0.26-ground.y,0.95,axis.x*0.26-ground.z));
+    let root_clip=u.view_projection*vec4<f32>(world_xz.x-u.camera.x,ground.x-u.camera.y,world_xz.y-u.camera.z,1.0);
+    let pixel_height=blade_height*u.settings.w*0.688191/max(root_clip.w,0.2);
+    let wind_detail=mix(0.35,1.0,smoothstep(2.0,10.0,pixel_height));
     var o=transform_vertex(VertexIn(vec3<f32>(world_xz.x,ground.x+q.y*blade_height-0.012,world_xz.y),
-        vec4<f32>(n,0.0),pigment,6.0+q.y*sqrt(widths.y)*0.4,vec2<f32>(q.x*0.5+0.5,q.y),-1.0));
+        vec4<f32>(n,0.0),pigment,6.0+q.y*sqrt(widths.y*wind_detail)*0.4,vec2<f32>(q.x*0.5+0.5,q.y),-1.0));
     // Part gently around the player. This is a local bend, never a simulation
     // over the entire continent; roots remain fixed and recover as we pass.
     let away=o.world.xz-u.camera.xz;let distance=length(away);
@@ -104,8 +107,11 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     let snow=smoothstep(0.02,0.80,u.surface.y)*sky*smoothstep(0.15,0.80,v.uv.y);
     // Quantized pigment stripes keep a procedural pixel-art character while
     // avoiding an alpha test, normal map or full material BRDF for every blade.
-    let pixel=hash21(floor(v.uv*vec2<f32>(4.0,16.0)));
-    let stripe=select(0.90,1.03,v.uv.x>0.52)*(0.95+pixel*0.10);
+    let texel=v.uv*vec2<f32>(4.0,16.0);
+    let footprint=max(length(dpdx(texel)),length(dpdy(texel)));
+    let pixel=mix(hash21(floor(texel)),0.5,smoothstep(0.6,1.6,footprint));
+    let broad=smoothstep(0.52-max(fwidth(v.uv.x),0.02),0.52+max(fwidth(v.uv.x),0.02),v.uv.x);
+    let stripe=mix(0.90,1.03,broad)*(0.95+pixel*0.10);
     var pigment=v.color*stripe*(1.0-u.surface.x*0.16*sky*(1.0-snow));
     pigment=mix(pigment,vec3<f32>(0.84,0.89,0.91),snow);
     let linear=pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2));

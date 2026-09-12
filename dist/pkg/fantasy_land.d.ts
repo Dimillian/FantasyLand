@@ -19,6 +19,7 @@ export class Game {
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     return_to_spawn(): void;
+    set_antialiasing(mode: number): void;
     set_async_streaming(enabled: boolean): void;
     set_enclosure(enabled: boolean): void;
     set_filter(mode: number, strength: number): void;
@@ -75,6 +76,7 @@ export interface InitOutput {
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_set_antialiasing: (a: number, b: number) => void;
     readonly game_set_async_streaming: (a: number, b: number) => void;
     readonly game_set_enclosure: (a: number, b: number) => void;
     readonly game_set_filter: (a: number, b: number, c: number) => void;
@@ -103,7 +105,7 @@ export interface InitOutput {
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__42: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__43: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

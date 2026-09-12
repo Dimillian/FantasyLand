@@ -2,7 +2,8 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert/strict');
 const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html'), 'utf8');
-const source = fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '');
+const adaptiveSource = fs.readFileSync(require('path').join(__dirname, '../dist/adaptive-resolution.js'), 'utf8').replace('export class', 'class');
+const source = adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '');
 class Element {
   constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
@@ -26,7 +27,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -41,7 +42,7 @@ function filterHarness(snapshot, destinations = []) {
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [];
+  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [], aaCalls = [];
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
@@ -55,6 +56,7 @@ function filterHarness(snapshot, destinations = []) {
     set_time:hour=>{rendererEvents.push(['time',hour]);playerState.dayTime=hour;},
     landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
+    set_antialiasing:value=>{aaCalls.push(value);},
     set_meadow:value=>{meadowCalls.push(value);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
     set_filter:(mode,strength)=>{filterCalls.push([mode,strength]);rendererEvents.push(['filter',mode,strength]);},
@@ -69,9 +71,9 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=meadow-1');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=aa-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyFilterSettings() {
@@ -118,6 +120,50 @@ async function verifyFilterSettings() {
   assert.equal(first.meadowCalls.at(-1),false);
   const meadowReload=filterHarness(first.saved()); await meadowReload.run('boot()');
   assert.deepEqual(meadowReload.meadowCalls,[false]);
+  assert.deepEqual(first.aaCalls,[1]);
+  first.ids.antialiasing.value='2'; first.ids.antialiasing.fire('change');
+  assert.equal(first.aaCalls.at(-1),2);
+  const aaReload=filterHarness(first.saved()); await aaReload.run('boot()');
+  assert.deepEqual(aaReload.aaCalls,[2]);
+  first.ids['adaptive-resolution'].value='on'; first.ids['adaptive-resolution'].fire('change');
+  assert.equal(first.resolutionCalls.at(-1),540); assert.equal(first.ids['render-resolution'].disabled,true);
+  const adaptiveReload=filterHarness(first.saved()); await adaptiveReload.run('boot()');
+  assert.equal(adaptiveReload.resolutionCalls.at(-1),540);
+  first.ids['adaptive-resolution'].value='off'; first.ids['adaptive-resolution'].fire('change');
+  assert.equal(first.resolutionCalls.at(-1),0); assert.equal(first.ids['render-resolution'].disabled,false);
+  assert.deepEqual(first.teleports,[[637,222]],'AA and adaptive settings must not move the player.');
+  const comparison=filterHarness({...existing, antialiasing:2, renderResolution:540, adaptiveResolution:true});
+  await comparison.run('boot()');comparison.run('initialReady=true; started=true; game.face(0,-0.1); beginBenchmark(false,true);');
+  let time=0;
+  for(let i=0;i<6;i++) {
+    time+=3100;comparison.run(`updateBenchmark(${time},16.667);`);
+    time+=15100;comparison.run(`updateBenchmark(${time},16.667);`);
+  }
+  const reports=JSON.parse(comparison.ids['benchmark-result'].attributes['data-report']);
+  assert.deepEqual(reports.map(r=>[r.antialiasing,r.height]),[[0,420],[0,720],[1,420],[1,720],[2,420],[2,720]]);
+  assert.equal(new Set(reports.map(r=>r.hour)).size,1,'All six passes must hold the same daylight.');
+  assert.equal(comparison.aaCalls.at(-1),2,'AA comparison must restore the selected mode.');
+  assert.equal(comparison.resolutionCalls.at(-1),540,'AA comparison must restore the adaptive target.');
+  assert.ok(reports.every(r=>r.adaptiveSuspended),'Fixed-resolution benchmarks suspend adaptation.');
+  comparison.run(`
+    var recorderStopped=0, trackStopped=0;
+    var oldRecorder;
+    MediaRecorder=class {
+      static isTypeSupported(){return true;}
+      constructor(){oldRecorder=this;this.state='inactive';this.mimeType='video/mp4';}
+      start(){this.state='recording';}
+      stop(){recorderStopped++;this.state='inactive';}
+    };
+    canvas.captureStream=()=>({getTracks:()=>[{stop(){trackStopped++;}}]});
+    game.set_time(8); game.teleport(637,222); state=game.state(); closeModal();
+  `);
+  comparison.ids['motion-record'].fire('click');
+  comparison.run("game.teleport(900,800); state=game.state(); motionCapture.recorder.start(); openModal('bag'); saveProgress(); oldRecorder.onstop();");
+  assert.equal(comparison.run('motionCapture'),null);
+  assert.equal(comparison.run('recorderStopped'),1); assert.equal(comparison.run('trackStopped'),1);
+  assert.equal(comparison.run('modal'),'bag','Opening a menu cancels automated walking first.');
+  assert.equal(comparison.saved().x,637); assert.equal(comparison.saved().z,222,'Cancel must save the restored position.');
+  assert.equal(comparison.ids['motion-status'].textContent,'Recording interrupted.','Stale async completion must not advertise an 8-second clip.');
   console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; v4 position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
 }
 
@@ -468,7 +514,9 @@ coordination.onmessage({data:{type:'claim',id:'second-view',stamp:ownClaim+100}}
 assert.equal(run('otherViewActive'),true);
 assert.equal(ids.world.attributes['data-render-active'],'false');
 const staleSave=stored['wayfarer.exploration.v4'];
-run('saveProgress(); renderFrame(1000);');
+run('adaptive.active=true; adaptive.stableSince=-60000; saveProgress(); renderFrame(1000);');
+assert.equal(run('adaptive.active'),false,'Paused view must actually freeze the governor through renderFrame.');
+assert.equal(run('lastFrame'),0);
 assert.equal(stored['wayfarer.exploration.v4'],staleSave,'paused previews cannot overwrite progress');
 run('claimRenderer();');assert.equal(run('otherViewActive'),false);
 const messageCount=coordination.messages.length;

@@ -5,7 +5,9 @@ fn filmic_display(radiance: vec3<f32>) -> vec3<f32> {
     return pow(mapped, vec3<f32>(1.0 / 2.2));
 }
 fn retro_display(radiance: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
-    let color = filmic_display(radiance);
+    return retro_palette(filmic_display(radiance), pixel);
+}
+fn retro_palette(color: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     let b = array<f32,16>(0.,8.,2.,10.,12.,4.,14.,6.,3.,11.,1.,9.,15.,7.,13.,5.);
     let p = vec2<u32>(pixel) % vec2<u32>(4u);
     let dither = (b[p.y * 4u + p.x] / 16.0 - 0.5) * 0.38;

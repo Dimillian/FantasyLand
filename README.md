@@ -194,3 +194,20 @@ browser frame intervals rather than inferred from triangle counts.
 
 See [the measured comparison](docs/performance-lighting-cache.md) for conditions,
 raw results and limitations of the current lighting-cache build.
+
+
+## Anti-aliasing and motion stability (local, September 12)
+
+Settings now has independent Off / FXAA / SMAA edge smoothing, with FXAA as the default.
+SMAA uses the three-pass High implementation and canonical area/search tables. Both modes
+run after bloom/tone mapping and before the pixel palette and CRT display; HUD text remains crisp.
+The dense meadow filters unresolved pigment detail, gently widens thin distant ribbons and
+scales wind with projected size and fade. Its near coverage and terrain anchoring are retained.
+
+Optional adaptive resolution targets 60 FPS within 420–720p without changing world quality,
+400% grass density or godrays. It uses sustained frame timing and cautious upward probes;
+the demanding forest can still fall below 60 FPS at the lower bound. Performance check can
+compare all AA modes at fixed daylight, or record an eight-second walk separately from measurement.
+
+See [implementation and validation](docs/antialiasing.md). The checkpoint before this change
+is `checkpoint/pre-antialiasing-20260912` (`c8fb458`). This experiment has not been deployed.
