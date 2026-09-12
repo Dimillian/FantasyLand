@@ -11,6 +11,8 @@ pub mod natural;
 mod plants;
 mod player;
 mod postprocess;
+pub mod precipitation;
+pub mod water_sim;
 pub mod regions;
 pub mod renderer;
 mod shadow;

@@ -2,9 +2,9 @@
 // Root contract: eight kinds x eight variants, 72 vertices per padded template.
 struct CoverTemplateVertex { position:vec4<f32>, normal:vec4<f32>, color:vec4<f32> };
 struct CoverTile { origin:vec4<f32>, grid:vec4<u32> };
-@group(1) @binding(0) var<storage,read> cover_templates:array<CoverTemplateVertex>;
-@group(1) @binding(1) var<storage,read> cover_heights:array<f32>;
-@group(1) @binding(2) var<uniform> cover_tile:CoverTile;
+@group(2) @binding(0) var<storage,read> cover_templates:array<CoverTemplateVertex>;
+@group(2) @binding(1) var<storage,read> cover_heights:array<f32>;
+@group(2) @binding(2) var<uniform> cover_tile:CoverTile;
 struct CoverIn {
     @location(0) placement:vec3<f32>,
     @location(1) rotation:vec2<f32>,

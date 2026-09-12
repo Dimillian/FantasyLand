@@ -319,6 +319,7 @@ impl CoverLayer {
     pub fn new(
         device: &wgpu::Device,
         uniform_layout: &wgpu::BindGroupLayout,
+        water_layout: &wgpu::BindGroupLayout,
         shader: &wgpu::ShaderModule,
         format: wgpu::TextureFormat,
     ) -> Self {
@@ -359,7 +360,7 @@ impl CoverLayer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cover pipeline layout"),
-            bind_group_layouts: &[uniform_layout, &layout],
+            bind_group_layouts: &[uniform_layout, water_layout, &layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -548,7 +549,7 @@ impl CoverLayer {
                 if count == 0 || !visible(tile.bounds_min, tile.bounds_max, eye, view_projection) {
                     continue;
                 }
-                pass.set_bind_group(1, &tile.group, &[]);
+                pass.set_bind_group(2, &tile.group, &[]);
                 pass.set_vertex_buffer(0, tile.instances.slice(..));
                 pass.draw(0..TEMPLATE_VERTICES, 0..count);
                 drawn_tiles += 1;

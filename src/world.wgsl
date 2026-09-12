@@ -26,6 +26,7 @@ struct Globals {
     weather: vec4<f32>, // cloud cover, rain, snow, fog
     storm: vec4<f32>,   // wind x/z m/s, gust, lightning
     surface: vec4<f32>, // wetness, accumulated snow, temperature C, weather seconds
+    precipitation_offset: vec4<f32>, // integrated rain x/z and snow x/z drift
     reflection_matrix: mat4x4<f32>,
     reflection_params: vec4<f32>,
     shelter_matrix: mat4x4<f32>,
@@ -162,16 +163,21 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
         // shore they converge to the exact clipped coastline; fine ripples are
         // confined to the water material, and freshwater heights stay unchanged.
         let depth = max(v.color.z - 1.0,0.0);
-        let direction = normalize(u.storm.xy + vec2<f32>(0.001,0.0));
+        let direction = vec2<f32>(0.86,0.510294);
         let crosswind = vec2<f32>(-direction.y,direction.x);
         let wind = smoothstep(2.0,22.0,length(u.storm.xy));
         let amplitude = (0.035 + wind * 0.31) * smoothstep(0.5,12.0,depth);
         let k = 0.06981317;
-        let phase = dot(p.xz,direction) * k - u.params.x * (0.55 + wind * 0.40);
+        let phase = dot(p.xz,direction) * k - u.params.x * 0.67;
         let cross_phase = dot(p.xz,direction * 0.62 + crosswind * 0.78) * k * 0.71 - u.params.x * 0.47;
         p.y += (sin(phase) + sin(cross_phase) * 0.48) * amplitude;
         let slope = (cos(phase) * direction + cos(cross_phase) * (direction * 0.62 + crosswind * 0.78) * 0.3408) * amplitude * k;
         surface_normal = normalize(vec3<f32>(-slope.x,1.0,-slope.y));
+    }
+    if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
+        let local = local_water(v.position);
+        let shore = smoothstep(0.02, 0.65, max(abs(v.color.z) - 1.0, 0.0));
+        p.y += local.height * shore;
     }
     o.clip = u.view_projection * vec4<f32>(p - u.camera.xyz, 1.0);
     o.world = p;
@@ -188,7 +194,7 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
 // Water inputs: color.xy is downstream velocity in metres/second, zero for
 // ocean/retained lakes. color.z retains signed depth (+sea,-freshwater), biased1.
 // Optional geometry-owned foam sheets reserve speed6..8; normal currents≤4.5.
-// No displacement: clipping, beaches and the walking-ground contract stay exact.
+// Local surface displacements taper to zero at the clipped shoreline.
 fn water_unit(v: vec2<f32>, fallback: vec2<f32>) -> vec2<f32> {
     let n = length(v);
     if n < 0.001 { return fallback; }
@@ -209,7 +215,7 @@ fn water_rain_slope(p: vec2<f32>, time: f32, rain: f32, detail: f32) -> vec2<f32
         let center = (cell + vec2<f32>(0.5) + jitter * 0.35) * 3.0;
         let delta = p - center;
         let radius = length(delta);
-        let age = fract(time * (0.62 + rain * 0.22) + seed);
+        let age = fract(time * 0.72 + seed);
         let front = 0.09 + age * 1.24;
         let band = radius - front;
         let envelope = (1.0 - smoothstep(0.035, 0.19, abs(band)))
@@ -232,7 +238,9 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let wind_vector = u.storm.xy;
     let wind_speed = length(wind_vector) * (1.0 + clamp(u.storm.z, 0.0, 1.0) * 0.25);
     let wind = smoothstep(0.4, 15.0, wind_speed);
-    let wind_direction = water_unit(wind_vector, vec2<f32>(0.91, -0.41));
+    // Fixed world-space wave vectors and frequencies: weather changes their
+    // energy, never rotates a phase field spanning hundreds of kilometres.
+    let wind_direction = vec2<f32>(0.910366, -0.413803);
     let flow = water_unit(channel.xy, wind_direction);
     let across = vec2<f32>(-wind_direction.y, wind_direction.x);
     let rain = clamp(u.weather.y, 0.0, 1.0);
@@ -241,23 +249,34 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let rain_detail = (1.0 - smoothstep(36.0, 115.0, distance))
                     * (1.0 - smoothstep(0.12, 0.48, footprint));
     let rapids = smoothstep(1.35, 3.45, river_speed) * stream;
-    let velocity = mix(wind_direction * wind_speed * 0.14, flow * river_speed, stream);
-    let moving = p - velocity * time;
+    // Dual-phase downstream advection only stretches a pattern for six seconds.
+    // The second sample takes over while the first resets invisibly.
+    let cycle = fract(time / 6.0);
+    let flow_weight = 0.5 - 0.5 * cos(cycle * 6.2831853);
+    let advect = flow * river_speed * stream;
+    let moving_a = p - advect * (cycle * 6.0);
+    let moving_b = p - advect * (fract(cycle + 0.5) * 6.0);
+    let local = local_water(world);
+    let sim_detail = local.weight * (1.0 - smoothstep(0.7, 2.4, footprint));
 
-    // Weather controls wavelength and amplitude. A calm lake retains readable
-    // terrain reflections; exposed seas develop broad swells and cross-ripples.
-    let wavelength = mix(4.8, 11.0 + wind * 13.0, ocean);
+    // Centimetre-scale surface waves keep calm-water reflections coherent.
+    // Simulated neighbours supply local waves; analytic detail handles sub-cell
+    // capillary ripples and the distant water outside the bounded grid.
+    let wavelength = mix(5.6, 18.0, ocean);
     let broad = 1.0 - smoothstep(wavelength * 0.10, wavelength * 0.40, footprint);
     let wave_k = 6.2831853 / wavelength;
-    let warp = noise(moving * 0.021) * 1.3;
-    let phase_a = dot(moving, wind_direction) * wave_k + warp;
-    let phase_b = dot(moving, wind_direction * 0.58 + across * 0.82) * wave_k * 1.72 - time * 0.22;
-    let phase_c = dot(moving, flow * 1.9 + vec2<f32>(-flow.y, flow.x) * 0.52) + warp * 2.0;
-    let amplitude = mix(0.0035, 0.016, ocean) + wind * mix(0.080, 0.145, ocean);
-    var slope = (wind_direction * cos(phase_a) + (wind_direction * 0.58 + across * 0.82) * cos(phase_b) * 0.42)
-              * amplitude * broad;
-    slope += flow * cos(phase_c) * (0.005 + rapids * 0.10 + wind * 0.023) * fine;
-    slope += water_rain_slope(p, time, rain, rain_detail);
+    let warp = noise(p * 0.021) * 0.55;
+    let phase_a = dot(p, wind_direction) * wave_k - time * 1.05 + warp;
+    let direction_b = wind_direction * 0.58 + across * 0.82;
+    let phase_b = dot(p, direction_b) * wave_k * 1.72 - time * 1.39;
+    let phase_c_a = dot(moving_a, flow * 1.9 + vec2<f32>(-flow.y, flow.x) * 0.52) + warp;
+    let phase_c_b = dot(moving_b, flow * 1.9 + vec2<f32>(-flow.y, flow.x) * 0.52) + warp;
+    let amplitude = mix(0.006, 0.014, ocean) + wind * mix(0.035, 0.075, ocean);
+    var slope = (wind_direction * cos(phase_a) + direction_b * cos(phase_b) * 0.42)
+              * amplitude * broad * (1.0 - sim_detail * 0.65);
+    slope += flow * mix(cos(phase_c_b), cos(phase_c_a), flow_weight) * (rapids * 0.075 + wind * 0.009) * fine;
+    slope += water_rain_slope(p, time, rain, rain_detail) * (1.0 - sim_detail * 0.75);
+    slope += local.slope * (1.0 - smoothstep(0.7, 2.4, footprint));
     let normal = normalize(normalize(surface_normal) - vec3<f32>(slope.x, 0.0, slope.y));
     let view = normalize(u.camera.xyz - world);
     let facing = clamp(dot(normal, view), 0.0, 1.0);
@@ -274,7 +293,11 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let visibility = sun_visibility(world, normal) * weather_light_visibility(world);
     let sky_fill = u.ambient.rgb * 0.76;
     let direct = u.direct.rgb * u.direct.w * max(dot(normal, normalize(u.light.xyz)), 0.0) * 0.34 * visibility;
-    var color = pigment * (sky_fill + direct) * (0.96 + noise(moving * 0.012) * 0.08);
+    var color = pigment * (sky_fill + direct) * (0.96 + noise(p * 0.012) * 0.08);
+
+    // Transmit the actual bed/rocks below the surface with depth-dependent
+    // absorption. Screen-space offsets reject foreground shoreline samples.
+    color = refracted_water(world, normal, color, rain, ocean);
 
     var reflected: vec3<f32>;
     // A sloping river is not a planar lake: keep its cheap, physically coherent
@@ -289,8 +312,8 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
 
     // Shallow caustics stay gentle and disappear in rough, turbid rainwater.
     let shallow = exp(-depth * 0.72) * has_depth;
-    let caustic_a = 1.0 - abs(sin(phase_c + sin(phase_a) * 0.74));
-    let caustic_b = 1.0 - abs(sin(phase_c * 0.73 - phase_b * 0.57));
+    let caustic_a = 1.0 - abs(mix(sin(phase_c_b + sin(phase_a) * 0.74), sin(phase_c_a + sin(phase_a) * 0.74), flow_weight));
+    let caustic_b = 1.0 - abs(mix(sin(phase_c_b * 0.73 - phase_b * 0.57), sin(phase_c_a * 0.73 - phase_b * 0.57), flow_weight));
     let caustic = smoothstep(0.69, 0.94, min(caustic_a, caustic_b));
     color += vec3<f32>(0.045, 0.068, 0.032) * caustic * shallow * fine * visibility
            * daylight() * (1.0 - rain * 0.75) * (1.0 - wind * 0.58);
@@ -314,17 +337,17 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let specular = distribution * masking * specular_fresnel / max(4.0 * nl * facing, 0.025);
     color += u.direct.rgb * u.direct.w * nl * specular * 2.8 * visibility;
 
-    let broken = smoothstep(0.32, 0.76, noise(moving * vec2<f32>(0.13, 0.23)));
-    let riffle = smoothstep(0.52, 0.91, sin(phase_c + sin(phase_b) * 0.80));
+    let broken = smoothstep(0.32, 0.76, mix(noise(moving_b * vec2<f32>(0.13, 0.23)), noise(moving_a * vec2<f32>(0.13, 0.23)), flow_weight));
+    let riffle = smoothstep(0.52, 0.91, mix(sin(phase_c_b + sin(phase_b) * 0.80), sin(phase_c_a + sin(phase_b) * 0.80), flow_weight));
     let turbulent = rapids * riffle * (0.20 + broken * 0.80)
                   * (0.25 + (1.0 - smoothstep(1.2, 7.0, depth)) * 0.75) * fine;
     let shore_zone = smoothstep(0.05, 0.23, depth) * (1.0 - smoothstep(0.65, 2.8, depth));
-    let wash = smoothstep(0.64, 0.94, sin(depth * 2.0 - time * (0.72 + wind * 0.70) + warp * 2.3));
+    let wash = smoothstep(0.64, 0.94, sin(depth * 2.0 - time * 0.86 + warp * 2.3));
     let surf = ocean * shore_zone * wash * (0.12 + wind * 0.64) * broken * fine;
     let whitecap = ocean * smoothstep(0.48, 0.90, wind) * smoothstep(0.91, 0.995, sin(phase_a))
                  * broken * broad * (1.0 - smoothstep(900.0, 2800.0, distance));
     let cascade = sheet * (0.48 + 0.52 * riffle) * (0.42 + broken * 0.58) * near;
-    let foam = clamp(turbulent * 0.64 + surf * 0.64 + whitecap * 0.28 + cascade * 0.84, 0.0, 0.92);
+    let foam = clamp(turbulent * 0.64 + surf * 0.64 + whitecap * 0.28 + cascade * 0.84 + local.foam * fine * 0.72, 0.0, 0.92);
     let foam_light = (u.ambient.rgb * 0.64 + u.direct.rgb * u.direct.w * nl * 0.48 * visibility)
                    * vec3<f32>(0.80, 0.88, 0.84);
     color = mix(color, foam_light, foam);
@@ -573,7 +596,7 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     return result;
 }
 
-@fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
+fn shade_surface(v: VertexOut) -> vec4<f32> {
     if u.reflection_params.z > 0.5 && (v.world.y < u.reflection_params.x - 0.12
         || (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
     let distance = length(v.world - u.camera.xyz);
@@ -636,6 +659,18 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     // Preserve HDR through fog and Bloom. Palette quantization happens once at
     // presentation, so bright sun, spray and lightning retain their energy.
     return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
+}
+
+@fragment fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
+    return shade_surface(v);
+}
+@fragment fn fs_land(v: VertexOut) -> @location(0) vec4<f32> {
+    if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) { discard; }
+    return shade_surface(v);
+}
+@fragment fn fs_water(v: VertexOut) -> @location(0) vec4<f32> {
+    if !((v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
+    return shade_surface(v);
 }
 
 struct SkyOut {

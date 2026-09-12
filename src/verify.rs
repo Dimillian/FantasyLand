@@ -41,7 +41,8 @@ fn main() {
         world.seed,
         spawn
     );
-    if !filters_only
+    if check.as_deref() != Some("fluid")
+        && !filters_only
         && !grounding_only
         && !roads_only
         && !coasts_only
@@ -58,6 +59,72 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("fluid") {
+        let probe =
+            fantasy_land::water_sim::WaterSim::verify_gpu(&renderer.device, &renderer.queue)
+                .expect("physical GPU water probes");
+        fs::write(
+            format!("{dir}/fluid-probe.json"),
+            serde_json::to_string_pretty(&probe).unwrap(),
+        )
+        .unwrap();
+        println!("Physical GPU water: {probe:?}");
+        let x = -8909.148;
+        let z = -77660.938;
+        let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
+        let yaw = -0.2618038;
+        renderer.set_render_resolution(450);
+        renderer.set_weather_mode(1);
+        renderer.update_weather(&world, eye, 10., 0.);
+        for _ in 0..120 {
+            renderer.update_weather(&world, eye, 10., 0.1);
+        }
+        renderer.update_chunks(&world, eye - glam::Vec3::Y * 1.72, true);
+        while renderer.pending_count() > 0 {
+            renderer.update_chunks(&world, eye - glam::Vec3::Y * 1.72, false);
+        }
+        let mut reports = Vec::new();
+        for (mode, label) in [(1, "clear"), (3, "rain"), (5, "tempest")] {
+            renderer.set_weather_mode(mode);
+            for _ in 0..120 {
+                renderer.update_weather(&world, eye, 10., 0.1);
+            }
+            let mut frames = Vec::new();
+            for i in 0..180 {
+                renderer.advance_time(1.0 / 30.0);
+                renderer.update_weather(&world, eye, 10., 1.0 / 30.0);
+                let start = Instant::now();
+                renderer.render(eye, yaw, -0.0438113, 10.).unwrap();
+                renderer.device.poll(wgpu::PollType::Wait).unwrap();
+                if i >= 30 {
+                    frames.push(start.elapsed().as_secs_f64() * 1000.);
+                }
+                if i % 30 == 0 {
+                    save_png(
+                        &format!("{dir}/{label}-{:02}.png", i / 30),
+                        1280,
+                        720,
+                        &renderer.capture_rgba().unwrap(),
+                    );
+                }
+            }
+            let frozen = renderer.capture_rgba().unwrap();
+            renderer.render(eye, yaw, -0.0438113, 10.).unwrap();
+            assert_pixels_equal(
+                &frozen,
+                &renderer.capture_rgba().unwrap(),
+                "rendering alone must not advance water/rain",
+            );
+            reports.push(serde_json::json!({"mode":label,"meanNativeCompletedFrameMs":frames.iter().sum::<f64>()/frames.len() as f64,"frozenFrameExact":true}));
+        }
+        fs::write(
+            format!("{dir}/fluid-render.json"),
+            serde_json::to_string_pretty(&reports).unwrap(),
+        )
+        .unwrap();
+        println!("GPU fluid rendering passed: evolving clear/rain/tempest water, unchanged frozen frames, depth refraction and reflection");
+        return;
+    }
     if check.as_deref() == Some("lightning") {
         renderer.set_quality(1);
         renderer.set_render_resolution(720);

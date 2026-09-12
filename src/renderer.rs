@@ -4,6 +4,7 @@ use crate::{
     horizon::{self, PATCH_SIZE},
     postprocess::PostProcess,
     shadow::{ShadowMap, SHADOW_RADIUS, SHADOW_SIZE},
+    water_sim::WaterSim,
     world::World,
 };
 use bytemuck::{Pod, Zeroable};
@@ -34,6 +35,7 @@ struct Globals {
     weather: [f32; 4],
     storm: [f32; 4],
     surface: [f32; 4],
+    precipitation_offset: [f32; 4],
     reflection_matrix: [[f32; 4]; 4],
     reflection_params: [f32; 4],
     shelter_matrix: [[f32; 4]; 4],
@@ -81,11 +83,15 @@ impl ReflectionTarget {
         };
         let color = make(
             wgpu::TextureFormat::Rgba16Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
         );
         let depth = make(
             wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
         );
         Self {
             view: color.create_view(&Default::default()),
@@ -102,6 +108,9 @@ pub struct Renderer {
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     world_pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
+    water_sim: WaterSim,
+    precipitation: crate::precipitation::PrecipitationMotion,
     sky_pipeline: wgpu::RenderPipeline,
     post: PostProcess,
     shadow: ShadowMap,
@@ -114,6 +123,7 @@ pub struct Renderer {
     reflections_enabled: bool,
     enclosure_enabled: bool,
     reflection: ReflectionTarget,
+    refraction: ReflectionTarget,
     _reflection_fallback: ReflectionTarget,
     reflection_sampler: wgpu::Sampler,
     uniform_layout: wgpu::BindGroupLayout,
@@ -252,7 +262,9 @@ impl Renderer {
                     "\n",
                     include_str!("lighting.wgsl"),
                     "\n",
-                    include_str!("environment.wgsl")
+                    include_str!("environment.wgsl"),
+                    "\n",
+                    include_str!("water_sampling.wgsl")
                 )
                 .into(),
             ),
@@ -262,9 +274,18 @@ impl Renderer {
             contents: bytemuck::bytes_of(&Globals::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let water_sim = WaterSim::new(&device);
         let shadow = ShadowMap::new(&device);
         let shelter = ShadowMap::with_size(&device, 512);
         let reflection = ReflectionTarget::new(&device, 320, 180);
+        let refraction_size = scene_dimensions(
+            width,
+            height,
+            1,
+            0,
+            device.limits().max_texture_dimension_2d.min(4096),
+        );
+        let refraction = ReflectionTarget::new(&device, refraction_size[0], refraction_size[1]);
         let reflection_fallback = ReflectionTarget::new(&device, 1, 1);
         let reflection_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Water reflection sampler"),
@@ -332,6 +353,26 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let uniform_group = Self::environment_group(
@@ -342,6 +383,7 @@ impl Renderer {
             &shelter,
             &reflection.view,
             &reflection_sampler,
+            &refraction,
         );
         let reflected_group = Self::environment_group(
             &device,
@@ -351,52 +393,57 @@ impl Renderer {
             &shelter,
             &reflection_fallback.view,
             &reflection_sampler,
+            &refraction,
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
-            bind_group_layouts: &[&uniform_layout],
+            bind_group_layouts: &[&uniform_layout, &water_sim.layout],
             push_constant_ranges: &[],
         });
         let attributes =
             wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32];
-        let world_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Flat shaded wilderness"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let surface_pipeline = |entry| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Flat shaded wilderness"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let world_pipeline = surface_pipeline("fs_land");
+        let water_pipeline = surface_pipeline("fs_water");
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Sky"),
             layout: Some(&pipeline_layout),
@@ -439,6 +486,7 @@ impl Renderer {
         let cover = CoverLayer::new(
             &device,
             &uniform_layout,
+            &water_sim.layout,
             &shader,
             wgpu::TextureFormat::Rgba16Float,
         );
@@ -482,6 +530,9 @@ impl Renderer {
             surface,
             config,
             world_pipeline,
+            water_pipeline,
+            water_sim,
+            precipitation: Default::default(),
             sky_pipeline,
             post,
             shadow,
@@ -494,6 +545,7 @@ impl Renderer {
             reflections_enabled: true,
             enclosure_enabled: true,
             reflection,
+            refraction,
             _reflection_fallback: reflection_fallback,
             reflection_sampler,
             uniform_layout,
@@ -583,12 +635,14 @@ impl Renderer {
         };
         let scene = make(
             wgpu::TextureFormat::Rgba16Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             "Linear HDR world",
         );
         let depth = make(
             wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             "World depth",
         );
         let sv = scene.create_view(&Default::default());
@@ -603,6 +657,7 @@ impl Renderer {
         shelter: &ShadowMap,
         reflection: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
+        refraction: &ReflectionTarget,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Shared landscape environment"),
@@ -632,6 +687,14 @@ impl Renderer {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&refraction.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&refraction.depth),
+                },
             ],
         })
     }
@@ -641,6 +704,8 @@ impl Renderer {
         let width = (self.scene.width() as f32 * scale).round().max(1.0) as u32;
         let height = (self.scene.height() as f32 * scale).round().max(1.0) as u32;
         self.reflection = ReflectionTarget::new(&self.device, width, height);
+        self.refraction =
+            ReflectionTarget::new(&self.device, self.scene.width(), self.scene.height());
         self.uniform_group = Self::environment_group(
             &self.device,
             &self.uniform_layout,
@@ -649,6 +714,17 @@ impl Renderer {
             &self.shelter,
             &self.reflection.view,
             &self.reflection_sampler,
+            &self.refraction,
+        );
+        self.reflected_group = Self::environment_group(
+            &self.device,
+            &self.uniform_layout,
+            &self.reflected_uniform,
+            &self.shadow,
+            &self.shelter,
+            &self._reflection_fallback.view,
+            &self.reflection_sampler,
+            &self.refraction,
         );
         self.reflection_valid = false;
     }
@@ -1008,6 +1084,8 @@ impl Renderer {
         self.atmosphere_position = Some(position);
     }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
+        self.water_sim
+            .update_world(&self.queue, world, position + Vec3::Y * 1.72);
         self.update_atmosphere(world, position);
         if self.weather_system.is_none() || self.weather_seed != world.seed {
             self.update_weather(world, position, 9.0, 0.0);
@@ -1152,7 +1230,14 @@ impl Renderer {
             }
     }
     pub fn advance_time(&mut self, dt: f32) {
-        let dt = dt.clamp(0.0, 0.1);
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        self.precipitation
+            .advance(dt, [self.weather_state.wind_x, self.weather_state.wind_z]);
+        self.water_sim.advance_time(dt);
         self.elapsed = (self.elapsed + dt).rem_euclid(86400.0);
         self.shelter_elapsed += dt;
         self.reflection_elapsed += dt;
@@ -1261,6 +1346,7 @@ impl Renderer {
             weather: weather.weather,
             storm: weather.storm,
             surface: weather.surface,
+            precipitation_offset: self.precipitation.uniform(),
             reflection_matrix: (self.reflection_projection
                 * Mat4::from_translation(eye - self.reflection_origin))
             .to_cols_array_2d(),
@@ -1316,6 +1402,12 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("World frame"),
             });
+        self.water_sim.encode(
+            &self.queue,
+            &mut encoder,
+            weather.rain,
+            [weather.wind_x, weather.wind_z],
+        );
         // Shadows only submit nearby terrain and substantial props. Grass receives
         // their shade without submitting tens of thousands of tiny shadow casters.
         if shadow_active {
@@ -1406,6 +1498,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.reflected_group, &[]);
+            pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_pipeline(&self.sky_pipeline);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&self.world_pipeline);
@@ -1459,6 +1552,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.uniform_group, &[]);
+            pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_pipeline(&self.sky_pipeline);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(&self.world_pipeline);
@@ -1482,10 +1576,7 @@ impl Renderer {
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
             for chunk in self.chunks.values() {
-                for mesh in [&chunk.terrain, &chunk.props, &chunk.water]
-                    .into_iter()
-                    .flatten()
-                {
+                for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
                     if !bounds_visible(&frustum, mesh.bounds, eye) {
                         continue;
                     }
@@ -1497,6 +1588,58 @@ impl Renderer {
             self.cover_drawn_instances =
                 self.cover
                     .draw(&mut pass, eye, view_projection, self.ground_cover_density);
+        }
+        // Separate opaque and water passes avoid sampling the current attachment.
+        // Depth rejects foreground samples along distorted shoreline pixels.
+        let extent = self.scene.size();
+        encoder.copy_texture_to_texture(
+            self.scene.as_image_copy(),
+            self.refraction._color.as_image_copy(),
+            extent,
+        );
+        encoder.copy_texture_to_texture(
+            self.depth.as_image_copy(),
+            self.refraction._depth.as_image_copy(),
+            extent,
+        );
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Refractive water and precipitation"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.scene_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.water_pipeline);
+            pass.set_bind_group(0, &self.uniform_group, &[]);
+            pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
+            for mesh in self.horizon.values().chain(
+                self.chunks
+                    .values()
+                    .filter_map(|chunk| chunk.water.as_ref()),
+            ) {
+                if !bounds_visible(&frustum, mesh.bounds, eye) {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
             if weather.rain > 0.01 || weather.snow > 0.01 {
                 pass.set_pipeline(&self.precip_pipeline);
                 pass.set_bind_group(0, &self.uniform_group, &[]);
