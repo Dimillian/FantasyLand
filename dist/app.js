@@ -625,7 +625,7 @@ function updateCharacter() {
   $('character-mana').textContent = `${Math.round(resource('mana'))} / 100`;
   $('character-stamina').textContent = `${Math.round(resource('stamina'))} / 100`;
   $('character-place').textContent = state.siteName || 'The Wilds';
-  $('character-biome').textContent = niceName(state.landscape || state.biome || 'Wilderness');
+  $('character-biome').textContent = niceName(state.forest || state.landscape || state.biome || 'Wilderness');
   $('character-position').textContent = `${Math.round(Math.abs(state.x || 0))} ${state.x >= 0 ? 'E' : 'W'} · ${Math.round(Math.abs(state.z || 0))} ${state.z >= 0 ? 'S' : 'N'}`;
   $('character-altitude').textContent = `${Math.round(state.altitude ?? state.y ?? 0)} m`;
   $('character-walked').textContent = fmtDistance(Number(state.walked || 0));
@@ -646,7 +646,7 @@ function updateHUD(now) {
     const major = i % 3 === 0;
     return `<span class="${major ? '' : 'minor'}" style="left:${diff * compassWidth / 120}px">${major ? headings[i / 3] : '·'}</span>`;
   }).join('');
-  const biome = niceName(state.landscape || state.biome || 'Wilderness');
+  const biome = niceName(state.forest || state.landscape || state.biome || 'Wilderness');
   $('biome-label').textContent = biome;
   $('place-name').textContent = state.siteName || 'The Wilds';
   $('clock').textContent = formatTime(state.dayTime);
@@ -739,7 +739,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=forest-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=forest-2',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -837,8 +837,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=forest-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=forest-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=forest-2');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=forest-2', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -855,7 +855,7 @@ async function boot() {
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'forest-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'forest-2' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }

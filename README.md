@@ -232,3 +232,9 @@ tapered conifer sprays. Distant leaves use one atlas lookup and a lightweight
 wet sheen; directional shadows, wind and godrays remain. See
 [forest foliage notes](docs/forest-foliage.md) for exact changes, Safari scene
 observations and validation limits.
+# Forest communities
+
+Five recurring forest communities now mix tall canopy trees, sapling patches,
+shrubs and ferns. Use **Settings → World tools → Explore landscape** to visit
+them. See [forest communities](docs/forest-communities.md) for the procedural art
+direction, rendering budgets and verification details.

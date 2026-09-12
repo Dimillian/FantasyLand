@@ -1078,8 +1078,8 @@ mod tests {
             projection
         ));
         assert!(visible(
-            Vec3::new(-3., -2., -400.),
-            Vec3::new(3., 4., -390.),
+            Vec3::new(-3., -2., -COVER_DISTANCE - 5.),
+            Vec3::new(3., 4., -COVER_DISTANCE + 5.),
             eye,
             projection
         ));

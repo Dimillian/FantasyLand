@@ -52,6 +52,7 @@ struct GameState {
     pitch: f32,
     biome: String,
     landscape: String,
+    forest: Option<String>,
     grounded: bool,
     stamina: f32,
     health: f32,
@@ -196,6 +197,14 @@ impl Game {
             yaw: p.yaw,
             pitch: p.pitch,
             biome: sample.biome.name().to_string(),
+            forest: (ecology::tree_density(self.world.seed, p.position.x, p.position.z, &sample)
+                > 0.34)
+                .then(|| {
+                    ecology::forest_stand(self.world.seed, p.position.x, p.position.z, &sample)
+                        .kind
+                        .name()
+                        .to_string()
+                }),
             landscape: if sample.ocean {
                 "Ocean".into()
             } else {

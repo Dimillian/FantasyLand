@@ -6,6 +6,93 @@ use crate::{
     world::{hash, rand01, Biome, Sample, ShoreKind},
 };
 
+/// Forest communities sit inside climate biomes. They repeat in suitable
+/// regions and blend through species weights, rather than changing the land.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForestKind {
+    Oakwood,
+    BirchGrove,
+    TallPines,
+    CathedralFirs,
+    Wetwood,
+}
+impl ForestKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Oakwood => "Oak & beech woodland",
+            Self::BirchGrove => "Silver birch grove",
+            Self::TallPines => "Tall pine & heath forest",
+            Self::CathedralFirs => "Cathedral fir forest",
+            Self::Wetwood => "Willow & alder wetwood",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ForestStand {
+    pub kind: ForestKind,
+    /// Oak/beech, birch, pine, fir, willow, snag.
+    pub species: [f32; 6],
+    pub stature: f32,
+    pub regeneration: f32,
+}
+pub fn forest_stand(seed: u32, x: f32, z: f32, s: &Sample) -> ForestStand {
+    forest_in(seed, x, z, s, &regions::sample(seed, x, z, s))
+}
+fn forest_thicket(seed: u32, x: f32, z: f32) -> f32 {
+    smooth(0.30, 0.66, field(seed ^ 0x46544849, x / 31., z / 31.))
+}
+pub fn forest_in(seed: u32, x: f32, z: f32, s: &Sample, region: &Landscape) -> ForestStand {
+    let warp = field(seed ^ 0x46575250, x / 1700., z / 1700.) * 240.;
+    let stand = field(seed ^ 0x464f5245, (x + warp) / 780., (z - warp) / 780.);
+    let cool = if s.biome == Biome::PineForest {
+        0.78
+    } else {
+        smooth(0.61, 0.30, s.temperature) * 0.65
+    };
+    let wet = if s.biome == Biome::Wetland {
+        1.
+    } else {
+        smooth(0.68, 0.9, region.wetness) * 0.8
+    };
+    let birch = (region.pale * 0.85 + (1. - (stand - 0.50).abs() * 7.).max(0.) * 0.68).min(0.9);
+    let needle = (cool + smooth(0.59, 0.79, stand) * 0.64).min(0.92) * (1. - region.ancient * 0.30);
+    let fir = smooth(0.32, 0.70, s.moisture * 0.65 + stand * 0.35);
+    let weights = [
+        (1. - needle) * (1. - birch) * (1. - wet),
+        (1. - needle) * birch * (1. - wet),
+        needle * (1. - fir) * (1. - wet),
+        needle * fir * (1. - wet),
+        wet,
+    ];
+    // Sharpen the interiors while retaining continuous ecotones: each forest
+    // has a recognizable dominant species, plus its companion trees.
+    let weights = weights.map(|w| w * w * w);
+    let weight_sum = weights.iter().sum::<f32>().max(0.00001);
+    let weights = weights.map(|w| w / weight_sum);
+    let recipes = [
+        [0.55, 0.17, 0.10, 0.14, 0., 0.04],
+        [0.18, 0.61, 0.08, 0.09, 0., 0.04],
+        [0.07, 0.12, 0.60, 0.17, 0., 0.04],
+        [0.06, 0.11, 0.19, 0.60, 0., 0.04],
+        [0.21, 0.24, 0.03, 0.04, 0.44, 0.04],
+    ];
+    let index = (0..5)
+        .max_by(|&a, &b| weights[a].total_cmp(&weights[b]))
+        .unwrap();
+    ForestStand {
+        kind: [
+            ForestKind::Oakwood,
+            ForestKind::BirchGrove,
+            ForestKind::TallPines,
+            ForestKind::CathedralFirs,
+            ForestKind::Wetwood,
+        ][index],
+        species: std::array::from_fn(|i| (0..5).map(|j| weights[j] * recipes[j][i]).sum()),
+        stature: 1.0 + needle * 0.18 + region.ancient * 0.12,
+        regeneration: smooth(0.44, 0.70, field(seed ^ 0x46594f55, x / 43., z / 43.)),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Ecology {
     /// Occupancy probability on the shared 12-meter tree candidate grid.
@@ -22,6 +109,7 @@ pub struct Ecology {
     /// Stable community pigment and flower group: cream0, gold1, blue2.
     pub cover_color: [f32; 3],
     pub flower_group: u32,
+    pub undergrowth: f32,
 }
 fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
@@ -56,7 +144,13 @@ pub fn tree_density(seed: u32, x: f32, z: f32, terrain: &Sample) -> f32 {
     }
     tree_density_in(seed, x, z, terrain, &regions::sample(seed, x, z, terrain))
 }
-fn tree_density_in(seed: u32, x: f32, z: f32, terrain: &Sample, region: &Landscape) -> f32 {
+pub(crate) fn tree_density_in(
+    seed: u32,
+    x: f32,
+    z: f32,
+    terrain: &Sample,
+    region: &Landscape,
+) -> f32 {
     if terrain.ocean
         || terrain.shore != ShoreKind::None
         || matches!(terrain.biome, Biome::Alpine | Biome::Desert)
@@ -117,9 +211,12 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
             reeds: 0.0,
             cover_color: mix([0.42, 0.49, 0.25], [0.59, 0.61, 0.34], clump),
             flower_group: 0,
+            undergrowth: 0.,
         };
     }
     let trees = tree_density_in(seed, x, z, terrain, &region);
+    let thicket = forest_thicket(seed, x, z);
+    let interior = smooth(0.22, 0.78, trees);
     let open = 1.0 - smooth(0.08, 0.75, trees);
     let bloom_field = field(seed ^ 0x4543464c, x / 76.0, z / 76.0);
     let patch = smooth(0.47, 0.72, bloom_field) * smooth(0.22, 0.64, clump);
@@ -144,12 +241,15 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         Biome::Desert => 0.055,
     };
     let mut flowers = if temperate {
-        patch * open * (0.40 + region.soil * 0.25)
+        patch * (open + interior * 0.09) * (0.40 + region.soil * 0.25)
     } else {
         0.0
     };
     let mut ferns = if temperate {
-        wet_bank * (0.09 + trees * 0.69) * fern_patch * (1.0 - region.exposure * 0.60)
+        (0.18 + wet_bank * 0.82)
+            * (0.09 + trees * 0.82)
+            * fern_patch
+            * (1.0 - region.exposure * 0.60)
     } else {
         0.0
     };
@@ -167,7 +267,7 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
     };
     let edge = smooth(0.02, 0.22, trees) * (1.0 - smooth(0.55, 0.9, trees));
     let mut shrubs = if temperate || terrain.biome == Biome::Moor {
-        (edge * 0.28 + dry * 0.10) * smooth(0.26, 0.68, clump)
+        (edge * 0.25 + dry * 0.10) * smooth(0.26, 0.68, clump) + interior * thicket * 0.44
     } else {
         0.0
     };
@@ -205,7 +305,9 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
     };
     Ecology {
         tree_density: trees,
-        grass_density: (base * (0.67 + clump * 0.47) * (1.0 - region.rockiness * 0.48))
+        grass_density: ((base + interior * thicket * 0.22 + ferns * 0.22)
+            * (0.67 + clump * 0.47)
+            * (1.0 - region.rockiness * 0.48))
             .clamp(0.0, 0.86),
         grass_height: if matches!(terrain.biome, Biome::Desert | Biome::Alpine) {
             0.61
@@ -221,6 +323,7 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         reeds,
         cover_color: mix(grass_color, [0.58, 0.49, 0.25], dry * 0.30),
         flower_group,
+        undergrowth: interior * thicket,
     }
 }
 
@@ -366,6 +469,44 @@ mod tests {
         let mut s = temperate();
         s.water_height = s.height + 0.2;
         assert_eq!(tree_density(1337, 500., 100., &s), 0.0);
+    }
+    #[test]
+    fn forests_have_blended_species_regeneration_and_interior_colonies() {
+        let mut kinds = std::collections::HashSet::new();
+        let mut colonies = 0;
+        let mut gaps = 0;
+        for biome in [Biome::Forest, Biome::PineForest, Biome::Wetland] {
+            let mut terrain = temperate();
+            terrain.biome = biome;
+            for z in -20..20 {
+                for x in -20..20 {
+                    let px = x as f32 * 533.;
+                    let pz = z as f32 * 533.;
+                    terrain.moisture = 0.25 + (x + 20) as f32 / 40. * 0.55;
+                    let a = forest_stand(1337, px, pz, &terrain);
+                    let b = forest_stand(1337, px + 1., pz, &terrain);
+                    assert!((a.species.iter().sum::<f32>() - 1.).abs() < 0.0001);
+                    assert!(a.species.iter().filter(|&&w| w > 0.05).count() >= 3);
+                    assert!(a
+                        .species
+                        .iter()
+                        .zip(b.species)
+                        .all(|(a, b)| (a - b).abs() < 0.015));
+                    assert_eq!(a.species, forest_stand(1337, px, pz, &terrain).species);
+                    kinds.insert(a.kind.name());
+                    let e = sample(1337, px, pz, &terrain);
+                    if e.tree_density > 0.75 {
+                        colonies += usize::from(e.shrubs > 0.15 || e.ferns > 0.20);
+                        gaps += usize::from(e.shrubs < 0.06 && e.ferns < 0.10);
+                    }
+                }
+            }
+        }
+        assert_eq!(kinds.len(), 5, "missing forest families: {kinds:?}");
+        assert!(
+            colonies > 30 && gaps > 10,
+            "colonies={colonies} gaps={gaps}"
+        );
     }
     #[test]
     fn saltwater_excludes_plants_and_exposed_shores_have_only_sparse_grass() {

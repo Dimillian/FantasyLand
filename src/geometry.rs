@@ -845,7 +845,8 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         return None;
     }
     let region = crate::regions::sample(world.seed, x, z, &sample);
-    let density = ecology::tree_density(world.seed, x, z, &sample);
+    let density = ecology::tree_density_in(world.seed, x, z, &sample, &region);
+    let forest = ecology::forest_in(world.seed, x, z, &sample, &region);
     let formation = region.rockiness > 0.44
         && region.formation_strength > 0.18
         && formation_cell(world.seed, gx, gz)
@@ -854,7 +855,7 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         && sample.shore == crate::world::ShoreKind::None;
     let species = random(seed, 6);
     let detail = random(seed, 8);
-    let mut kind = if sample.shore != crate::world::ShoreKind::None {
+    let kind = if sample.shore != crate::world::ShoreKind::None {
         if pick < 0.035 {
             PropKind::Boulder
         } else {
@@ -871,61 +872,33 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     } else if formation {
         PropKind::Boulder
     } else if pick < density {
-        match sample.biome {
-            Biome::Forest => {
-                if species < 0.43 {
-                    PropKind::Broadleaf
-                } else if species < 0.67 {
-                    PropKind::Birch
-                } else if species < 0.83 {
-                    PropKind::Fir
-                } else if species < 0.96 {
-                    PropKind::Pine
-                } else {
-                    PropKind::DeadTree
+        if sample.biome == Biome::Moor {
+            if species < 0.5 {
+                PropKind::DeadTree
+            } else if species < 0.8 {
+                PropKind::Birch
+            } else {
+                PropKind::Pine
+            }
+        } else {
+            let kinds = [
+                PropKind::Broadleaf,
+                PropKind::Birch,
+                PropKind::Pine,
+                PropKind::Fir,
+                PropKind::Willow,
+                PropKind::DeadTree,
+            ];
+            let mut cumulative = 0.;
+            let mut selected = PropKind::DeadTree;
+            for (kind, weight) in kinds.into_iter().zip(forest.species) {
+                cumulative += weight;
+                if species < cumulative {
+                    selected = kind;
+                    break;
                 }
             }
-            Biome::PineForest => {
-                if species < 0.46 {
-                    PropKind::Fir
-                } else if species < 0.82 {
-                    PropKind::Pine
-                } else if species < 0.96 {
-                    PropKind::Birch
-                } else {
-                    PropKind::DeadTree
-                }
-            }
-            Biome::Grassland => {
-                if species < 0.60 {
-                    PropKind::Broadleaf
-                } else if species < 0.88 {
-                    PropKind::Birch
-                } else if species < 0.97 {
-                    PropKind::Pine
-                } else {
-                    PropKind::DeadTree
-                }
-            }
-            Biome::Wetland => {
-                if species < 0.61 {
-                    PropKind::Willow
-                } else if species < 0.87 {
-                    PropKind::Birch
-                } else {
-                    PropKind::Broadleaf
-                }
-            }
-            Biome::Moor => {
-                if species < 0.52 {
-                    PropKind::DeadTree
-                } else if species < 0.80 {
-                    PropKind::Birch
-                } else {
-                    PropKind::Pine
-                }
-            }
-            _ => return None,
+            selected
         }
     } else if detail < density * 0.075 {
         if species < 0.64 {
@@ -946,24 +919,6 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     } else {
         return None;
     };
-    if matches!(
-        kind,
-        PropKind::Broadleaf | PropKind::Birch | PropKind::Pine | PropKind::Fir
-    ) && region.pale > 0.5
-        && species < 0.70
-    {
-        kind = PropKind::Birch;
-    }
-    if matches!(sample.biome, Biome::Grassland | Biome::Forest)
-        && region.ancient > 0.62
-        && matches!(
-            kind,
-            PropKind::Broadleaf | PropKind::Birch | PropKind::Pine | PropKind::Fir
-        )
-        && species < 0.57
-    {
-        kind = PropKind::Broadleaf;
-    }
     // Shape, palette and growth are shared by rendering, distant proxies and collision.
     let grove_scale = if matches!(
         kind,
@@ -1003,6 +958,8 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         kind,
         biome: sample.biome,
         style: PropStyle {
+            stature: forest.stature,
+            regeneration: forest.regeneration,
             ancient: region.ancient,
             pale: region.pale,
             exposure: region.exposure,
@@ -1167,15 +1124,16 @@ fn props_for_pass(
                         PropKind::Stump => stump(&mut mesh, p),
                         PropKind::Boulder => landscape_rock(&mut mesh, p),
                         PropKind::Shrub => {
-                            let color = mul([0.27, 0.34, 0.14], 0.86 + random(p.seed, 12) * 0.24);
-                            polyhedron(
-                                &mut mesh,
-                                [p.position[0], p.position[1] + 0.6 * p.scale, p.position[2]],
-                                [1.25 * p.scale, 0.95 * p.scale, 1.10 * p.scale],
-                                p.seed,
-                                color,
-                                1.0,
-                            );
+                            let shrub = crate::plants::template(6, p.seed % 8);
+                            for mut v in shrub.vertices {
+                                v.position = std::array::from_fn(|i| {
+                                    p.position[i] + v.position[i] * p.scale
+                                });
+                                v.color = mul([0.26, 0.40, 0.18], v.color[1]);
+                                v.material = 1.05;
+                                mesh.vertices.push(v);
+                                mesh.indices.push((mesh.vertices.len() - 1) as u32);
+                            }
                         }
                         PropKind::Reed => reeds(&mut mesh, p),
                     }
@@ -1344,12 +1302,17 @@ fn anchor_prop(world: &World, mesh: &mut MeshData, first: usize, p: Prop, lod: u
             } else {
                 vertex.position[1] = vertex.position[1].min(ground - 0.15);
             }
-            if matches!(p.kind, PropKind::Reed) {
+            if matches!(p.kind, PropKind::Reed | PropKind::Shrub) {
                 vertex.material = 1.4 - (relative / (p.scale * 1.5)).clamp(0.0, 1.0) * 0.4;
             }
         }
     }
     for triangle in mesh.vertices[first..].chunks_exact_mut(3) {
+        // Grounding moves the roots, not the canopy. Preserve its volume
+        // normals instead of replacing them with flat card-face lighting.
+        if !drape && matches!(triangle[0].texture, 5.0 | 6.0) {
+            continue;
+        }
         let u = sub(triangle[1].position, triangle[0].position);
         let v = sub(triangle[2].position, triangle[0].position);
         let n = [
@@ -3830,6 +3793,8 @@ pub(crate) fn cover_template(kind: u32, variant: u32) -> MeshData {
 
 #[derive(Clone, Copy, Debug)]
 struct PropStyle {
+    stature: f32,
+    regeneration: f32,
     ancient: f32,
     pale: f32,
     exposure: f32,
@@ -3844,6 +3809,8 @@ struct PropStyle {
 impl Default for PropStyle {
     fn default() -> Self {
         Self {
+            stature: 1.,
+            regeneration: 0.,
             ancient: 0.,
             pale: 0.,
             exposure: 0.,
@@ -3866,11 +3833,11 @@ enum TreeAge {
 }
 fn tree_age(p: Prop) -> TreeAge {
     let choice = random(p.seed, 501);
-    if choice < p.style.ancient * 0.65 + 0.008 {
+    if choice < p.style.ancient * 0.20 + 0.025 {
         TreeAge::Ancient
     } else if p.style.exposure > 0.58 && random(p.seed, 502) < p.style.exposure {
         TreeAge::Windswept
-    } else if choice > 0.82 {
+    } else if choice > 0.87 - p.style.regeneration * 0.40 {
         TreeAge::Young
     } else {
         TreeAge::Mature
@@ -3880,6 +3847,7 @@ fn tree_radius(p: Prop) -> f32 {
     let species = match p.kind {
         PropKind::Pine => 0.38,
         PropKind::Fir => 0.37,
+        PropKind::Broadleaf if p.biome == Biome::Wetland => 0.40,
         PropKind::Broadleaf => 0.64,
         PropKind::Willow => 0.65,
         PropKind::Birch => 0.24,
@@ -3888,7 +3856,7 @@ fn tree_radius(p: Prop) -> f32 {
     species
         * p.scale
         * match tree_age(p) {
-            TreeAge::Young => 0.64,
+            TreeAge::Young => 0.38,
             TreeAge::Ancient => 1.16,
             _ => 1.,
         }
@@ -3929,11 +3897,12 @@ fn tree_model(p: Prop) -> TreeModel {
     let age = tree_age(p);
     // One species can grow round oak-like crowns or taller beech-like forms.
     // The same deterministic scaffold drives both near cards and far proxies.
-    let upright =
-        p.kind == PropKind::Broadleaf && random(p.seed, 1437) > 0.64 && age != TreeAge::Windswept;
+    let upright = p.kind == PropKind::Broadleaf
+        && (p.biome == Biome::Wetland || random(p.seed, 1437) > 0.64)
+        && age != TreeAge::Windswept;
     let yaw = random(p.seed, 503) * TAU;
     let age_height = match age {
-        TreeAge::Young => 0.70,
+        TreeAge::Young => 0.30 + random(p.seed, 500) * 0.16,
         TreeAge::Ancient => 1.12,
         TreeAge::Windswept => 0.85,
         _ => 1.,
@@ -3946,7 +3915,8 @@ fn tree_model(p: Prop) -> TreeModel {
         PropKind::Willow => 8.5 + random(p.seed, 271) * 4.,
         _ => 6. + random(p.seed, 281) * 5.,
     } * p.scale
-        * age_height)
+        * age_height
+        * p.style.stature)
         .min(if matches!(p.kind, PropKind::Pine | PropKind::Fir) {
             64.
         } else {
@@ -4017,42 +3987,31 @@ fn tree_model(p: Prop) -> TreeModel {
     let green = mix(green, [0.58, 0.64, 0.47], pale * 0.75);
     if matches!(p.kind, PropKind::Pine | PropKind::Fir) {
         let fir = p.kind == PropKind::Fir;
-        let levels = match age {
-            TreeAge::Young => 3,
-            TreeAge::Ancient => {
-                if fir {
-                    6
-                } else {
-                    5
-                }
-            }
-            _ => {
-                if fir {
-                    5
-                } else {
-                    4
-                }
-            }
+        let levels = if age == TreeAge::Young {
+            3
+        } else if fir || age == TreeAge::Ancient {
+            5
+        } else {
+            4
         };
-        let spokes = if fir { 2 } else { 3 };
+        let spokes = 3;
         for level in 0..levels {
             let f = level as f32 / (levels as f32);
             let coastal = age == TreeAge::Windswept && !fir;
             let y = h
-                * ((if fir {
-                    0.18
-                } else if coastal {
-                    0.46
+                * ((if age == TreeAge::Young {
+                    0.15
+                } else if fir {
+                    0.32
                 } else {
-                    0.31
-                }) + f
-                    * (if fir {
-                        0.68
-                    } else if coastal {
-                        0.36
-                    } else {
-                        0.54
-                    }));
+                    0.53
+                }) + f * if age == TreeAge::Young {
+                    0.72
+                } else if fir {
+                    0.57
+                } else {
+                    0.36
+                });
             let start = stem_at(&model, y);
             let spread =
                 h * (if fir {
@@ -4083,17 +4042,15 @@ fn tree_model(p: Prop) -> TreeModel {
                     r1: radius * 0.04,
                 });
                 model.crowns.push(TreeCrown {
-                    center: [end[0], end[1] + h * 0.065, end[2]],
+                    center: [
+                        start[0] + (end[0] - start[0]) * 0.62,
+                        end[1] + h * 0.025,
+                        start[2] + (end[2] - start[2]) * 0.62,
+                    ],
                     radii: [
-                        spread * (if fir { 0.80 } else { 0.68 }),
-                        h * (if fir {
-                            0.15
-                        } else if coastal {
-                            0.055
-                        } else {
-                            0.11
-                        }) * (1. - f * 0.36),
-                        spread * (if fir { 0.65 } else { 0.53 }),
+                        spread * if fir { 0.63 } else { 0.57 },
+                        h * 0.064 * (1. - f * 0.36),
+                        reach * 0.82,
                     ],
                     yaw: a,
                     seed: hash(p.seed, n as i32, 591),
@@ -4464,10 +4421,42 @@ fn foliage_card(
 fn crown_cards(mesh: &mut MeshData, p: Prop, c: TreeCrown) {
     crown_cards_lod(mesh, p, c, false, false);
 }
+#[derive(Clone, Copy)]
+struct CrownCard {
+    center: [f32; 3],
+    side: [f32; 3],
+    rise: [f32; 3],
+    color: [f32; 3],
+    texture: f32,
+    pendant: bool,
+}
 fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, cap: bool) {
+    let center = std::array::from_fn(|i| p.position[i] + c.center[i]);
+    visit_crown_cards(p, c, reduced, cap, |card| {
+        foliage_card(
+            mesh,
+            card.center,
+            card.side,
+            card.rise,
+            card.color,
+            card.texture,
+            card.pendant,
+            center,
+            c.radii,
+        );
+    });
+}
+fn visit_crown_cards(
+    p: Prop,
+    c: TreeCrown,
+    reduced: bool,
+    cap: bool,
+    mut emit: impl FnMut(CrownCard),
+) {
     let center: [f32; 3] = std::array::from_fn(|i| p.position[i] + c.center[i]);
     let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
     let willow = p.kind == PropKind::Willow;
+    let leader = conifer && c.seed == p.seed ^ 613;
     let count = if conifer {
         3
     } else if p.kind == PropKind::Broadleaf {
@@ -4482,9 +4471,31 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
             continue;
         }
         let jitter = (random(c.seed, 1400 + i) - 0.5) * 0.22;
-        let yaw = c.yaw + i as f32 * 1.96350 + jitter;
+        let yaw = if conifer && !leader {
+            c.yaw + (i as f32 - 1.) * 0.38 + jitter
+        } else {
+            c.yaw + i as f32 * 1.96350 + jitter
+        };
         let width = ((yaw.cos() * c.radii[0]).powi(2) + (yaw.sin() * c.radii[2]).powi(2)).sqrt();
-        let (tilt, half_width, half_height, lift) = if conifer {
+        let (tilt, half_width, half_height, lift) = if conifer && !leader {
+            // Wide radial shelves, with an inclined upper spray for volume.
+            // Each card depicts a bough rather than another little tree.
+            if i == 2 {
+                (
+                    0.78 + jitter,
+                    c.radii[0] * 0.63,
+                    c.radii[2] * 0.70,
+                    c.radii[1] * 0.24,
+                )
+            } else {
+                (
+                    0.18 + i as f32 * 0.23 + jitter * 0.3,
+                    c.radii[0],
+                    c.radii[2],
+                    0.,
+                )
+            }
+        } else if conifer {
             // Open, overlapping needle sprays replace the old solid cones.
             // A third inclined spray gives each branch volume from above.
             if i == 2 {
@@ -4531,17 +4542,14 @@ fn crown_cards_lod(mesh: &mut MeshData, p: Prop, c: TreeCrown, reduced: bool, ca
             center[1] + lift,
             center[2] + yaw.cos() * c.radii[2] * 0.18 - jitter * c.radii[2] * 0.25,
         ];
-        foliage_card(
-            mesh,
-            base,
+        emit(CrownCard {
+            center: base,
             side,
             rise,
-            mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
-            if conifer { 6. } else { 5. },
-            willow && i < count - 1,
-            center,
-            c.radii,
-        );
+            color: mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
+            texture: if conifer { 6. } else { 5. },
+            pendant: willow && i < count - 1,
+        });
     }
 }
 
@@ -5349,19 +5357,25 @@ fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
         let mut high = [f32::NEG_INFINITY; 3];
         let mut color = [0.; 3];
         for c in members {
+            let mut local = p;
+            local.position = [0.; 3];
+            // Reuse the actual card recipe without allocating a temporary mesh.
+            // Rotation, leader, taper and shelf inclination all affect bounds.
+            visit_crown_cards(local, *c, false, false, |card| {
+                let top = if card.texture == 6. {
+                    1. - crate::materials::NEEDLE_CARD_INSET * 2.
+                } else {
+                    1.
+                };
+                for (sx, sy) in [(-1., -1.), (1., -1.), (-top, 1.), (top, 1.)] {
+                    for axis in 0..3 {
+                        let v = card.center[axis] + card.side[axis] * sx + card.rise[axis] * sy;
+                        low[axis] = low[axis].min(v);
+                        high[axis] = high[axis].max(v);
+                    }
+                }
+            });
             for axis in 0..3 {
-                let lower = if conifer && axis == 1 {
-                    c.radii[axis] * 0.24
-                } else {
-                    c.radii[axis]
-                };
-                let upper = if conifer && axis == 1 {
-                    c.radii[axis] * 0.75
-                } else {
-                    c.radii[axis]
-                };
-                low[axis] = low[axis].min(c.center[axis] - lower);
-                high[axis] = high[axis].max(c.center[axis] + upper);
                 color[axis] += c.color[axis] / members.len() as f32;
             }
         }
@@ -5732,6 +5746,65 @@ mod character_asset_tests {
             std::hint::black_box(blocks_player(&w, x + (i as f32 * 0.031), z));
         }
         println!("{formations} real formations, {neighbor_probes} neighboring-cell collider probes; representative [{x},{z}]; repeated collision mean {:.3}ms",now.elapsed().as_secs_f64()*10.);
+    }
+    #[test]
+    fn grounding_retains_crown_normals_and_fixes_shrub_roots_in_wind() {
+        let w = World::new(1337);
+        let [x, z] = w.spawn();
+        let p = Prop {
+            position: [x, terrain_surface_height(&w, x, z) - 0.08, z],
+            scale: 1.,
+            canopy: 1.,
+            seed: 44,
+            kind: PropKind::Fir,
+            biome: Biome::Forest,
+            style: PropStyle::default(),
+        };
+        let mut mesh = MeshData::default();
+        render_tree(&mut mesh, p, false);
+        let normals: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.texture == 6.)
+            .map(|v| v.normal)
+            .collect();
+        anchor_prop(&w, &mut mesh, 0, p, 0);
+        assert_eq!(
+            normals,
+            mesh.vertices
+                .iter()
+                .filter(|v| v.texture == 6.)
+                .map(|v| v.normal)
+                .collect::<Vec<_>>()
+        );
+        let mut shrub = crate::plants::template(6, 1);
+        for v in &mut shrub.vertices {
+            for i in 0..3 {
+                v.position[i] += p.position[i];
+            }
+            v.material = 1.05;
+        }
+        let roots: Vec<_> = shrub
+            .vertices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| (v.position[1] - p.position[1]).abs() < 0.001)
+            .map(|(i, _)| i)
+            .collect();
+        anchor_prop(
+            &w,
+            &mut shrub,
+            0,
+            Prop {
+                kind: PropKind::Shrub,
+                ..p
+            },
+            0,
+        );
+        assert!(!roots.is_empty());
+        for i in roots {
+            assert!((shrub.vertices[i].material - 1.4).abs() < 0.001);
+        }
     }
     #[test]
     fn near_foliage_uses_bounded_cutout_cards_and_keeps_far_proxies() {

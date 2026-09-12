@@ -317,70 +317,100 @@ impl Plant {
     }
 
     fn broadleaf(&mut self) {
-        // This card represents a crown patch several metres across, rather
-        // than a single botanical branch. Small leaf clusters read at the same
-        // scale as trunk and ground textures, with open windows for sun shafts.
-        // No shared stalk: the real three-dimensional branches support it.
-        let clusters = [
-            [16.0, 18.0],
-            [32.0, 12.0],
-            [47.0, 22.0],
-            [13.0, 37.0],
-            [32.0, 32.0],
-            [48.0, 42.0],
-            [29.0, 52.0],
+        // An asymmetric branch network: dense leaf masses separated by a few
+        // readable windows, not identical rosettes with holes in their centers.
+        let branches = [
+            ([31., 59.], [15., 36.], [10., 23.]),
+            ([31., 59.], [33., 31.], [29., 9.]),
+            ([31., 48.], [47., 34.], [52., 19.]),
+            ([30., 51.], [18., 48.], [7., 41.]),
+            ([33., 45.], [44., 48.], [55., 44.]),
         ];
-        for (cluster, center) in clusters.into_iter().enumerate() {
-            let cluster = cluster as i32;
-            for leaf in 0..9 {
-                let ring = leaf as f32 * std::f32::consts::TAU / 8.0 + hash(cluster, 0, 219) * 0.53;
-                let radius = if leaf == 8 {
-                    0.0
-                } else {
-                    6.8 + hash(cluster, leaf, 825) * 2.1
-                };
-                let x = center[0] + ring.cos() * radius + (hash(cluster, leaf, 411) - 0.5) * 1.6;
-                let y = center[1] + ring.sin() * radius + (hash(cluster, leaf, 912) - 0.5) * 1.6;
-                let angle = ring + (hash(cluster, leaf, 923) - 0.5) * 2.2;
-                self.leaf(
-                    [x, y],
-                    4.3 + hash(cluster, leaf, 927) * 0.95,
-                    2.5 + hash(cluster, leaf, 933) * 0.65,
-                    angle,
-                    0.50 + hash(cluster, leaf, 946) * 0.22,
-                );
+        for (root, elbow, tip) in branches {
+            self.line(root, elbow, 0.85, 0.40);
+            self.line(elbow, tip, 0.6, 0.44);
+        }
+        let clusters = [
+            [12., 25.],
+            [27., 13.],
+            [35., 30.],
+            [49., 23.],
+            [15., 44.],
+            [47., 44.],
+        ];
+        // Rear leaves establish dark coherent volumes; the upper fringe gets
+        // warm facets. Pigment stays neutral enough for regional species tint.
+        for pass in 0..2 {
+            for (cluster, center) in clusters.into_iter().enumerate() {
+                let k = cluster as i32;
+                for leaf in 0..7 {
+                    let angle = hash(k, leaf, 913) * std::f32::consts::TAU;
+                    let radius = hash(k, leaf, 817).sqrt() * 8.;
+                    let pos = [
+                        center[0] + angle.cos() * radius,
+                        center[1] + angle.sin() * radius - pass as f32 * 1.7,
+                    ];
+                    self.leaf(
+                        pos,
+                        4.1 + hash(k, leaf, 819) * 1.6,
+                        2.0 + hash(k, leaf, 829) * 1.1,
+                        angle * 0.4 - 1.1,
+                        0.42 + pass as f32 * 0.15 + hash(k, leaf, 821) * 0.10,
+                    );
+                }
             }
         }
     }
 
     fn conifer(&mut self) {
-        self.line([32.0, 62.0], [32.0, 5.0], 0.75, 0.46);
-        for side in [-1.0_f32, 1.0] {
-            for row in 0..8 {
-                let r = row as f32;
-                let y = 56.0 - r * 6.3;
-                let span = 25.0 - r * 2.7;
-                let root = [32.0, y];
-                let end = [32.0 + side * span, y - 7.0];
-                self.line(root, end, 0.55, 0.51);
-                for needle in 0..8 {
-                    let t = (needle as f32 + 0.4) / 8.0;
+        // A single irregular bough. Its two sides have different branch lengths
+        // and overlapping needle fans, leaving gaps between the branch tiers.
+        self.line([32., 62.], [29., 36.], 0.85, 0.40);
+        self.line([29., 36.], [33., 5.], 0.65, 0.46);
+        for row in 0..6 {
+            let y = [53., 44., 35., 27., 19., 11.][row as usize];
+            for side in [-1.0_f32, 1.] {
+                let k = row * 2 + if side > 0. { 1 } else { 0 };
+                let span = (24. - row as f32 * 2.7) * (0.78 + hash(k, 0, 427) * 0.22);
+                let root = [30.5, y + hash(k, 1, 428) * 2.];
+                let tip = [root[0] + side * span, y - 4.5 - hash(k, 2, 429) * 3.];
+                self.line(root, tip, 0.6, 0.45);
+                for twig in 0..4 {
+                    let t = (twig as f32 + 0.75) / 4.;
                     let center = [
-                        root[0] + (end[0] - root[0]) * t,
-                        root[1] + (end[1] - root[1]) * t,
+                        root[0] + (tip[0] - root[0]) * t,
+                        root[1] + (tip[1] - root[1]) * t,
                     ];
-                    let angle = if side > 0.0 { -0.92 } else { -2.22 };
-                    self.leaf(
-                        center,
-                        3.4 - r * 0.15,
-                        0.95,
-                        angle,
-                        0.55 + hash(row, needle, 444) * 0.15,
-                    );
+                    for fan in 0..3 {
+                        let angle =
+                            if side > 0. { -0.85 } else { -2.29 } + (fan as f32 - 1.) * 0.48;
+                        let length = 3.7 + hash(k, twig, 439) * 1.5 - row as f32 * 0.12;
+                        self.leaf(
+                            [
+                                center[0] + side * fan as f32 * 0.65,
+                                center[1] - fan as f32 * 0.35,
+                            ],
+                            length,
+                            1.35,
+                            angle,
+                            0.47 + t * 0.13 + hash(k, twig, 442) * 0.08,
+                        );
+                    }
                 }
             }
         }
-        self.leaf([32.0, 6.0], 4.0, 1.2, -1.57, 0.74);
+        self.leaf([33., 7.], 4.8, 1.7, -1.5, 0.71);
+        // The drawable shape shares the exact trapezoid used by every mesh
+        // pass; a one-pixel margin avoids clipping leaf edges at base mip.
+        for y in 0..DRAW {
+            let inset = NEEDLE_CARD_INSET * (1. - (y as f32 + 0.5) / DRAW as f32);
+            for x in 0..DRAW {
+                let u = (x as f32 + 0.5) / DRAW as f32;
+                if u < inset + 0.012 || u > 1. - inset - 0.012 {
+                    self.pixels[y * DRAW + x].alpha = 0.;
+                }
+            }
+        }
     }
 
     fn grass(&mut self) {
@@ -412,8 +442,8 @@ impl Plant {
         self.line([32.0, 63.0], [30.0, 4.0], 0.75, 0.58);
         for row in 0..11 {
             let t = (row as f32 + 0.5) / 11.0;
-            let y = 58.0 - t * 51.0;
-            let span = 4.0 + (t * std::f32::consts::PI).sin() * 18.0;
+            let y = 58.0 - t * 51.0 + (hash(row, 0, 591) - 0.5) * 1.6;
+            let span = 4.0 + (t * std::f32::consts::PI).sin() * 19.0;
             for side in [-1.0_f32, 1.0] {
                 let root = [32.0 - t * 2.0, y];
                 let end = [root[0] + side * span, y - 8.0];
@@ -426,8 +456,8 @@ impl Plant {
                     ];
                     self.leaf(
                         center,
-                        3.1 - f * 0.4,
-                        1.5,
+                        3.7 - f * 0.8,
+                        1.65,
                         if side > 0.0 { -0.9 } else { -2.24 },
                         0.58 + f * 0.11 + t * 0.025,
                     );

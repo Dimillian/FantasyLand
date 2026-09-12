@@ -64,7 +64,8 @@ pub fn cell(
         Biome::Wetland => 0.83 + 0.17 * vigor,
         Biome::Moor => 0.52 + 0.24 * vigor,
         Biome::Alpine | Biome::Desert => 0.,
-    } * slope_factor;
+    } * slope_factor
+        * (1. - e.undergrowth * 0.38 - e.ferns * 0.14);
     if coverage < 0.04 {
         return None;
     }

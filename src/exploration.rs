@@ -26,6 +26,7 @@ pub fn destinations(world: &World) -> Vec<Destination> {
         LandscapeKind::Alpine,
     ];
     let mut chosen: [Option<(f32, Destination)>; 7] = std::array::from_fn(|_| None);
+    let mut forests: [Option<(f32, Destination)>; 5] = std::array::from_fn(|_| None);
     for iz in -62..=62 {
         for ix in -62..=62 {
             let x = ix as f32 * 2900.0 + 731.0;
@@ -36,6 +37,26 @@ pub fn destinations(world: &World) -> Vec<Destination> {
             }
             let r = regions::sample(world.seed, x, z, &s);
             let trees = ecology::tree_density(world.seed, x, z, &s);
+            if trees > 0.72 && r.slope < 0.4 {
+                let forest = ecology::forest_in(world.seed, x, z, &s, &r);
+                let i = forest.kind as usize;
+                let score = trees * 4. - r.slope * 3. + forest.regeneration * 0.4;
+                if forests[i].as_ref().is_none_or(|old| score > old.0)
+                    && !crate::geometry::blocks_player(world, x, z)
+                    && crate::geometry::walk_height(world, x, z) > s.water_height + 0.40
+                {
+                    forests[i] = Some((
+                        score,
+                        Destination {
+                            name: forest.kind.name(),
+                            x,
+                            z,
+                            yaw: 1.4,
+                            pitch: 0.12,
+                        },
+                    ));
+                }
+            }
             let score = -r.slope.min(5.0) * 8.0
                 + match r.kind {
                     LandscapeKind::AncientWoodland => trees * 12.0 + r.ancient * 10.0,
@@ -68,11 +89,39 @@ pub fn destinations(world: &World) -> Vec<Destination> {
             }
         }
     }
-    chosen
+    let mut result: Vec<_> = chosen
         .into_iter()
         .flatten()
         .map(|(_, p)| scenic_view(world, p))
-        .collect()
+        .collect();
+    result.extend(
+        forests
+            .into_iter()
+            .flatten()
+            .map(|(_, p)| forest_view(world, p)),
+    );
+    result
+}
+
+/// Choose a view between nearby trunks, keeping the actual generated location.
+pub fn forest_view(world: &World, mut p: Destination) -> Destination {
+    let mut best = f32::NEG_INFINITY;
+    for i in 0..16 {
+        let yaw = i as f32 * std::f32::consts::TAU / 16.;
+        let mut score = yaw.sin() * 0.8;
+        for distance in (3..28).step_by(3) {
+            let d = distance as f32;
+            if crate::geometry::blocks_player(world, p.x + yaw.sin() * d, p.z - yaw.cos() * d) {
+                score -= (28. - d) * 0.20;
+                break;
+            }
+        }
+        if score > best {
+            best = score;
+            p.yaw = yaw;
+        }
+    }
+    p
 }
 
 /// Find a reachable nearby viewpoint using terrain sightlines. This does not
@@ -177,7 +226,7 @@ mod tests {
     fn tour_arrivals_are_on_rendered_dry_ground_and_clear_of_trunks() {
         let world = World::new(1337);
         let points = destinations(&world);
-        assert_eq!(points.len(), 7);
+        assert_eq!(points.len(), 12);
         for p in points {
             let water = world.natural_sample(p.x, p.z).water_height;
             assert!(

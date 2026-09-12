@@ -27,6 +27,7 @@ fn main() {
     let regions_only = check.as_deref() == Some("regions");
     let vista_only = check.as_deref() == Some("vista");
     let foliage_only = check.as_deref() == Some("foliage");
+    let forests_only = check.as_deref() == Some("forests");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -52,6 +53,7 @@ fn main() {
         && !regions_only
         && !vista_only
         && !foliage_only
+        && !forests_only
     {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
@@ -62,16 +64,16 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
-    if check.as_deref() == Some("materials") || foliage_only {
+    if check.as_deref() == Some("materials") || foliage_only || forests_only {
         renderer.set_quality(if foliage_only { 2 } else { 1 });
         renderer.set_render_resolution(720);
         renderer.set_ground_cover_density(4.0);
         renderer.set_filter(1, 1.0);
-        if foliage_only {
+        if foliage_only || forests_only {
             renderer.set_antialiasing(1);
         }
         let mut reports = Vec::new();
-        for (name, x, z, yaw, pitch, hour, weather) in [
+        let mut scenes = vec![
             (
                 "orins-woodland",
                 109764.,
@@ -102,13 +104,69 @@ fn main() {
                 1,
             ),
             ("moonwater", -8909.148, -77660.938, -0.2618, 0.12, 23.0, 1),
-        ] {
+        ];
+        if forests_only {
+            // Select actual forests from the seed, without changing their
+            // species, planting density, terrain or rendering settings.
+            let mut found = std::collections::BTreeMap::new();
+            for z in -55..55 {
+                for x in -55..55 {
+                    let px = x as f32 * 2400. + 97.;
+                    let pz = z as f32 * 2400. + 173.;
+                    let s = world.sample(px, pz);
+                    if s.ocean || s.road > 0.01 || s.water_height > s.height - 3. {
+                        continue;
+                    }
+                    let e = fantasy_land::ecology::sample(seed, px, pz, &s);
+                    if e.tree_density < 0.74 {
+                        continue;
+                    }
+                    let region = fantasy_land::regions::sample(seed, px, pz, &s);
+                    if region.slope > 0.32 || geometry::blocks_player(&world, px, pz) {
+                        continue;
+                    }
+                    let stand = fantasy_land::ecology::forest_in(seed, px, pz, &s, &region);
+                    let score = e.ferns + e.shrubs + e.tree_density * 0.4;
+                    let entry = found.entry(stand.kind.name()).or_insert((0., px, pz));
+                    if score > entry.0 {
+                        *entry = (score, px, pz);
+                    }
+                }
+            }
+            scenes.clear();
+            for (name, (_, x, z)) in found {
+                let view = fantasy_land::exploration::forest_view(
+                    &world,
+                    fantasy_land::exploration::Destination {
+                        name,
+                        x,
+                        z,
+                        yaw: 1.4,
+                        pitch: 0.12,
+                    },
+                );
+                scenes.push((name, view.x, view.z, view.yaw, view.pitch, 8.2, 1));
+            }
+            println!("Forest capture locations: {scenes:?}");
+            fs::write(
+                format!("{dir}/locations.json"),
+                serde_json::to_string_pretty(&scenes).unwrap(),
+            )
+            .unwrap();
+            scenes.push(("orins-woodland", 109764., -15885., -0.9424778, 0.04, 12., 1));
+        }
+        for (name, x, z, yaw, pitch, hour, weather) in scenes {
             if foliage_only && name != "orins-woodland" {
                 continue;
             }
-            if !foliage_only && name == "orins-woodland" {
+            if !foliage_only && !forests_only && name == "orins-woodland" {
                 continue;
             }
+            renderer.set_quality(if foliage_only || name == "orins-woodland" {
+                2
+            } else {
+                1
+            });
             let eye = glam::Vec3::new(x, geometry::walk_height(&world, x, z) + 1.72, z);
             renderer.clear_chunks();
             renderer.set_weather_mode(weather);

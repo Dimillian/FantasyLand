@@ -99,9 +99,12 @@ fn reed_bed(m: &mut MeshData, seed: u32) {
 fn fern_bed(m: &mut MeshData, seed: u32) {
     // Five bent fronds share the same texture across both sections; a common
     // root and dipped tip form a rosette instead of a flat cross billboard.
+    let form = (seed % 3) as f32;
+    let spread = [1.05, 1.20, 0.77][form as usize];
+    let arch = [0.43, 0.72, 0.88][form as usize];
     for i in 0..5 {
         let a = i as f32 * TAU / 5. + r(seed, 160) * TAU;
-        let length = 0.68 + r(seed, 170 + i) * 0.34;
+        let length = (0.68 + r(seed, 170 + i) * 0.34) * spread;
         let base = [0.; 3];
         let c = [0.88 + r(seed, 180 + i) * 0.12; 3];
         let bottom = [
@@ -109,12 +112,12 @@ fn fern_bed(m: &mut MeshData, seed: u32) {
             point(base, a, 0., 0.045, 0.),
         ];
         let middle = [
-            point(base, a, length * 0.48, -0.23, 0.44),
-            point(base, a, length * 0.48, 0.23, 0.44),
+            point(base, a, length * 0.48, -0.26, arch),
+            point(base, a, length * 0.48, 0.26, arch),
         ];
         let tip = [
-            point(base, a, length, -0.16, 0.27),
-            point(base, a, length, 0.16, 0.27),
+            point(base, a, length, -0.14, arch * 0.62),
+            point(base, a, length, 0.14, arch * 0.62),
         ];
         card(
             m,
@@ -180,11 +183,16 @@ fn flower_bed(m: &mut MeshData, variant: u32, seed: u32) {
     }
 }
 fn bush(m: &mut MeshData, seed: u32, heather: bool) {
+    let stature = if heather {
+        1.
+    } else {
+        1.6 + r(seed, 219) * 0.65
+    };
     for i in 0..3 {
         let a = r(seed, 220 + i) * TAU;
         let base = [a.sin() * 0.28, 0., a.cos() * 0.28];
-        let h = 0.31 + r(seed, 230 + i) * 0.30;
-        let radius = 0.23 + r(seed, 240 + i) * 0.11;
+        let h = (0.31 + r(seed, 230 + i) * 0.30) * stature;
+        let radius = (0.23 + r(seed, 240 + i) * 0.11) * if heather { 1. } else { 1.65 };
         for side in 0..2 {
             upright(
                 m,
@@ -192,7 +200,7 @@ fn bush(m: &mut MeshData, seed: u32, heather: bool) {
                 a + side as f32 * FRAC_PI_2,
                 h,
                 radius,
-                0.055,
+                0.14,
                 [0.90 + side as f32 * 0.07; 3],
                 5.,
             );
@@ -203,9 +211,9 @@ fn bush(m: &mut MeshData, seed: u32, heather: bool) {
         } else {
             upright(
                 m,
-                [base[0], h * 0.22, base[2]],
+                [base[0] + a.sin() * 0.12, h * 0.22, base[2] + a.cos() * 0.12],
                 a + 0.64,
-                h * 0.84,
+                h * 0.71,
                 radius * 0.87,
                 0.12,
                 [0.96; 3],
@@ -268,6 +276,17 @@ pub fn template(kind: u32, variant: u32) -> MeshData {
         7 => litter(&mut mesh, seed),
         _ => tuft(&mut mesh, seed, false),
     }
+    if kind == 6 {
+        for v in &mut mesh.vertices {
+            let n = glam::Vec3::new(
+                v.position[0] * 0.50,
+                0.65 + v.position[1] * 0.25,
+                v.position[2] * 0.50,
+            )
+            .normalize();
+            v.normal = n.to_array();
+        }
+    }
     mesh
 }
 
@@ -297,6 +316,13 @@ mod tests {
                         "plant community {kind} floats"
                     );
                 }
+                // Maximum ecology/instance scale, including yaw, must stay
+                // inside cover tiles' existing 2.5m culling padding.
+                assert!(mesh
+                    .vertices
+                    .iter()
+                    .all(|v| v.position[0].hypot(v.position[2]) * 1.66 <= 2.5
+                        && v.position[1] * 1.66 <= 2.5));
                 if kind == 3 {
                     assert!(
                         mesh.vertices

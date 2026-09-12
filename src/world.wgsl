@@ -566,6 +566,21 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     optical_depth += distance * (u.weather.w * 0.0015 + u.weather.y * 0.00018 + u.weather.z * 0.0014);
     var result = mix(color, pow(max(horizon_color(direction),vec3<f32>(0.0)),vec3<f32>(2.2)), clamp(1.0 - exp(-optical_depth), 0.0, 0.995));
 
+    // Humid air between trunks gives a forest depth without hiding the close
+    // plants. Analytic height integration adds no pass or texture fetches.
+    let woodland = clamp(u.climate.x, 0.0, 1.0);
+    if woodland > 0.01 {
+        let column = height_column(u.camera.y, world.y, u.air.x + 8.0, 26.0);
+        let forest_depth = max(min(distance, 700.0) - 16.0, 0.0) * column
+            * woodland * (0.00065 + moisture * 0.0011);
+        let toward_sun = pow(max(dot(direction,normalize(u.light.xyz)),0.0),4.0);
+        let cool_air = vec3<f32>(0.24,0.39,0.42);
+        let warm_air = vec3<f32>(0.66,0.53,0.34);
+        let day_air = mix(cool_air,warm_air,twilight()*toward_sun*0.70);
+        let air_color = mix(vec3<f32>(0.025,0.055,0.09),day_air,daylight());
+        result = mix(result,pow(air_color,vec3<f32>(2.2)),min(1.0-exp(-forest_depth),0.48));
+    }
+
     let wetland = clamp(u.climate.y, 0.0, 1.0);
     if wetland > 0.001 {
         let column = height_column(u.camera.y, world.y, u.air.x + 1.5, 8.5);
