@@ -1,0 +1,48 @@
+/* The Marches field codex: leather binding, brass fittings, ink and parchment. */
+:root{--text:#e3cc9d;--muted:#b0a18a;--sand:#e6ba70;--line:#a17b4d70;--surface:#261d1af7}
+.overlay{background:#120c1255}
+.atlas,.sheet,.conversation-panel{border:1px solid #9b774a;outline:1px solid #251714;outline-offset:3px;box-shadow:0 16px 56px #080406a0}
+.modal-header,.conversation-heading{background-color:#2b1c21;background-image:repeating-linear-gradient(45deg,#cab08005 0 1px,transparent 1px 5px);border-bottom:2px solid #9a744a}
+.modal-header h2,.conversation-heading h2{color:#f0d5a0;text-shadow:2px 2px #110e0d}
+.modal-header .overline,.conversation-heading .overline{color:#bd956a}
+.close-button{color:#b99a71}.close-button:hover,.close-button:focus-visible{color:#241615;background:#e3c790}
+.command-footer{color:#bea17a;background:#271c1a;border-top:1px solid #976e4470}
+/* One compact header and twelve index tabs; decoration never takes a topic row. */
+.conversation-panel{position:relative;width:min(1100px,100%);background:#2d1d22}
+.conversation-heading{padding:9px 16px;gap:15px;align-items:center;flex-shrink:0;min-height:86px}
+.conversation-identity{min-width:0;flex:1}.conversation-heading .overline{font-size:10px;letter-spacing:1.5px}
+.conversation-heading h2{font-size:20px;line-height:1.15;margin:4px 0 5px}.conversation-heading p{font-size:12px;line-height:1.3;color:#bba88e;margin:0;max-height:2.6em;overflow:auto}
+.conversation-heading .close-button{font-size:12px;align-self:flex-start;min-height:24px;padding:3px;margin-left:0}
+.portrait-frame{position:relative;width:54px;height:68px;flex:0 0 54px;border:2px solid #ba985f;outline:1px solid #634631;outline-offset:2px;background:#151b19;box-shadow:3px 3px #120d0c}
+.portrait-frame:after{content:'';position:absolute;inset:-5px;border:1px solid #87694680;pointer-events:none}
+#dialogue-portrait{display:block;width:100%;height:100%;image-rendering:pixelated}
+.conversation-seal{display:grid;justify-items:center;gap:5px;margin:0 18px;color:#9d7e55;font-size:8px;letter-spacing:1px}.conversation-seal svg{width:36px;height:36px;fill:none;stroke:currentColor;stroke-width:1;shape-rendering:crispEdges}
+.conversation-body{grid-template-columns:238px minmax(0,1fr);height:min(452px,calc(100dvh - 156px));min-height:0;max-height:none;flex-shrink:1}
+.conversation-menu{padding:12px 10px 10px;background-color:#38232a;background-image:linear-gradient(90deg,#1a121c50,transparent 12%,transparent 88%,#170e1470),repeating-linear-gradient(0deg,transparent 0 3px,#e9ba6e04 3px 4px);border-right:5px double #866038;overflow:auto}
+.conversation-menu>.overline{font-size:10px;color:#c29a6a;letter-spacing:1px;margin:0 9px 9px}
+.conversation-topics{gap:1px}
+.conversation-topics button{position:relative;align-items:center;font-size:14px;line-height:18px;gap:10px;padding:3px 8px;border:0;color:#dcc09a;background:none;box-shadow:none}
+.conversation-topics kbd{font-size:10px;min-width:14px;color:#a98465}
+.conversation-topics button[aria-current=true]:not(:hover):not(:focus-visible){color:#edcb97;box-shadow:inset 2px 0 #d9ab65;background:#e8ba7820}
+.conversation-topics button:hover,.conversation-topics button:focus-visible{background:#d7b885;color:#382229;outline:1px solid #efce9380;outline-offset:-1px;box-shadow:2px 2px #170e1250}
+.conversation-topics button:hover kbd,.conversation-topics button:focus-visible kbd{color:#794c38}
+.conversation-text{position:relative;padding:16px 24px;font-size:14px;line-height:1.55;color:#342a20;background-color:#d8c098;background-image:linear-gradient(90deg,#6d3e2526,transparent 5%,transparent 94%,#5b371324),repeating-linear-gradient(0deg,#fff2c707 0 2px,#76402108 2px 3px),radial-gradient(ellipse at 20% 0%,#fce9b685,transparent 70%);scrollbar-color:#927249 #cdb28a;box-shadow:inset 3px 0 8px #4c201520}
+.conversation-text:before{content:'—  WORDS ON THE ROAD  —';display:block;margin-bottom:14px;color:#8d6748;font-size:10px;letter-spacing:1px}
+.conversation-speaker{color:#873d30;font-size:12px;line-height:1.45}
+.conversation-entry{margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #96704440}
+.conversation-entry p{color:#352b21;line-height:1.55;margin:6px 0 0}
+.conversation-entry:first-of-type p:first-letter{float:left;font-size:24px;line-height:1;margin:1px 5px 0 0;color:#7f302c}
+.conversation-panel .command-footer{padding:8px 16px;font-size:10px;flex-shrink:0;letter-spacing:.1px;box-shadow:inset 0 1px #c3925530}
+/* The same physical materials carry through the rest of the menu system. */
+.sheet-content{background-color:#d1bb94;background-image:linear-gradient(90deg,#80523416,transparent 12%,transparent 90%,#80523414),repeating-linear-gradient(0deg,transparent 0 3px,#78462008 3px 4px);color:#392c23}
+.sheet-content p,.sheet-content small,.sheet-content .quiet,.character-stats dt,.setting-row small,.look-summary p,.weather-conditions>span:not(.overline){color:#77604a}
+.sheet-content h3,.look-summary strong,.character-stats dd,.setting-row,.weather-conditions strong{color:#3e3025}
+.sheet-content .overline,.character-role,.ability small{color:#873f31!important}.sheet-rule,.setting-row,.settings-disclosure,.character-stats>div,.ability,.weather-conditions{border-color:#936b4150}.sheet-rule{background:#936b4150}
+.sheet-content .text-button,.sheet-content .list-action,.sheet-content .list-action strong,.sheet-content .list-action>span,.sheet-content .ability>span{color:#813e30}.sheet-content .text-button:hover{color:#411d1a}
+.sheet-content .plain-button{border-color:#896a4770;color:#684630}.sheet-content .plain-button:hover:not(:disabled),.sheet-content .plain-button:focus-visible{background:#62313a;color:#f0d9ad}
+.sheet-content kbd{color:#813e30}.sheet-content select,.sheet-content input[type=number]{background:#36242a;border-color:#956c4e;color:#e6c598}.sheet-content input[type=range]{accent-color:#814c3d}.settings-disclosure summary{color:#644a37}.settings-disclosure[open] summary,.settings-disclosure summary:hover{color:#8d3e2d}.empty-bag{color:#9d7c50}
+.map-sidebar{background:#2c2021;border-left:4px double #926a43}.map-sidebar .plain-button{border-color:#9c74495c;color:#e6c79a}.map-sidebar .plain-button:hover:not(:disabled){color:#291c19;background:#cfb07f}.map-footer{color:#b59974;background:#251c19;border-top:1px solid #956e46}.map-legend{border-color:#9e734442}.map-legend>span{color:#bba282}
+.shortcuts button{color:#e0caa5}.shortcut-icon{color:#e9c28b}.shortcuts button[aria-expanded=true]{color:#f7e0b4}.focus-hint{color:#e9dab9}.interaction-prompt{color:#f0d9ac}.top-hud{text-shadow:2px 2px #19141a}.stat-track{background:#281c20a0}.health{--stat-color:#bb6756}.mana{--stat-color:#7ea6ad}.stamina{--stat-color:#cdb178}
+.enter-button{border:1px solid #b08452;background:#352329d8;color:#e7c68e;box-shadow:3px 3px #17101680}.intro h1{color:#f3d99f;text-shadow:3px 3px #271725}.intro-content .overline{color:#c69866}
+@media(max-width:800px){.conversation-seal{display:none}.conversation-body{grid-template-columns:218px minmax(0,1fr)}.conversation-text{padding:14px 18px}}
+@media(max-width:600px){.conversation-heading{gap:10px;padding:8px 12px;min-height:80px}.portrait-frame{width:42px;height:54px;flex-basis:42px}.conversation-heading h2{font-size:18px}.conversation-heading p{font-size:10px}.conversation-body{grid-template-columns:167px minmax(0,1fr);height:min(452px,calc(100dvh - 142px))}.conversation-menu{padding:10px 6px}.conversation-topics button{font-size:12px;line-height:18px;gap:7px;padding:3px 5px}.conversation-text{font-size:12px;padding:12px}.conversation-text:before{font-size:8px;letter-spacing:0}.conversation-speaker{font-size:10px}.conversation-panel .command-footer{padding:8px 12px;font-size:9px}}

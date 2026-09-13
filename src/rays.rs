@@ -25,6 +25,7 @@ pub struct RaysState {
     pub rain: f32,
     pub fog: f32,
     pub quality: u32,
+    pub room: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -38,6 +39,7 @@ struct Uniform {
     light_color: [f32; 4],
     atmosphere: [f32; 4], // extinction per metre, range, height falloff, phase g
     shadow: [f32; 4],     // radius, enabled, strength, step count
+    room: [[f32; 4]; 3],
     resolution: [f32; 4], // scene width/height, ray width/height
 }
 
@@ -136,7 +138,9 @@ impl Rays {
                 concat!(
                     include_str!("rays_common.wgsl"),
                     include_str!("rays_march.wgsl"),
-                    include_str!("rays_integrate.wgsl")
+                    include_str!("rays_integrate.wgsl"),
+                    "\n",
+                    include_str!("room_probe.wgsl")
                 )
                 .into(),
             ),
@@ -149,7 +153,9 @@ impl Rays {
                 concat!(
                     include_str!("rays_common.wgsl"),
                     include_str!("rays_composite.wgsl"),
-                    include_str!("rays_integrate.wgsl")
+                    include_str!("rays_integrate.wgsl"),
+                    "\n",
+                    include_str!("room_probe.wgsl")
                 )
                 .into(),
             ),
@@ -428,6 +434,7 @@ impl Rays {
                 state.shadow_strength,
                 [12.0, 16.0, 20.0][state.quality.min(2) as usize],
             ],
+            room: state.room,
             resolution: [
                 self.size[0] as f32,
                 self.size[1] as f32,

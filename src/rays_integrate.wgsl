@@ -37,9 +37,11 @@ fn volume_integral(ray: vec3<f32>, distance: f32, low_pixel: vec2<i32>) -> vec4<
         let t = mix(start, end, 0.12 + 0.76 * fract(jitter + f32(i) * 0.61803399));
         let sample = ray * t;
         let altitude = max((fog.camera.y - fog.camera.w) + sample.y, 0.0);
-        let density = fog.atmosphere.x * (0.28 + 0.72 * exp(-altitude * fog.atmosphere.z));
+        var density = fog.atmosphere.x * (0.28 + 0.72 * exp(-altitude * fog.atmosphere.z));
+        var visibility=volume_visibility(shadow_start + shadow_ray*t);
+        if fog.room[0].w>0.0 {let q=probe_local(fog.camera.xyz+sample,fog.room[0],fog.room[1]);if abs(q.x)<fog.room[1].x&&abs(q.z)<fog.room[1].y&&q.y>0.0&&q.y<fog.room[0].w {density=0.017;visibility*=probe_aperture(q,probe_direction(fog.light_direction.xyz,fog.room[1]),fog.room[0],fog.room[1],fog.room[2]);}}
         let opacity = 1.0 - exp(-density * step_length);
-        scattering += radiance * volume_visibility(shadow_start + shadow_ray * t) * (transmittance * opacity);
+        scattering += radiance * visibility * (transmittance * opacity);
         transmittance *= 1.0 - opacity;
     }
     return vec4<f32>(scattering, transmittance);

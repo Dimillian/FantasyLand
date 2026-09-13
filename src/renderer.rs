@@ -142,6 +142,8 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     world_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
+    glass_pipeline: wgpu::RenderPipeline,
+    glass: Option<GpuMesh>,
     water_sim: WaterSim,
     materials: crate::materials::MaterialLibrary,
     cloud_shadow: crate::cloud_shadow::CloudShadow,
@@ -332,7 +334,9 @@ impl Renderer {
                     "\n",
                     include_str!("fire_lighting.wgsl"),
                     "\n",
-                    include_str!("interiors.wgsl")
+                    include_str!("interiors.wgsl"),
+                    "\n",
+                    include_str!("room_probe.wgsl")
                 )
                 .into(),
             ),
@@ -497,7 +501,7 @@ impl Renderer {
             push_constant_ranges: &[],
         });
         let attributes = crate::vertex::ATTRIBUTES;
-        let surface_pipeline = |entry| {
+        let surface_pipeline = |entry, glass: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Flat shaded wilderness"),
                 layout: Some(&pipeline_layout),
@@ -517,7 +521,11 @@ impl Renderer {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba16Float,
-                        blend: None,
+                        blend: if glass {
+                            Some(wgpu::BlendState::ALPHA_BLENDING)
+                        } else {
+                            None
+                        },
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -527,7 +535,7 @@ impl Renderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: true,
+                    depth_write_enabled: !glass,
                     depth_compare: wgpu::CompareFunction::Less,
                     stencil: Default::default(),
                     bias: Default::default(),
@@ -537,8 +545,9 @@ impl Renderer {
                 cache: None,
             })
         };
-        let world_pipeline = surface_pipeline("fs_land");
-        let water_pipeline = surface_pipeline("fs_water");
+        let world_pipeline = surface_pipeline("fs_land", false);
+        let water_pipeline = surface_pipeline("fs_water", false);
+        let glass_pipeline = surface_pipeline("fs_glass", true);
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Sky"),
             layout: Some(&pipeline_layout),
@@ -636,6 +645,8 @@ impl Renderer {
             config,
             world_pipeline,
             water_pipeline,
+            glass_pipeline,
+            glass: None,
             water_sim,
             materials,
             cloud_shadow,
@@ -1062,6 +1073,7 @@ impl Renderer {
     }
     pub fn clear_chunks(&mut self) {
         self.people_light_origin = None;
+        self.glass = None;
         self.atmosphere_position = None;
         self.hearths = [[0.0; 4]; 8];
         self.shelter_valid = false;
@@ -1722,6 +1734,7 @@ impl Renderer {
         }
         drop(doors);
         self.people_light_origin = Some(eye);
+        self.glass = self.upload(crate::settlement_mesh::glass_mesh(world, eye.to_array()));
         self.room_doors = [0; 12];
         self.rooms_a = [[0.; 4]; 12];
         self.rooms_b = [[0.; 4]; 12];
@@ -1745,9 +1758,9 @@ impl Renderer {
             self.rooms_b[i] = [b.half[0], b.half[1], b.yaw.cos(), b.yaw.sin()];
             self.rooms_c[i] = [
                 world.doors.borrow().get(&b.id).map_or(0., |d| d.angle),
-                0.,
-                0.,
-                0.,
+                b.partition().unwrap_or(0.0),
+                0.94,
+                b.partition().is_some() as u8 as f32,
             ];
         }
         let mut lights: Vec<_> = layouts
@@ -2299,6 +2312,12 @@ impl Renderer {
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
+            if let Some(mesh) = &self.glass {
+                pass.set_pipeline(&self.glass_pipeline);
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
             if weather.rain > 0.01 || weather.snow > 0.01 {
                 pass.set_pipeline(&self.precip_pipeline);
                 pass.set_bind_group(0, &self.uniform_group, &[]);
@@ -2325,6 +2344,22 @@ impl Renderer {
                 rain: weather.rain,
                 fog: weather.weather[3],
                 quality: self.quality,
+                room: (0..12)
+                    .filter_map(|i| {
+                        let a = self.rooms_a[i];
+                        let b = self.rooms_b[i];
+                        let dx = eye.x - a[0];
+                        let dz = eye.z - a[2];
+                        let edge = ((dx * b[2] - dz * b[3]).abs() - b[0]).max(0.0).powi(2)
+                            + ((dx * b[3] + dz * b[2]).abs() - b[1]).max(0.0).powi(2);
+                        (a[3] > 0.0 && edge < 25.0 && eye.y > a[1] - 1.0 && eye.y < a[1] + a[3])
+                            .then_some((i, edge))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i)
+                    .map_or([[0.0; 4]; 3], |i| {
+                        [self.rooms_a[i], self.rooms_b[i], self.rooms_c[i]]
+                    }),
             },
         );
         self.rays

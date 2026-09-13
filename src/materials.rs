@@ -4,7 +4,7 @@
 //! Every layer tiles except the five alpha-cutout plant illustrations.
 
 pub const SIZE: u32 = 128;
-pub const LAYERS: u32 = 20;
+pub const LAYERS: u32 = 23;
 pub const LEVELS: u32 = 8;
 pub const ALPHA_CUTOFF: f32 = 0.4;
 /// Empty top corners removed from conifer cards; shared with the mask guard.
@@ -274,6 +274,56 @@ fn opaque(layer: usize, x: usize, y: usize) -> Pixel {
                 },
                 if seam { 0.08 } else { 0.26 + y * 0.08 },
                 0.84,
+            )
+        }
+        20 => {
+            let row = (v * 12.0).floor();
+            let xx = u * 6.0 + (row % 2.0) * 0.5;
+            let x = xx.fract();
+            let y = (v * 12.0).fract();
+            let joint = x < 0.045 || y < 0.095;
+            let brick = hash(xx.floor() as i32, row as i32, 894);
+            let chips = hash((u * 64.0) as i32, (v * 64.0) as i32, 822);
+            (
+                if joint {
+                    0.38
+                } else {
+                    0.57 + brick * 0.19 + grain * 0.05 - chips.powi(12) * 0.10
+                },
+                if joint { 0.06 } else { 0.46 + grain * 0.08 },
+                0.88,
+            )
+        }
+        21 => {
+            let board = (v * 12.0).floor();
+            let edge = (v * 12.0).fract();
+            let grainline = ((u * 15.0 + broad * 1.4 + board * 0.13) * tau).sin();
+            let knot = ((u * 4.0 + board * 0.31).fract() - 0.5).hypot((edge - 0.5) * 0.30);
+            let nail = (u * 4.0).fract() < 0.055 && (edge - 0.18).abs() < 0.07;
+            (
+                if edge < 0.075 {
+                    0.29
+                } else if nail {
+                    0.23
+                } else {
+                    0.61 + hash(board as i32, 9, 88) * 0.13 + grainline * 0.035
+                        - knot.mul_add(36.0, 0.0).sin() * 0.045 / (1.0 + knot * 18.0)
+                },
+                if edge < 0.075 {
+                    0.09
+                } else {
+                    0.35 + grainline * 0.03
+                },
+                0.85,
+            )
+        }
+        22 => {
+            let ripple =
+                ((u * 5.0 + broad * 0.15) * tau).sin() * ((v * 4.0 + medium * 0.1) * tau).cos();
+            (
+                0.65 + broad * 0.14 + grain * 0.025,
+                0.42 + ripple * 0.035,
+                0.20 + broad * 0.08,
             )
         }
         _ => unreachable!(),
@@ -710,7 +760,7 @@ impl MaterialPixels {
     }
 }
 
-/// GPU array textures are less than 3.4 MiB including every mip. They are built
+/// GPU array textures are less than 3.84 MiB including every mip. They are built
 /// once at renderer initialization and sampled by all streaming chunks.
 pub struct MaterialLibrary {
     pub layout: wgpu::BindGroupLayout,
@@ -896,8 +946,8 @@ mod tests {
             );
             assert_eq!(first.surface[level].len(), first.albedo[level].len());
         }
-        // Twenty 128px albedo/surface layers, including masonry, plaster and roofs.
-        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 3_600_000);
+        // Twenty-three 128px albedo/surface layers, including architectural variants.
+        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 4_100_000);
     }
 
     #[test]

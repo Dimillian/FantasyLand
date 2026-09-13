@@ -133,9 +133,36 @@ impl Building {
     pub fn entrance(&self) -> [f32; 3] {
         self.point(0., 0., -self.half[1] - 1.1)
     }
+    /// One geometry contract for bedroom walls, navigation and lighting.
+    pub fn partition(&self) -> Option<f32> {
+        matches!(
+            self.usage,
+            Use::Home | Use::Inn | Use::Barracks | Use::Guild | Use::Arcane
+        )
+        .then_some(self.half[1] * 0.22)
+    }
+    pub fn wall_material(&self) -> (f32, [f32; 3]) {
+        match self.id % 5 {
+            0 => (20.0, [0.66, 0.37, 0.25]),
+            1 => (21.0, [0.48, 0.33, 0.20]),
+            2 => (17.0, [0.59, 0.58, 0.51]),
+            3 => (18.0, [0.72, 0.65, 0.48]),
+            _ => (18.0, [0.61, 0.65, 0.58]),
+        }
+    }
+    pub fn roof_rise(&self) -> f32 {
+        2.25 + (self.id % 4) as f32 * 0.35
+    }
     pub fn hearth(&self) -> [f32; 4] {
-        let p = self.point(-self.half[0] + 1.0, 0.72, self.half[1] - 0.8);
+        let p = if self.usage == Use::Tent {
+            self.point(0.0, 0.5, self.half[1] + 0.85)
+        } else {
+            self.point(-self.half[0] + 1.0, 0.72, self.hearth_z())
+        };
         [p[0], p[1], p[2], 7.5]
+    }
+    pub fn hearth_z(&self) -> f32 {
+        self.partition().map_or(self.half[1] - 0.8, |p| p - 1.45)
     }
     pub fn torch(&self) -> Option<[f32; 4]> {
         if !matches!(
@@ -555,7 +582,15 @@ fn generate(world: &World, e: Entry) -> Layout {
             l.links.push(vec![node]);
             l.links[node].push(b.porch_node);
             b.room_node = l.nodes.len();
-            l.nodes.push(b.point(0., 0., -half[1] + 2.));
+            l.nodes.push(b.point(
+                0.,
+                0.,
+                if usage == Use::Home {
+                    half[1] * 0.5
+                } else {
+                    -half[1] + 2.
+                },
+            ));
             l.links.push(vec![b.porch_node]);
             l.links[b.porch_node].push(b.room_node);
             l.streets.push(Street {

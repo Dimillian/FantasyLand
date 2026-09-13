@@ -1,4 +1,4 @@
-// Immutable procedural material library: 17 layers, shared by every chunk.
+// Immutable procedural material library: 23 layers, shared by every chunk.
 @group(3) @binding(0) var material_color: texture_2d_array<f32>;
 @group(3) @binding(1) var material_surface: texture_2d_array<f32>;
 @group(3) @binding(2) var material_sampler: sampler;
@@ -14,7 +14,7 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> 
         let skins=array<vec3<f32>,5>(vec3<f32>(0.82,0.62,0.43),vec3<f32>(0.65,0.43,0.27),vec3<f32>(0.43,0.27,0.18),vec3<f32>(0.87,0.69,0.52),vec3<f32>(0.56,0.36,0.22));
         let hairs=array<vec3<f32>,8>(vec3<f32>(0.14,0.09,0.055),vec3<f32>(0.35,0.20,0.10),vec3<f32>(0.63,0.45,0.22),vec3<f32>(0.44,0.19,0.07),vec3<f32>(0.61,0.60,0.53),vec3<f32>(0.20,0.16,0.13),vec3<f32>(0.75,0.70,0.58),vec3<f32>(0.32,0.29,0.25));
         var pigment=v.color;switch slot {case 1u:{pigment=skins[(code/256u)%8u%5u];}case 2u:{pigment=hairs[(code/2048u)%8u];}case 4u:{pigment=v.color*0.56;}case 5u:{pigment=vec3<f32>(0.30,0.18,0.095);}case 6u:{pigment=vec3<f32>(0.53,0.57,0.58);}case 7u:{pigment=vec3<f32>(0.79,0.74,0.59);}case 8u:{pigment=vec3<f32>(0.69,0.48,0.17);}default:{}}
-        return PixelMaterial(pigment*(pixel.r*0.55+0.55),normalize(v.normal),select(0.83,0.34,slot==6u),select(0.0,0.65,slot==6u),0.0,1.0);
+        return PixelMaterial(pigment*(pixel.r*0.90+0.22),normalize(v.normal),select(0.83,0.34,slot==6u),select(0.0,0.65,slot==6u),0.0,1.0);
     }
     // Tree crowns share two tiny illustrations. Do the alpha test before any
     // terrain projection or material work; distant leaves need only albedo.
@@ -58,6 +58,11 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> 
     else if v.material < 6.5 { layer = 1i; }
     else if v.material > 8.5 {layer = 1i;}
     if v.texture >= 0.0 {layer=i32(v.texture+0.1);}
+    if v.texture>=100.0 && v.texture<200.0 {
+        layer=i32(v.texture-100.0+0.1);uv=v.uv*0.5;dx=grad.uv_x*0.5;dy=grad.uv_y*0.5;
+        let determinant=grad.uv_x.x*grad.uv_y.y-grad.uv_x.y*grad.uv_y.x;
+        if abs(determinant)>0.0000001 {tangent=normalize((grad.world_x*grad.uv_y.y-grad.world_y*grad.uv_x.y)/determinant);bitangent=normalize((grad.world_y*grad.uv_x.x-grad.world_x*grad.uv_y.x)/determinant);}
+    }
     if v.texture>=5.0 && v.texture<10.0 {uv=v.uv;dx=grad.uv_x;dy=grad.uv_y;}
     if v.material > 9.5 && v.material < 10.5 {
         layer=16i; uv=v.uv*vec2<f32>(1.0,0.9)+vec2<f32>(0.0,-u.params.x*0.47);

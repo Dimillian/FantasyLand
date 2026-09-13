@@ -3,24 +3,34 @@ const vm = require('vm');
 const assert = require('assert/strict');
 const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html'), 'utf8');
 const adaptiveSource = fs.readFileSync(require('path').join(__dirname, '../dist/adaptive-resolution.js'), 'utf8').replace('export class', 'class');
-const source = adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '');
+const portraitSource = fs.readFileSync(require('path').join(__dirname, '../dist/portrait.js'), 'utf8').replace('export function', 'function');
+const source = portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '');
 class Element {
-  constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; }
+  constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; this.children=[]; this._text=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
   fire(name, data={}) { const event={target:this, preventDefault(){this.prevented=true;}, ...data}; for(const cb of this.listeners[name]||[]) cb(event); return event; }
   setAttribute(name,value){this.attributes[name]=value;}
   focus(){document.activeElement=this;}
+  click(){this.fire('click');}
+  get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
+  set textContent(value){this._text=String(value);this.children=[];}
+  get firstElementChild(){return this.children[0];}
+  remove(){if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);}
+  removeAttribute(name){delete this.attributes[name];}
+  getClientRects(){return this.classList.contains('hidden')?[]:[this.getBoundingClientRect()];}
+  querySelectorAll(){return this.controls || this.children;}
+
   querySelector(){return this.child ||= new Element();}
   getBoundingClientRect(){return {width:800,height:500,left:0,top:0};}
   getContext(){return {};}
   setPointerCapture(){}
-  append(child){(this.children ||= []).push(child);}
-  replaceChildren(...children){this.children=children;}
+  append(...children){for(const child of children){this.children.push(child);child.parent=this;}}
+  replaceChildren(...children){this._text='';this.children=children;}
 }
 const ids = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((m)=>[m[1],new Element(m[1])]));
 ids.world.tagName='CANVAS'; ids['map-canvas'].tagName='CANVAS';
 const document = new Element('document');
-document.body=new Element('body'); document.getElementById=id=>ids[id]; document.createElement=tag=>new Element(tag);
+document.body=new Element('body'); document.getElementById=id=>ids[id]; document.createElement=tag=>{const el=new Element(tag);el.tagName=tag.toUpperCase();return el;};
 document.querySelectorAll=selector=>selector==='[data-close]' ? ['map','bag','character','skills','settings'].map(name=>ids[name+'-modal'].querySelector()) : selector==='.overlay' ? ['map','bag','character','skills','settings'].map(name=>ids[name+'-modal']) : [];
 document.pointerLockElement=null;
 document.exitPointerLock=()=>{document.pointerLockElement=null;document.fire('pointerlockchange');};
@@ -72,7 +82,7 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlements-1');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlement-art-2');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
@@ -447,7 +457,11 @@ async function main(){
   key('KeyM');assert.equal(run('modal'),'map');
   run('map.span=27000;map.x=450;map.z=900;');key('KeyM');assert.equal(run('modal'),null);
   key('Tab');assert.equal(run('modal'),'map');assert.equal(run('map.span'),27000);assert.equal(run('map.x'),450);
-  const tabEvent=key('Tab');assert.equal(tabEvent.prevented,undefined);assert.equal(run('modal'),'map');
+  const tabEvent=key('Tab');assert.equal(tabEvent.prevented,true);assert.equal(run('modal'),'map');
+  run(`map.visibleFeatures=[{name:'First',x:40,z:50,px:150,py:130},{name:'Last',x:80,z:90,px:210,py:180}];map.selected=null;`);
+  document.fire('keydown',{code:'BracketLeft',target:ids['map-canvas']});assert.equal(run('map.selected.name'),'Last');
+  document.fire('keydown',{code:'BracketRight',target:ids['map-canvas']});assert.equal(run('map.selected.name'),'First');
+  document.fire('keydown',{code:'Enter',target:ids['map-canvas']});assert.equal(run('map.selected.x'),run('map.x'));assert.equal(run('map.selected.z'),run('map.z'));
   const before=run('JSON.stringify(screenToWorld(140,180))');run('zoomMap(.7,140,180)');const after=run('JSON.stringify(screenToWorld(140,180))');assert.deepEqual(JSON.parse(before),JSON.parse(after));
   key('KeyI');assert.equal(run('modal'),'bag');key('KeyC');assert.equal(run('modal'),'character');assert.equal(ids['character-stamina'].textContent,'75 / 100');key('KeyK');assert.equal(run('modal'),'skills');key('Escape');assert.equal(run('modal'),null);
   assert.equal(key('Space').prevented,true);assert.equal(run('jumpQueued'),true);
@@ -457,10 +471,23 @@ async function main(){
   fakeGame.interact=()=>({name:'Mira Vale',role:'ranger',detail:'Resident of Alderfield',text:'Good morning.',topics:[{id:'inn',label:'Nearest inn'}]});
   fakeGame.dialogue=topic=>{questions.push(topic);return {text:'The Birch Inn is east, about 60 paces.'};};
   key('KeyE');assert.equal(run('modal'),'dialogue');assert.equal(ids['dialogue-name'].textContent,'Mira Vale');
-  assert.equal(document.activeElement,ids['dialogue-close']);assert.equal(run('locked'),false);
+  assert.equal(document.activeElement,ids['dialogue-topics'].children[0]);assert.equal(run('locked'),false);
   ids['dialogue-topics'].children[0].fire('click');assert.deepEqual(questions,['inn']);assert.match(ids['dialogue-text'].textContent,/east/);
+  key('Digit1');assert.equal(questions.length,2);assert.equal(ids['dialogue-text'].children.length,3);
+  assert.match(ids['dialogue-text'].textContent,/Good morning/);
+  assert.equal(key('KeyM').prevented,undefined);assert.equal(run('modal'),'dialogue');
+  const modified=document.fire('keydown',{code:'Digit1',ctrlKey:true,target:document.activeElement});assert.equal(modified.prevented,undefined);assert.equal(questions.length,2);
+  const logKey=document.fire('keydown',{code:'ArrowDown',target:ids['dialogue-text']});assert.equal(logKey.prevented,undefined);
+  ids['dialogue-modal'].controls=[ids['dialogue-close'],...ids['dialogue-topics'].children,ids['dialogue-text']];
+  ids['dialogue-text'].focus();key('Tab');assert.equal(document.activeElement,ids['dialogue-close']);
+  document.fire('keydown',{code:'Tab',shiftKey:true,target:document.activeElement});assert.equal(document.activeElement,ids['dialogue-text']);
   key('Escape');assert.equal(run('modal'),null);assert.equal(ends,1);assert.equal(ids['dialogue-modal'].classList.contains('hidden'),true);
   fakeGame.interact=()=> 'The door opens.';key('KeyE');assert.equal(run('modal'),null);
+  // Every long question has a short visible label, and the three final
+  // directions have explicit letter commands rather than unreachable numbers.
+  run(`renderConversation({name:'Test',role:'mage',detail:'',text:'Hello',topics:Array.from({length:12},(_,i)=>({id:'t'+i,label:'Topic '+i}))});modal='dialogue';`);
+  key('KeyA');key('KeyB');key('KeyC');assert.deepEqual(questions.slice(-3),['t9','t10','t11']);
+  key('Escape');
   console.log('PASS: E conversation focus, factual topic response, Escape resumes life, and door interaction stays in the world.');
 
   verifyAtlasRoutes();

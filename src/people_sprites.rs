@@ -59,6 +59,27 @@ impl Frame {
             );
         }
     }
+    fn poly(&mut self, points: &[[f32; 2]], slot: Slot) {
+        for y in 1..63 {
+            for x in 1..31 {
+                let mut inside = false;
+                let mut j = points.len() - 1;
+                for i in 0..points.len() {
+                    let a = points[i];
+                    let b = points[j];
+                    if (a[1] > y as f32) != (b[1] > y as f32)
+                        && (x as f32) < (b[0] - a[0]) * (y as f32 - a[1]) / (b[1] - a[1]) + a[0]
+                    {
+                        inside = !inside;
+                    }
+                    j = i;
+                }
+                if inside {
+                    self.dot(x, y, slot, 0.68 + ((x as f32 * 0.83).sin()) * 0.08);
+                }
+            }
+        }
+    }
     fn rect(&mut self, a: [i32; 2], b: [i32; 2], slot: Slot) {
         for y in a[1]..=b[1] {
             for x in a[0]..=b[0] {
@@ -85,6 +106,20 @@ fn frame(role: u32, dir: u32, pose: u32) -> Frame {
     let ranger = matches!(role, 6 | 7);
     let shoulder = if side { 3.0 } else { 5.0 };
     let center = 15.5;
+    // Long cloaks and travel mantles establish a medieval silhouette.
+    if matches!(role, 2 | 3 | 4 | 5 | 6 | 7 | 10 | 12 | 14 | 15) {
+        f.poly(
+            &[
+                [12.0, 20.0],
+                [20.0, 20.0],
+                [25.0, 51.0],
+                [22.0, 55.0],
+                [10.0, 54.0],
+                [7.0, 50.0],
+            ],
+            Cloth,
+        );
+    }
     // Equipment behind the torso follows the directional layer order.
     if ranger {
         f.line([8., 18.], [7., 48.], 1., Leather);
@@ -107,7 +142,13 @@ fn frame(role: u32, dir: u32, pose: u32) -> Frame {
         let knee = [hip + shift * 0.4, 46. + cy];
         let foot = [hip + shift, 59. - shift.abs() * 0.15];
         f.line([hip, 35. + cy], knee, 2.2, Trousers);
-        f.line(knee, foot, 1.9, Trousers);
+        f.line(knee, foot, 1.9, Leather);
+        f.line(
+            [hip + shift * 0.5, 51.0],
+            [hip + shift * 0.6, 53.0],
+            2.4,
+            Leather,
+        );
         f.ellipse([foot[0] + flip * 0.7, 60.], [2.7, 1.7], Leather);
         let _ = n;
     }
@@ -116,12 +157,28 @@ fn frame(role: u32, dir: u32, pose: u32) -> Frame {
     f.line(
         [far - 1.2, 33. - stride],
         [far + stride * 0.45, 40. - stride],
-        1.5,
-        Skin,
+        1.65,
+        Cloth,
+    );
+    // Split knee-length tunic and layered tabard, not a short modern shirt.
+    f.poly(
+        &[
+            [10.0, 29.0],
+            [21.0, 29.0],
+            [23.0, 44.0],
+            [17.0, 45.0],
+            [16.0, 41.0],
+            [14.0, 45.0],
+            [8.0, 43.0],
+        ],
+        Cloth,
     );
     if robe {
         f.line([center, 30. + cy], [center, 49.], 5., Cloth);
-        f.rect([10, 39], [21, 50], Cloth);
+        f.poly(
+            &[[11.0, 36.0], [20.0, 36.0], [24.0, 57.0], [8.0, 57.0]],
+            Cloth,
+        );
     }
     f.ellipse(
         [center, 29. + cy],
@@ -140,8 +197,8 @@ fn frame(role: u32, dir: u32, pose: u32) -> Frame {
     f.line(
         [near + 1., 32. + stride],
         [near - stride * 0.45, 40. + stride],
-        1.6,
-        Skin,
+        1.7,
+        if armor { Leather } else { Cloth },
     );
     f.line([center, 17. + cy], [center, 22. + cy], 2., Skin);
     f.ellipse(
@@ -200,12 +257,80 @@ fn frame(role: u32, dir: u32, pose: u32) -> Frame {
     if role == 10 {
         f.line([15., 23.], [15., 35.], 1., Accent);
     }
+    // Embroidered hems, laced collars, belts and pouches distinguish professions.
+    if !back {
+        for y in 23..32 {
+            if y % 2 == 0 {
+                f.line([14.0, y as f32], [17.0, (y + 1) as f32], 0.5, Linen);
+            }
+        }
+        f.line([10.0, 36.0], [21.0, 36.0], 1.1, Leather);
+        f.rect([15, 35], [17, 37], Accent);
+        f.rect([20, 36], [23, 41], Leather);
+        f.dot(21, 37, Accent, 0.8);
+        for x in 10..22 {
+            if x % 2 == 0 {
+                f.dot(x, if robe { 55 } else { 43 }, Accent, 0.73);
+            }
+        }
+        if armor {
+            for x in [9, 21] {
+                f.ellipse([x as f32, 24.0], [3.1, 2.4], Metal);
+            }
+            f.rect([14, 25], [18, 33], Cloth);
+            f.line([16.0, 26.0], [16.0, 32.0], 0.6, Accent);
+            f.line([14.0, 28.0], [18.0, 28.0], 0.6, Accent);
+        }
+        if robe {
+            for y in (37..54).step_by(4) {
+                f.line([14.0, y as f32], [17.0, (y + 2) as f32], 0.5, Accent);
+            }
+        }
+        if role == 0 || role == 1 || role == 8 {
+            f.rect([10, 8], [21, 10], Cloth);
+            f.line([13.0, 20.0], [18.0, 23.0], 1.2, Linen);
+        }
+    } else if matches!(role, 2 | 3 | 4 | 5 | 6 | 7 | 10 | 12 | 14 | 15) {
+        f.poly(
+            &[
+                [11.0, 21.0],
+                [21.0, 21.0],
+                [24.0, 53.0],
+                [20.0, 55.0],
+                [9.0, 53.0],
+            ],
+            Cloth,
+        );
+        for y in 25..52 {
+            f.dot(15, y, Cloth, 0.54);
+        }
+    }
     if back && matches!(role, 3 | 6 | 7 | 12) {
         f.ellipse(
             [center, 31.],
             [5.4, 7.4],
             if armor { Metal } else { Leather },
         );
+    }
+    // Local outlines and woven/chain detail remain within the original alpha mask.
+    let source = f.pixels.clone();
+    for y in 1..63 {
+        for x in 1..31 {
+            let i = (y * 32 + x) * 4;
+            if source[i + 3] == 0 {
+                continue;
+            }
+            let edge = [i - 4, i + 4, i - 128, i + 128]
+                .iter()
+                .any(|&j| source[j + 3] == 0);
+            if edge {
+                f.pixels[i] = (source[i] as f32 * 0.54) as u8;
+            } else if source[i + 1] == Metal as u8 * 24 && y > 20 {
+                f.pixels[i] = if (x + y) % 3 == 0 { 240 } else { 145 };
+            } else if source[i + 1] == Cloth as u8 * 24 && (x + 2 * y) % 5 == 0 {
+                f.pixels[i] = (source[i] as f32 * 0.84) as u8;
+            }
+        }
     }
     f
 }

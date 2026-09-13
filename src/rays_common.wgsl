@@ -7,6 +7,7 @@ struct Atmosphere {
     light_color: vec4<f32>,
     atmosphere: vec4<f32>,
     shadow: vec4<f32>,
+    room: array<vec4<f32>,3>,
     resolution: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> fog: Atmosphere;

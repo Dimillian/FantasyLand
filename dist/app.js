@@ -1,3 +1,4 @@
+import { paintPortrait } from './portrait.js?v=codex-ui-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
@@ -26,6 +27,7 @@ let otherViewActive = false, renderChannel = null, renderOwner = '', renderClaim
 const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let streamWorker = null, streamReady = false, streamOutstanding = 0, streamResults = [], streamDeadline = 0;
 let game, state = {}, started = false, locked = false, modal = null;
+let modalReturnFocus = null;
 let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
@@ -309,7 +311,7 @@ function clearMovement() {
 // Keep requestPointerLock on the original click/Enter user-gesture stack. No
 // promise await, animation-frame callback, or pointer-capture competes with it.
 function updateFocusHint() {
-  const show = started && !modal && !locked && !fatal && !matchMedia('(pointer: coarse)').matches;
+  const show = started && !modal && (!focusedLook || otherViewActive) && !fatal && !matchMedia('(pointer: coarse)').matches;
   $('focus-hint').classList.toggle('hidden', !show);
   document.body.classList.toggle('mouse-focused', focusedLook && !modal);
   $('focus-hint-text').textContent = otherViewActive ? 'Another view is active · click here to resume' : focusedLook ? 'Mouse look active · Esc releases' : 'Click the world to look around';
@@ -364,6 +366,7 @@ function openModal(type) {
   if (motionCapture) finishMotionCapture(true);
   if (benchmark) finishBenchmark(true);
   game?.end_dialogue();$('dialogue-modal').classList.add('hidden');
+  if (!modal) modalReturnFocus = document.activeElement;
   modal = type;
   releaseMouse();
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.toggle('hidden', name !== type);
@@ -375,7 +378,8 @@ function openModal(type) {
     updateWeatherStatus();
   }
   if (type === 'character') updateCharacter();
-  $(type + '-modal').querySelector('[data-close]').focus({ preventScroll: true });
+  const initialFocus = {map: mapCanvas, settings: $('render-resolution'), bag: $('bag-open-map'), skills: $('skills-open-map')};
+  (initialFocus[type] || $(type + '-modal').querySelector('[data-close]')).focus({ preventScroll: true });
 }
 
 function closeModal() {
@@ -385,7 +389,8 @@ function closeModal() {
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', 'false');
   document.body.classList.remove('modal-open');
   clearMovement();
-  canvas.focus({ preventScroll: true });
+  const restore = modalReturnFocus && modalReturnFocus !== document.body && modalReturnFocus.getClientRects().length ? modalReturnFocus : canvas;
+  restore.focus({ preventScroll: true }); modalReturnFocus = null;
   updateFocusHint();
   saveProgress();
 }
@@ -560,7 +565,7 @@ function drawMap(now) {
     ctx.stroke(); ctx.fill();
     const labelAllowed = selected || (feature.isSite || map.span < 15000) && !occupied.some((q) => Math.abs(q.x - p.x) < 105 && Math.abs(q.y - p.y) < 26);
     if (labelAllowed && occupied.length < 65) {
-      ctx.font = `${selected ? 'bold ' : ''}11px ui-monospace, monospace`;
+      ctx.font = '12px "Marches Pixel", monospace';
       ctx.textAlign = 'center'; ctx.lineWidth = 3.5;
       ctx.strokeStyle = '#20321fe6'; ctx.strokeText(feature.name, p.x, p.y - 9);
       ctx.fillStyle = selected ? '#fff1ad' : '#f0ebc9'; ctx.fillText(feature.name, p.x, p.y - 9);
@@ -568,6 +573,10 @@ function drawMap(now) {
     }
   }
   map.visibleFeatures = visible;
+  if (document.activeElement === mapCanvas) {
+    ctx.strokeStyle = '#fff2bb'; ctx.lineWidth = 1;
+    ctx.strokeRect(Math.round(w / 2) - 5.5, Math.round(h / 2) - 5.5, 11, 11);
+  }
   if (waypoint) {
     const p = worldToScreen(waypoint.x, waypoint.z), player = worldToScreen(state.x || 0, state.z || 0);
     ctx.setLineDash([4, 5]); ctx.strokeStyle = '#f7dfa0aa'; ctx.lineWidth = 1;
@@ -585,7 +594,7 @@ function drawMap(now) {
   ctx.beginPath(); ctx.moveTo(0, -9); ctx.lineTo(6, 6); ctx.lineTo(0, 3); ctx.lineTo(-6, 6); ctx.closePath();
   ctx.lineWidth = 3; ctx.strokeStyle = '#21381b'; ctx.stroke(); ctx.fillStyle = '#fff5c0'; ctx.fill(); ctx.restore();
   if (player.x > 15 && player.x < w - 15 && player.y > 15 && player.y < h - 15) {
-    ctx.font = 'bold 11px ui-monospace, monospace'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = '#22341e';
+    ctx.font = '12px "Marches Pixel", monospace'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = '#22341e';
     ctx.strokeText('YOU', player.x, player.y + 20); ctx.fillStyle = '#f8efba'; ctx.fillText('YOU', player.x, player.y + 20);
   }
   const scaleOptions = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000];
@@ -749,7 +758,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=settlements-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=settlement-art-2',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -847,8 +856,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlements-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=settlements-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlement-art-2');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=settlement-art-2', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -868,7 +877,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'settlements-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'settlement-art-2' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -1042,18 +1051,75 @@ $('return-to-spawn').addEventListener('click', () => {
   activeJourney = null; game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');
 });
 
-function renderConversation(data){
-  if(!data)return;
-  $('dialogue-name').textContent=data.name;$('dialogue-role').textContent=data.role.toUpperCase();$('dialogue-detail').textContent=data.detail;$('dialogue-text').textContent=data.text;
-  const topics=$('dialogue-topics');topics.replaceChildren();
-  for(const topic of data.topics){const button=document.createElement('button');button.type='button';button.textContent=topic.label;button.addEventListener('click',()=>{const answer=game.dialogue(topic.id);if(answer){$('dialogue-text').textContent=answer.text;}});topics.append(button);}
+const TOPIC_LABELS = {work:'Your work', life:'Your story', home:'Your home', area:'This settlement', road:'Your destination', weather:'Local news', inn:'Nearest inn', smith:'Blacksmith', guild:'Fighters’ guild', arcane:'Arcane guild', temple:'Temple', market:'Market'};
+// Conversations keep a short transcript; every topic is a native, focusable button.
+function conversationLine(question, text) {
+  const log = $('dialogue-text');
+  const entry = document.createElement('div'); entry.className = 'conversation-entry';
+  const speaker = document.createElement('span'); speaker.className = 'conversation-speaker';
+  speaker.textContent = question ? `> ${question}` : $('dialogue-name').textContent;
+  const answer = document.createElement('p'); answer.textContent = text;
+  entry.append(speaker, answer); log.append(entry);
+  while (log.children.length > 12) log.firstElementChild.remove();
+  log.scrollTop = log.scrollHeight;
 }
-function interact(){
-  const result=game?.interact();if(!result)return;if(typeof result==='string'){toast(result);return;}
-  renderConversation(result);modal='dialogue';releaseMouse();$('dialogue-modal').classList.remove('hidden');document.body.classList.add('modal-open');$('dialogue-close').focus();
+function renderConversation(data) {
+  if (!data) return;
+  paintPortrait($('dialogue-portrait'), data);
+  $('dialogue-name').textContent = data.name;
+  $('dialogue-role').textContent = data.role.toUpperCase();
+  $('dialogue-detail').textContent = data.detail;
+  $('dialogue-text').replaceChildren(); conversationLine(null, data.text);
+  const topics = $('dialogue-topics'); topics.replaceChildren();
+  data.topics.forEach((topic, index) => {
+    const button = document.createElement('button'); button.type = 'button';
+    const number = document.createElement('kbd'); number.textContent = index < 9 ? `${index + 1}` : String.fromCharCode(65 + index - 9);
+    const label = document.createElement('span'); label.textContent = TOPIC_LABELS[topic.id] || topic.label;
+    button.setAttribute('aria-label', `${index + 1}. ${topic.label}`);
+    button.append(number, label);
+    button.addEventListener('click', () => {
+      const answer = game.dialogue(topic.id);
+      if (answer) conversationLine(topic.label, answer.text);
+      for (const item of topics.children) item.removeAttribute('aria-current');
+      button.setAttribute('aria-current', 'true');
+    });
+    topics.append(button);
+  });
 }
-$('dialogue-close').addEventListener('click',closeModal);
-$('dialogue-modal').addEventListener('keydown',event=>{if(event.code!=='Tab')return;const items=[...$('dialogue-modal').querySelectorAll('button')];const first=items[0],last=items.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
+function interact() {
+  const result = game?.interact(); if (!result) return;
+  if (typeof result === 'string') { toast(result); return; }
+  modalReturnFocus = document.activeElement;
+  renderConversation(result); modal = 'dialogue'; releaseMouse();
+  $('dialogue-modal').classList.remove('hidden'); document.body.classList.add('modal-open');
+  ($('dialogue-topics').firstElementChild || $('dialogue-close')).focus();
+}
+$('dialogue-close').addEventListener('click', closeModal);
+function modalKeyboard(event) {
+  if (!modal || event.altKey || event.ctrlKey || event.metaKey) return false;
+  const panel = $(modal + '-modal');
+  if (event.code === 'Tab') {
+    const controls = [...panel.querySelectorAll('button, input, select, textarea, summary, a[href], [tabindex="0"]')]
+      .filter(el => !el.disabled && el.getClientRects().length);
+    const current = controls.indexOf(document.activeElement);
+    if (controls.length) controls[current < 0 ? (event.shiftKey ? controls.length - 1 : 0) : (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
+    event.preventDefault(); return true;
+  }
+  if (modal !== 'dialogue') return false;
+  if (event.target === $('dialogue-text')) return true;
+  const topics = [...$('dialogue-topics').children];
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+  const choice = digit ? Number(digit[1]) - 1 : ({KeyA:9,KeyB:10,KeyC:11})[event.code];
+  if (choice !== undefined && topics[choice]) {
+    const button = topics[choice]; button.focus(); button.click(); event.preventDefault();
+  } else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.code) && topics.length) {
+    const index = topics.indexOf(document.activeElement);
+    const next = event.code === 'Home' ? 0 : event.code === 'End' ? topics.length - 1 : index < 0 ? (event.code === 'ArrowUp' ? topics.length - 1 : 0) : (index + (event.code === 'ArrowUp' ? -1 : 1) + topics.length) % topics.length;
+    topics[next].focus(); event.preventDefault();
+  }
+  // Enter/Space retain native button activation, all game shortcuts stay outside.
+  return true;
+}
 $('settlement-form').addEventListener('submit',event=>{event.preventDefault();const id=Number($('settlement-select').value);if(!id||!game)return;game.visit_settlement(id);state=game.state();closeModal();toast('Arrived. Follow the lanes; press E to talk or open a door.');});
 
 const menuKeys = { KeyM: 'map', Tab: 'map', KeyI: 'bag', KeyC: 'character', KeyK: 'skills', KeyO: 'settings' };
@@ -1067,6 +1133,7 @@ document.addEventListener('keydown', (event) => {
     releaseMouse();
     return;
   }
+  if (modalKeyboard(event)) return;
   if (editing) return;
   if (event.code === 'F4') { event.preventDefault(); document.body.classList.toggle('photo-mode'); return; }
   if (event.code === 'F3') { event.preventDefault(); $('diagnostics').classList.toggle('hidden'); return; }
@@ -1087,7 +1154,19 @@ document.addEventListener('keydown', (event) => {
   if(event.code==='KeyE'&&!event.repeat&&!modal){event.preventDefault();interact();return;}
   if (modal) {
     if (modal === 'map'  && event.target === mapCanvas) {
-      const pan = map.span * .08;
+      const pan = map.span * (event.shiftKey ? .2 : .08);
+      if (event.code === 'Enter') { event.preventDefault(); const {w,h} = mapGeometry(); selectMapPoint(w/2,h/2); }
+      if (event.code === 'Home') { event.preventDefault(); map.x = state.x; map.z = state.z; scheduleMapData(0); }
+      if (event.code === 'End') { event.preventDefault(); fitWorld(); }
+      if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
+        event.preventDefault();
+        const places = [...map.visibleFeatures].sort((a,b) => a.py - b.py || a.px - b.px);
+        if (places.length) {
+          const index = places.findIndex(p => map.selected && p.x === map.selected.x && p.z === map.selected.z);
+          map.selected = {...places[index < 0 ? (event.code === 'BracketLeft' ? places.length - 1 : 0) : (index + (event.code === 'BracketLeft' ? -1 : 1) + places.length) % places.length]};
+          updateSelection();
+        }
+      }
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.code)) {
         event.preventDefault();
         if (event.code === 'ArrowLeft') map.x -= pan;
@@ -1160,7 +1239,11 @@ for (const button of document.querySelectorAll('[data-move]')) {
   button.addEventListener('pointerup', release); button.addEventListener('pointercancel', release); button.addEventListener('lostpointercapture', release);
 }
 $('touch-jump').addEventListener('pointerdown', (event) => { event.preventDefault(); if (started && !modal) jumpQueued = true; });
+mapCanvas.addEventListener('focus', () => { map.dirty = true; });
+mapCanvas.addEventListener('blur', () => { map.dirty = true; });
+document.fonts?.ready.then(() => { map.dirty = true; });
 mapCanvas.addEventListener('pointerdown', (event) => {
+  mapCanvas.focus();
   mapCanvas.setPointerCapture(event.pointerId);
   map.dragging = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
   mapCanvas.style.cursor = 'grabbing';
@@ -1182,6 +1265,9 @@ mapCanvas.addEventListener('pointerup', (event) => {
   if (drag.moved) { scheduleMapData(0); return; }
   const rect = mapCanvas.getBoundingClientRect();
   const px = event.clientX - rect.left, py = event.clientY - rect.top;
+  selectMapPoint(px, py);
+});
+function selectMapPoint(px, py) {
   const nearest = map.visibleFeatures.map((feature) => ({ feature, distance: Math.hypot(feature.px - px, feature.py - py) })).sort((a, b) => a.distance - b.distance)[0];
   if (nearest && nearest.distance < 18) map.selected = { ...nearest.feature };
   else {
@@ -1190,7 +1276,7 @@ mapCanvas.addEventListener('pointerup', (event) => {
     map.selected = { ...point, name: 'Uncharted wilderness', kind: 'point' };
   }
   updateSelection();
-});
+}
 mapCanvas.addEventListener('pointercancel', () => { map.dragging = null; mapCanvas.style.cursor = 'crosshair'; scheduleMapData(); });
 mapCanvas.addEventListener('wheel', (event) => {
   event.preventDefault();

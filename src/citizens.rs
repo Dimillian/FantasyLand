@@ -164,6 +164,8 @@ pub struct Topic {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Conversation {
+    pub appearance: Appearance,
+    pub age: u32,
     pub name: String,
     pub role: String,
     pub detail: String,
@@ -798,6 +800,8 @@ impl Life {
             "inn"|"smith"|"guild"|"arcane"|"temple"|"market"=>{let usage=match topic{"inn"=>Use::Inn,"smith"=>Use::Smithy,"guild"=>Use::Guild,"arcane"=>Use::Arcane,"temple"=>Use::Temple,_=>Use::Market};layout.as_ref().and_then(|l|l.buildings.iter().filter(|b|b.usage==usage).min_by(|b,c|dist([b.x,b.z],[a.position[0],a.position[2]]).total_cmp(&dist([c.x,c.z],[a.position[0],a.position[2]])))).map_or(format!("We don't have a {} here. You would need to ask in a larger settlement.",usage.name()),|b|{let bearing=(b.x-a.position[0]).atan2(-(b.z-a.position[2]));let direction=["north","northeast","east","southeast","south","southwest","west","northwest"][(((bearing+PI/8.).rem_euclid(TAU)/(PI/4.)) as usize)%8];let meters=dist([b.x,b.z],[a.position[0],a.position[2]]);format!("{} is to the {}, {}. Follow the lanes into the {}; look for the sign beside the entrance.",b.name,direction,if meters<25.{"just a few steps away".into()}else{format!("roughly {} paces from here",(meters/10.).round() as u32*10)},b.district.to_lowercase())})},
             _=>format!("{} I'm {}, the {}. {}",if hour<6||hour>=21{"Evening, traveller."}else{"Good day, traveller."},p.name,ROLES[p.role as usize],if a.walking{"I have a moment before I go."}else{"What would you like to know?"})};
         Some(Conversation {
+            appearance: p.appearance.clone(),
+            age: p.age,
             name: p.name.clone(),
             role: ROLES[p.role as usize].into(),
             detail: format!("{} · {}", p.trait_name, a.activity),

@@ -24,7 +24,16 @@ impl From<&Vertex> for PackedVertex {
             ],
             color: v.color,
             material: v.material,
-            uv: v.uv.map(|v| (v.clamp(0., 1.) * 65535.).round() as u16),
+            uv: v.uv.map(|u| {
+                // Architecture carries signed metric UVs; preserve repeats in
+                // the same four bytes as normalized foliage/card UVs.
+                let u = if (100.0..200.0).contains(&v.texture) {
+                    u / 128.0 + 0.5
+                } else {
+                    u
+                };
+                (u.clamp(0., 1.) * 65535.).round() as u16
+            }),
             texture: v.texture,
         }
     }
@@ -50,6 +59,28 @@ pub fn pack(vertices: &[Vertex], indices: &[u32]) -> (Vec<PackedVertex>, Vec<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metric_architecture_uvs_survive_gpu_packing_without_clamping() {
+        let v = Vertex {
+            position: [0.; 3],
+            normal: [0., 1., 0.],
+            color: [0.5; 3],
+            material: 2.,
+            uv: [-12.25, 8.5],
+            texture: 120.,
+        };
+        let packed = PackedVertex::from(&v);
+        for i in 0..2 {
+            let decoded = (packed.uv[i] as f32 / 65535. - 0.5) * 128.;
+            assert!((decoded - v.uv[i]).abs() < 0.0011);
+        }
+        let card = PackedVertex::from(&Vertex {
+            uv: [0., 1.],
+            texture: 5.,
+            ..v
+        });
+        assert_eq!(card.uv, [0, 65535]);
+    }
     #[test]
     fn packing_preserves_water_and_shares_card_corners() {
         let a = Vertex {

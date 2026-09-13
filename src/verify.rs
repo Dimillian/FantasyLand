@@ -226,7 +226,10 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
-    if check.as_deref() == Some("settlement-scenes") {
+    if matches!(
+        check.as_deref(),
+        Some("settlement-scenes" | "settlement-art")
+    ) {
         use fantasy_land::settlements::{dist, Kind, Use};
         let mut life = fantasy_land::citizens::Life::new();
         renderer.set_quality(0);
@@ -248,7 +251,7 @@ fn main() {
             .unwrap();
         let l = world.settlements.layout(&world, e.site.id).unwrap();
         let inn = l.buildings.iter().find(|b| b.usage == Use::Inn).unwrap();
-        let scenes = [
+        let mut scenes = vec![
             (
                 "capital",
                 [e.site.x, world.height(e.site.x, e.site.z) + 1.72, e.site.z],
@@ -271,6 +274,59 @@ fn main() {
                 22.,
             ),
         ];
+        if check.as_deref() == Some("settlement-art") {
+            let look = |a: [f32; 3], b: [f32; 3]| {
+                let d = glam::Vec3::from_array(b) - glam::Vec3::from_array(a);
+                (d.x.atan2(-d.z), (d.y / d.length()).asin())
+            };
+            for (material, name) in [(0, "brick-house"), (1, "timber-house"), (2, "stone-house")] {
+                if let Some(home) = l
+                    .buildings
+                    .iter()
+                    .find(|b| b.usage == Use::Home && b.id % 5 == material)
+                {
+                    let p = home.point(home.half[0] * 0.9, 1.9, -home.half[1] - 9.0);
+                    let (yaw, pitch) = look(p, home.point(0., 2.4, 0.));
+                    scenes.push((name, p, yaw, pitch, 9.));
+                }
+            }
+            let p = inn.point(0., 1.55, inn.half[1] * 0.47);
+            let (yaw, pitch) = look(p, inn.point(3.5, 0.8, inn.half[1] - 1.2));
+            scenes.push(("bedroom", p, yaw, pitch, 10.));
+            let sun = fantasy_land::celestial::state(7.6).sun;
+            let home = l
+                .buildings
+                .iter()
+                .filter(|b| b.usage == Use::Home)
+                .max_by(|a, b| {
+                    let score = |b: &fantasy_land::settlements::Building| {
+                        (sun.x * b.yaw.cos() - sun.z * b.yaw.sin()).abs()
+                    };
+                    score(a).total_cmp(&score(b))
+                })
+                .unwrap();
+            let side = (sun.x * home.yaw.cos() - sun.z * home.yaw.sin()).signum();
+            let p = home.point(-side * 0.8, 1.45, -home.half[1] + 1.6);
+            let (yaw, pitch) = look(p, home.point(side * home.half[0], 1.9, 0.));
+            scenes.push(("window-light", p, yaw, pitch, 7.6));
+            let atlas = fantasy_land::people_sprites::generate();
+            let mut sheet = vec![0u8; 512 * 256 * 4];
+            for role in 0..16usize {
+                for y in 0..64usize {
+                    for x in 0..32usize {
+                        let src = ((role * 128 * 256) + y * 128 + x) * 4;
+                        let dst = (((role / 8) * 64 + y) * 2 * 512 + (role % 8) * 64 + x * 2) * 4;
+                        sheet[dst..dst + 4].copy_from_slice(&atlas[src..src + 4]);
+                        sheet[dst + 4..dst + 8].copy_from_slice(&atlas[src..src + 4]);
+                        sheet[dst + 512 * 4..dst + 512 * 4 + 4]
+                            .copy_from_slice(&atlas[src..src + 4]);
+                        sheet[dst + 512 * 4 + 4..dst + 512 * 4 + 8]
+                            .copy_from_slice(&atlas[src..src + 4]);
+                    }
+                }
+            }
+            save_png(&format!("{dir}/citizen-sprites.png"), 512, 256, &sheet);
+        }
         for (name, p, yaw, pitch, hour) in scenes {
             let eye = glam::Vec3::from_array(p);
             renderer.clear_chunks();

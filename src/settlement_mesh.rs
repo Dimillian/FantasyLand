@@ -28,11 +28,69 @@ pub fn block(
     mesh.quad(p(1, 0, 0), p(1, 1, 0), p(1, 1, 1), p(1, 0, 1), color, 2.);
     mesh.quad(p(0, 1, 0), p(0, 1, 1), p(1, 1, 1), p(1, 1, 0), color, 2.);
     mesh.quad(p(0, 0, 1), p(0, 0, 0), p(1, 0, 0), p(1, 0, 1), color, 2.);
-    tinted(mesh, start, texture);
+    for (face, vertices) in mesh.vertices[start..].chunks_mut(6).enumerate() {
+        for v in vertices {
+            let q = b.local(v.position[0], v.position[2]);
+            let y = v.position[1] - b.floor;
+            v.uv = match face {
+                0 | 1 => [q[0], y],
+                2 | 3 => [q[1], y],
+                _ => [q[0], q[1]],
+            };
+            v.texture = 100.0 + texture;
+        }
+    }
 }
 fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
     let [w, d] = b.half;
     let h = b.height;
+    // Sashes, recessed frame and transom have actual thickness.
+    for sign in [-1.0, 1.0] {
+        if side {
+            let x = sign * w;
+            for z in [-0.88, 0.80] {
+                block(
+                    mesh,
+                    b,
+                    [x - 0.2, 1.04, z],
+                    [x + 0.2, 2.58, z + 0.08],
+                    [0.26, 0.17, 0.09],
+                    4.0,
+                );
+            }
+            for y in [1.04, 1.78, 2.50] {
+                block(
+                    mesh,
+                    b,
+                    [x - 0.2, y, -0.88],
+                    [x + 0.2, y + 0.07, 0.88],
+                    [0.26, 0.17, 0.09],
+                    4.0,
+                );
+            }
+        } else if sign > 0.0 {
+            for x in [-0.88, 0.80] {
+                block(
+                    mesh,
+                    b,
+                    [x, 1.04, d - 0.2],
+                    [x + 0.08, 2.58, d + 0.2],
+                    [0.26, 0.17, 0.09],
+                    4.0,
+                );
+            }
+            for y in [1.04, 1.78, 2.50] {
+                block(
+                    mesh,
+                    b,
+                    [-0.88, y, d - 0.2],
+                    [0.88, y + 0.07, d + 0.2],
+                    [0.26, 0.17, 0.09],
+                    4.0,
+                );
+            }
+        }
+    }
     // Walls genuinely stop at the window aperture; light sees the exterior.
     for sign in [-1., 1.] {
         if side {
@@ -43,7 +101,14 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
                 (-0.85, 0.85, 0., 1.1),
                 (-0.85, 0.85, 2.5, h),
             ] {
-                block(mesh, b, [x - 0.12, y0, z0], [x + 0.12, y1, z1], color, 18.);
+                block(
+                    mesh,
+                    b,
+                    [x - 0.12, y0, z0],
+                    [x + 0.12, y1, z1],
+                    color,
+                    b.wall_material().0,
+                );
             }
             block(
                 mesh,
@@ -71,7 +136,14 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
                 (opening, w, 0., h),
                 (-opening, opening, top, h),
             ] {
-                block(mesh, b, [x0, y0, z - 0.12], [x1, y1, z + 0.12], color, 18.);
+                block(
+                    mesh,
+                    b,
+                    [x0, y0, z - 0.12],
+                    [x1, y1, z + 0.12],
+                    color,
+                    b.wall_material().0,
+                );
             }
             if low > 0. {
                 block(
@@ -80,7 +152,7 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
                     [-opening, 0., z - 0.12],
                     [opening, low, z + 0.12],
                     color,
-                    18.,
+                    b.wall_material().0,
                 );
                 block(
                     mesh,
@@ -94,201 +166,375 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
         }
     }
 }
-fn furniture(mesh: &mut MeshData, b: &Building) {
+/// Shared solid furniture/partition recipe. Rendering and movement consume it.
+pub fn interior_parts(b: &Building, mut part: impl FnMut([f32; 3], [f32; 3], [f32; 3], f32, bool)) {
     let [w, d] = b.half;
-    let wood = [0.32, 0.21, 0.12];
-    if let Some(source) = b.torch() {
-        let z = -d + 1.25;
-        block(
-            mesh,
-            b,
-            [-w + 0.12, 1.65, z - 0.06],
-            [-w + 0.45, 1.76, z + 0.06],
-            [0.18, 0.17, 0.15],
-            12.,
-        );
-        block(
-            mesh,
-            b,
-            [-w + 0.36, 1.65, z - 0.055],
-            [-w + 0.48, 2.0, z + 0.055],
-            [0.25, 0.14, 0.055],
-            4.,
-        );
-        let first = mesh.vertices.len();
-        mesh.triangle(
-            [source[0] - 0.13, source[1] - 0.18, source[2]],
-            [source[0], source[1] + 0.27, source[2]],
-            [source[0] + 0.13, source[1] - 0.18, source[2]],
-            [1., 0.48, 0.08],
-            10.,
-        );
-        for (v, uv) in mesh.vertices[first..]
-            .iter_mut()
-            .zip([[0., 1.], [0.5, 0.], [1., 1.]])
-        {
-            v.uv = uv;
-            v.texture = 16.;
-        }
-    }
-
-    // Hearth, masonry flue, burning logs. Flame emission is an existing HDR material.
-    block(
-        mesh,
-        b,
-        [-w + 0.2, 0., d - 1.6],
-        [-w + 1.7, 0.3, d - 0.2],
-        [0.30, 0.31, 0.29],
-        17.,
-    );
-    block(
-        mesh,
-        b,
-        [-w + 0.3, 0.2, d - 1.1],
-        [-w + 0.55, b.height + 0.8, d - 0.45],
-        [0.34, 0.34, 0.31],
-        17.,
-    );
-    block(
-        mesh,
-        b,
-        [-w + 0.5, 0.3, d - 1.2],
-        [-w + 1.4, 0.45, d - 0.55],
-        [0.17, 0.085, 0.03],
-        4.,
-    );
-    let f = b.point(-w + 1., 0.95, d - 0.8);
-    let a = b.point(-w + 0.7, 0.45, d - 0.8);
-    let c = b.point(-w + 1.3, 0.45, d - 0.8);
-    let start = mesh.vertices.len();
-    mesh.triangle(a, f, c, [1., 0.45, 0.06], 10.);
-    for (v, uv) in mesh.vertices[start..]
-        .iter_mut()
-        .zip([[0., 1.], [0.5, 0.], [1., 1.]])
-    {
-        v.uv = uv;
-        v.texture = 16.;
-    }
-    // A clear route remains down the middle of every occupied room.
-    let beds = if b.usage == Use::Barracks {
-        4
-    } else if b.usage == Use::Inn {
-        3
-    } else {
-        2
-    };
-    for n in 0..beds {
-        let x = w - 1.7;
-        let z = d - 2.8 - n as f32 * 2.2;
-        if z < -d + 1.8 {
-            break;
-        }
-        block(mesh, b, [x, 0.08, z], [x + 1.25, 0.36, z + 1.85], wood, 4.);
-        block(
-            mesh,
-            b,
-            [x + 0.05, 0.36, z + 0.06],
-            [x + 1.2, 0.58, z + 1.8],
-            [0.34, 0.36, 0.31],
-            11.,
-        );
-        block(
-            mesh,
-            b,
-            [x + 0.08, 0.58, z + 1.3],
-            [x + 1.15, 0.69, z + 1.76],
-            [0.71, 0.68, 0.54],
-            11.,
-        );
-    }
-    block(
-        mesh,
-        b,
-        [-w + 0.5, 0.72, -1.5],
-        [-w + 2.6, 0.86, 0.2],
-        wood,
-        4.,
-    );
-    for x in [-w + 0.62, -w + 2.4] {
-        for z in [-1.38, 0.08] {
-            block(mesh, b, [x, 0., z], [x + 0.12, 0.75, z + 0.12], wood, 4.);
-        }
-    }
-    block(
-        mesh,
-        b,
-        [-w + 0.5, 0.0, -d + 1.],
-        [-w + 1.8, 0.6, -d + 1.8],
-        [0.30, 0.19, 0.105],
-        4.,
-    );
-    // Shelves, provisions and books distinguish work interiors without services.
-    if b.usage.public() {
-        for y in [0.7, 1.35, 2.] {
-            block(
-                mesh,
-                b,
-                [-1.4, y, d - 0.8],
-                [1.4, y + 0.1, d - 0.28],
-                wood,
-                4.,
+    let wood = [0.36, 0.23, 0.13];
+    let iron = [0.22, 0.24, 0.23];
+    let mut add = |lo, hi, c, t, solid| part(lo, hi, c, t, solid);
+    if b.usage == Use::Tent {
+        // Low camp furniture fits beneath canvas, with an open centre passage.
+        for side in [-1.0, 1.0] {
+            let x = side * (w * 0.53);
+            add(
+                [x - 0.42, 0.02, -d + 0.85],
+                [x + 0.42, 0.16, d - 1.1],
+                [0.43, 0.36, 0.21],
+                11.0,
+                true,
             );
-            for n in 0..6 {
-                let x = -1.2 + n as f32 * 0.42;
-                block(
-                    mesh,
-                    b,
-                    [x, y + 0.1, d - 0.68],
-                    [x + 0.25, y + 0.38, d - 0.32],
-                    if matches!(b.usage, Use::Arcane | Use::Guild | Use::Temple) {
-                        [0.24 + n as f32 * 0.045, 0.23, 0.34]
-                    } else {
-                        [0.52, 0.40, 0.21]
-                    },
-                    11.,
+            add(
+                [x - 0.36, 0.16, d - 1.55],
+                [x + 0.36, 0.29, d - 1.16],
+                [0.64, 0.57, 0.39],
+                11.0,
+                false,
+            );
+        }
+        add(
+            [w - 1.0, 0.0, d - 0.9],
+            [w - 0.4, 0.42, d - 0.35],
+            wood,
+            21.0,
+            true,
+        );
+        add(
+            [-0.38, 0.0, d + 0.52],
+            [0.38, 0.18, d + 1.2],
+            [0.31, 0.30, 0.26],
+            17.0,
+            true,
+        );
+        add(
+            [-0.25, 0.18, d + 0.67],
+            [0.25, 0.30, d + 1.05],
+            wood,
+            4.0,
+            false,
+        );
+        return;
+    }
+    if let Some(z) = b.partition() {
+        for (x0, x1) in [(-w, -0.94), (0.94, w)] {
+            add(
+                [x0, 0.0, z - 0.1],
+                [x1, b.height, z + 0.1],
+                [0.59, 0.52, 0.38],
+                18.0,
+                true,
+            );
+        }
+        add(
+            [-0.94, 2.5, z - 0.12],
+            [0.94, b.height, z + 0.12],
+            wood,
+            4.0,
+            true,
+        );
+        for x in [-0.97, 0.90] {
+            add(
+                [x, 0.0, z - 0.16],
+                [x + 0.07, 2.56, z + 0.16],
+                wood,
+                4.0,
+                true,
+            );
+        }
+    }
+    // Living space: a hearth, dining table, chairs, cupboard, shelves and crockery.
+    let hz = b.hearth_z();
+    add(
+        [-w + 0.2, 0.0, hz - 0.7],
+        [-w + 1.75, 0.28, hz + 0.6],
+        [0.38, 0.37, 0.32],
+        17.0,
+        true,
+    );
+    for x in [-w + 0.24, -w + 1.5] {
+        add(
+            [x, 0.28, hz + 0.15],
+            [x + 0.18, 1.46, hz + 0.52],
+            [0.39, 0.37, 0.32],
+            17.0,
+            true,
+        );
+    }
+    add(
+        [-w + 0.24, 1.35, hz + 0.15],
+        [-w + 1.68, 1.58, hz + 0.55],
+        [0.35, 0.34, 0.30],
+        17.0,
+        true,
+    );
+    add(
+        [-w + 0.32, 1.58, hz + 0.20],
+        [-w + 1.6, b.height + 1.9, hz + 0.58],
+        [0.39, 0.37, 0.33],
+        17.0,
+        true,
+    );
+    add(
+        [-w + 0.6, 0.28, hz - 0.25],
+        [-w + 1.35, 0.43, hz + 0.2],
+        [0.19, 0.10, 0.04],
+        4.0,
+        true,
+    );
+    let tx = w - 1.5;
+    let tz = -d + 2.2;
+    add(
+        [tx - 0.62, 0.77, tz - 0.80],
+        [tx + 0.62, 0.91, tz + 0.8],
+        wood,
+        4.0,
+        true,
+    );
+    for x in [-0.5, 0.4] {
+        for z in [-0.67, 0.57] {
+            add(
+                [tx + x, 0.0, tz + z],
+                [tx + x + 0.11, 0.8, tz + z + 0.11],
+                wood,
+                4.0,
+                true,
+            );
+        }
+    }
+    for z in [-1.25, 1.25] {
+        let zc = tz + z;
+        add(
+            [tx - 0.35, 0.44, zc - 0.34],
+            [tx + 0.35, 0.54, zc + 0.34],
+            wood,
+            4.0,
+            true,
+        );
+        for x in [-0.30, 0.22] {
+            for dz in [-0.27, 0.2] {
+                add(
+                    [tx + x, 0.0, zc + dz],
+                    [tx + x + 0.08, 0.48, zc + dz + 0.08],
+                    wood,
+                    4.0,
+                    true,
                 );
             }
         }
+        let back = zc + z.signum() * 0.29;
+        add(
+            [tx - 0.35, 0.53, back - 0.05],
+            [tx + 0.35, 1.15, back + 0.05],
+            wood,
+            4.0,
+            true,
+        );
+    }
+    for n in 0..3 {
+        let x = tx - 0.38 + n as f32 * 0.34;
+        add(
+            [x, 0.91, tz - 0.2],
+            [x + 0.17, 1.07, tz - 0.02],
+            [0.61, 0.55, 0.36],
+            11.0,
+            false,
+        );
+    }
+    add(
+        [-w + 0.35, 0.0, -d + 0.35],
+        [-w + 1.75, 1.55, -d + 0.94],
+        wood,
+        21.0,
+        true,
+    );
+    for y in [0.46, 0.98, 1.50] {
+        add(
+            [-w + 0.26, y, -d + 0.30],
+            [-w + 1.84, y + 0.06, -d + 1.0],
+            wood,
+            4.0,
+            false,
+        );
+    }
+    add(
+        [-w + 1.02, 0.76, -d + 0.96],
+        [-w + 1.12, 0.92, -d + 1.02],
+        iron,
+        12.0,
+        false,
+    );
+    let bedroom = b.partition().unwrap_or(0.0);
+    // Beds stay on either side of the centre aisle, beside nightstands and chests.
+    if !matches!(
+        b.usage,
+        Use::Market | Use::Stable | Use::Smithy | Use::Temple | Use::Hall
+    ) {
+        for side in [-1.0, 1.0] {
+            let x = side * (w - 1.14);
+            let z = (bedroom + 0.52).max(d - 3.0);
+            let end = (z + 2.1).min(d - 0.3);
+            add([x - 0.68, 0.18, z], [x + 0.68, 0.4, end], wood, 4.0, true);
+            add(
+                [x - 0.62, 0.4, z + 0.06],
+                [x + 0.62, 0.64, end - 0.06],
+                [0.65, 0.58, 0.41],
+                11.0,
+                true,
+            );
+            add(
+                [x - 0.62, 0.64, z + 0.05],
+                [x + 0.62, 0.69, end - 0.56],
+                if b.id % 2 == 0 {
+                    [0.34, 0.38, 0.27]
+                } else {
+                    [0.37, 0.20, 0.17]
+                },
+                11.0,
+                false,
+            );
+            add(
+                [x - 0.49, 0.64, end - 0.5],
+                [x + 0.49, 0.79, end - 0.12],
+                [0.79, 0.72, 0.53],
+                11.0,
+                false,
+            );
+            for zz in [z, end - 0.10] {
+                add(
+                    [x - 0.72, 0.0, zz],
+                    [x + 0.72, if zz == z { 0.77 } else { 1.08 }, zz + 0.1],
+                    wood,
+                    21.0,
+                    true,
+                );
+            }
+            let nx = x - side * 1.13;
+            add(
+                [nx - 0.29, 0.0, end - 0.64],
+                [nx + 0.29, 0.63, end - 0.06],
+                wood,
+                21.0,
+                true,
+            );
+            add(
+                [nx - 0.31, 0.63, end - 0.67],
+                [nx + 0.31, 0.7, end - 0.03],
+                wood,
+                4.0,
+                true,
+            );
+            add(
+                [nx - 0.14, 0.71, end - 0.38],
+                [nx + 0.13, 0.80, end - 0.19],
+                [0.54, 0.24, 0.12],
+                11.0,
+                false,
+            );
+        }
+    }
+    // Woven runner, patched cloth, books and wall shelves add scale without cluttering routes.
+    add(
+        [-0.7, 0.006, -d + 1.1],
+        [0.7, 0.016, d - 0.6],
+        [0.37, 0.23, 0.16],
+        11.0,
+        false,
+    );
+    for y in [1.2, 1.88] {
+        add(
+            [1.18, y, d - 0.65],
+            [w - 0.35, y + 0.08, d - 0.3],
+            wood,
+            4.0,
+            false,
+        );
+        for n in 0..7 {
+            let x = 1.25 + n as f32 * (w - 1.85) / 7.0;
+            add(
+                [x, y + 0.08, d - 0.57],
+                [x + 0.22, y + 0.38 + (n % 2) as f32 * 0.08, d - 0.32],
+                [
+                    0.25 + (n % 3) as f32 * 0.09,
+                    0.22,
+                    0.17 + (n % 2) as f32 * 0.1,
+                ],
+                11.0,
+                false,
+            );
+        }
     }
     if b.usage == Use::Smithy {
+        add([-w + 0.4, 0.0, 1.4], [-w + 2.0, 0.7, 2.4], wood, 4.0, true);
+        add(
+            [-w + 0.3, 0.7, 1.3],
+            [-w + 2.2, 1.04, 2.5],
+            [0.28, 0.29, 0.27],
+            12.0,
+            true,
+        );
+    }
+}
+fn flame(mesh: &mut MeshData, b: &Building, p: [f32; 3], size: f32) {
+    let start = mesh.vertices.len();
+    for axis in 0..2 {
+        let mut a = p;
+        let mut c = p;
+        let mut tip = p;
+        a[axis * 2] -= size;
+        c[axis * 2] += size;
+        a[1] -= size;
+        c[1] -= size;
+        tip[1] += size * 1.6;
+        mesh.triangle(a, tip, c, [1.0, 0.46, 0.07], 10.0);
+    }
+    for (i, v) in mesh.vertices[start..].iter_mut().enumerate() {
+        v.uv = [[0.0, 1.0], [0.5, 0.0], [1.0, 1.0]][i % 3];
+        v.texture = 16.0;
+    }
+    let _ = b;
+}
+fn furniture(mesh: &mut MeshData, b: &Building) {
+    interior_parts(b, |lo, hi, c, t, _| block(mesh, b, lo, hi, c, t));
+    let h = b.hearth();
+    flame(mesh, b, [h[0], h[1], h[2]], 0.27);
+    if let Some(t) = b.torch() {
+        let z = -b.half[1] + 1.25;
+        let w = b.half[0];
         block(
             mesh,
             b,
-            [-1., 0., -0.2],
-            [0.2, 0.75, 0.7],
-            [0.22, 0.23, 0.24],
-            12.,
+            [-w + 0.1, 1.68, z - 0.07],
+            [-w + 0.49, 1.79, z + 0.07],
+            [0.20, 0.20, 0.18],
+            12.0,
         );
         block(
             mesh,
             b,
-            [-1.3, 0.7, -0.35],
-            [0.45, 0.92, 0.85],
-            [0.31, 0.33, 0.35],
-            12.,
+            [-w + 0.36, 1.69, z - 0.06],
+            [-w + 0.48, 2.05, z + 0.06],
+            [0.28, 0.16, 0.07],
+            4.0,
         );
+        flame(mesh, b, [t[0], t[1], t[2]], 0.14);
     }
 }
 fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
     let [w, d] = b.half;
     let h = b.height;
-    let wall = match b.id % 4 {
-        0 => [0.64, 0.60, 0.46],
-        1 => [0.55, 0.55, 0.49],
-        2 => [0.64, 0.54, 0.42],
-        _ => [0.59, 0.62, 0.56],
-    };
+    let wall = b.wall_material().1;
     if b.usage == Use::Tent {
         let start = mesh.vertices.len();
         for side in [-1., 1.] {
-            mesh.quad(
+            let mut p = [
                 b.point(side * w, 0., -d),
                 b.point(0., 2.7, -d),
                 b.point(0., 2.7, d),
                 b.point(side * w, 0., d),
-                [0.59, 0.46, 0.28],
-                5.,
-            );
+            ];
+            if side < 0.0 {
+                p.reverse();
+            }
+            mesh.quad(p[0], p[1], p[2], p[3], [0.59, 0.46, 0.28], 5.0);
         }
         tinted(mesh, start, 11.);
         block(
@@ -362,40 +608,127 @@ fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
             4.,
         );
     }
-    let start = mesh.vertices.len();
-    let roof = match b.id % 3 {
-        0 => [0.34, 0.20, 0.13],
-        1 => [0.27, 0.32, 0.33],
-        _ => [0.47, 0.29, 0.16],
-    };
-    for side in [-1., 1.] {
-        mesh.quad(
-            b.point(side * (w + 0.5), h, -d - 0.5),
-            b.point(0., h + 2.2, -d - 0.5),
-            b.point(0., h + 2.2, d + 0.5),
-            b.point(side * (w + 0.5), h, d + 0.5),
-            roof,
-            2.,
+    // A single pitch joins the gable, roof skin, fascia and ridge exactly.
+    let rise = b.roof_rise();
+    let slope = rise / w;
+    let roof = [[0.35, 0.22, 0.13], [0.30, 0.35, 0.37], [0.46, 0.29, 0.19]][(b.id % 3) as usize];
+    for side in [-1.0, 1.0] {
+        let a = b.point(side * (w + 0.48), h - slope * 0.48, -d - 0.42);
+        let r = b.point(0.0, h + rise, -d - 0.42);
+        let rr = b.point(0.0, h + rise, d + 0.42);
+        let aa = b.point(side * (w + 0.48), h - slope * 0.48, d + 0.42);
+        let first = mesh.vertices.len();
+        if side > 0.0 {
+            mesh.quad(a, r, rr, aa, roof, 2.0);
+        } else {
+            mesh.quad(aa, rr, r, a, roof, 2.0);
+        }
+        for v in &mut mesh.vertices[first..] {
+            let q = b.local(v.position[0], v.position[2]);
+            v.uv = [q[1], q[0].abs() * (1.0 + slope * slope).sqrt()];
+            v.texture = 119.0;
+        }
+        block(
+            mesh,
+            b,
+            [side * w - 0.16, h - 0.18, -d - 0.44],
+            [side * w + 0.16, h + 0.06, d + 0.44],
+            [0.24, 0.16, 0.09],
+            4.0,
         );
     }
-    for sign in [-1., 1.] {
-        mesh.triangle(
-            b.point(-w, h, sign * d),
-            b.point(0., h + 2.2, sign * d),
-            b.point(w, h, sign * d),
-            wall,
-            2.,
-        );
+    for sign in [-1.0, 1.0] {
+        let first = mesh.vertices.len();
+        let a = b.point(-w, h, sign * d);
+        let r = b.point(0.0, h + rise, sign * d);
+        let c = b.point(w, h, sign * d);
+        if sign < 0.0 {
+            mesh.triangle(a, r, c, wall, 2.0);
+        } else {
+            mesh.triangle(c, r, a, wall, 2.0);
+        }
+        for v in &mut mesh.vertices[first..] {
+            let q = b.local(v.position[0], v.position[2]);
+            v.uv = [q[0], v.position[1] - b.floor];
+            v.texture = 100.0 + b.wall_material().0;
+        }
+        // Continuous sloping prisms: no staircase blocks along the gable seam.
+        for side in [-1.0_f32, 1.0] {
+            let start = mesh.vertices.len();
+            let x0 = (side * (w + 0.48)).min(0.0);
+            let x1 = (side * (w + 0.48)).max(0.0);
+            block(
+                mesh,
+                b,
+                [x0, -0.14, sign * d - 0.18],
+                [x1, 0.02, sign * d + 0.18],
+                [0.23, 0.15, 0.085],
+                4.0,
+            );
+            for v in &mut mesh.vertices[start..] {
+                let x = b.local(v.position[0], v.position[2])[0];
+                v.position[1] += h + rise - slope * x.abs();
+            }
+            for tri in mesh.vertices[start..].chunks_mut(3) {
+                let a = glam::Vec3::from_array(tri[0].position);
+                let normal = (glam::Vec3::from_array(tri[1].position) - a)
+                    .cross(glam::Vec3::from_array(tri[2].position) - a)
+                    .normalize()
+                    .to_array();
+                for v in tri {
+                    v.normal = normal;
+                }
+            }
+        }
     }
-    tinted(mesh, start, 19.);
+
     block(
         mesh,
         b,
-        [-w, h - 0.08, -d],
-        [w, h + 0.02, d],
-        [0.25, 0.17, 0.105],
-        4.,
+        [-0.13, h + rise - 0.06, -d - 0.48],
+        [0.13, h + rise + 0.13, d + 0.48],
+        roof,
+        19.0,
     );
+    block(
+        mesh,
+        b,
+        [-w, h - 0.12, -d],
+        [w, h + 0.01, d],
+        [0.28, 0.19, 0.11],
+        4.0,
+    );
+    // Wall studs and lower stone course vary the exterior silhouette.
+    for x in [-w * 0.58, w * 0.58] {
+        for z in [-d, d] {
+            block(
+                mesh,
+                b,
+                [x - 0.055, 0.16, z - 0.17],
+                [x + 0.055, h, z + 0.17],
+                [0.24, 0.15, 0.08],
+                4.0,
+            );
+        }
+    }
+    if b.id % 5 != 1 {
+        for sign in [-1.0, 1.0] {
+            for (x0, x1) in if sign < 0.0 {
+                vec![(-w, -0.96), (0.96, w)]
+            } else {
+                vec![(-w, w)]
+            } {
+                block(
+                    mesh,
+                    b,
+                    [x0, 0.05, sign * d - 0.14],
+                    [x1, 0.45, sign * d + 0.14],
+                    [0.43, 0.43, 0.37],
+                    17.0,
+                );
+            }
+        }
+    }
     if b.usage.public() {
         // Hanging shop/guild sign, deliberately no active commerce.
         block(
@@ -586,11 +919,21 @@ pub fn blocked(world: &World, x: f32, feet: f32, z: f32) -> bool {
                         return true;
                     }
                 }
-                if b.inside(x, z, 0.) && feet < b.floor + 0.7 {
-                    if (p[0] > -w + 0.15 && p[0] < -w + 2.95 && p[1] > -1.85 && p[1] < 0.55)
-                        || (p[0] > w - 2.0 && p[0] < w - 0.1 && p[1] > d - 5.4 && p[1] < d - 0.5)
-                        || (p[0] < -w + 2.0 && p[1] > d - 1.95)
-                    {
+                if b.inside(x, z, 0.4) {
+                    let mut hit = false;
+                    interior_parts(b, |lo, hi, _, _, solid| {
+                        if solid
+                            && feet + 1.65 > b.floor + lo[1]
+                            && feet < b.floor + hi[1]
+                            && p[0] > lo[0] - 0.24
+                            && p[0] < hi[0] + 0.24
+                            && p[1] > lo[2] - 0.24
+                            && p[1] < hi[2] + 0.24
+                        {
+                            hit = true;
+                        }
+                    });
+                    if hit {
                         return true;
                     }
                 }
@@ -621,4 +964,137 @@ pub fn floor(world: &World, x: f32, z: f32, height: f32) -> f32 {
         }
     }
     h
+}
+
+/// A small independent transparent batch; never present in opaque/shadow meshes.
+pub fn glass_mesh(world: &World, eye: [f32; 3]) -> MeshData {
+    let mut mesh = MeshData::default();
+    let layouts = world.settlements.layouts_near(world, eye[0], eye[2], 100.0);
+    let mut buildings: Vec<_> = layouts
+        .iter()
+        .flat_map(|l| &l.buildings)
+        .filter(|b| b.door && (b.x - eye[0]).hypot(b.z - eye[2]) < 100.0)
+        .collect();
+    buildings.sort_by(|a, b| {
+        ((b.x - eye[0]).hypot(b.z - eye[2])).total_cmp(&((a.x - eye[0]).hypot(a.z - eye[2])))
+    });
+    for b in buildings {
+        for face in 0..3 {
+            let [w, d] = b.half;
+            let point = |x, y| match face {
+                0 => b.point(-w, y, x),
+                1 => b.point(w, y, x),
+                _ => b.point(x, y, d),
+            };
+            let first = mesh.vertices.len();
+            mesh.quad(
+                point(-0.83, 1.13),
+                point(-0.83, 2.48),
+                point(0.83, 2.48),
+                point(0.83, 1.13),
+                if b.id % 3 == 0 {
+                    [0.45, 0.62, 0.58]
+                } else {
+                    [0.64, 0.68, 0.56]
+                },
+                13.0,
+            );
+            for (i, v) in mesh.vertices[first..].iter_mut().enumerate() {
+                v.uv = [
+                    [0.0, 1.0],
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                ][i];
+                v.texture = 22.0;
+            }
+        }
+    }
+    mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn sample(usage: Use, half: [f32; 2], yaw: f32) -> Building {
+        Building {
+            id: 20,
+            name: "Fixture".into(),
+            usage,
+            x: 140.0,
+            z: -230.0,
+            floor: 12.0,
+            yaw,
+            half,
+            height: 3.5,
+            door: usage != Use::Tent,
+            district: "Crafts".into(),
+            street_node: 0,
+            porch_node: 1,
+            room_node: 2,
+        }
+    }
+    #[test]
+    fn furniture_preserves_central_routes_and_a_clear_rear_window() {
+        for (usage, half) in [
+            (Use::Home, [3.4, 4.2]),
+            (Use::Inn, [5.0, 6.0]),
+            (Use::Tent, [2.8, 3.3]),
+        ] {
+            let b = sample(usage, half, 0.7);
+            interior_parts(&b, |lo, hi, _, _, solid| {
+                assert!(lo.iter().zip(hi).all(|(a, b)| *a <= b));
+                if solid && lo[1] < 1.65 && hi[1] > 0.0 && hi[2] > -half[1] && lo[2] < half[1] - 0.5
+                {
+                    assert!(
+                        hi[0] + 0.24 <= -0.30 || lo[0] - 0.24 >= 0.30,
+                        "centre aisle blocked by {lo:?}..{hi:?} in {usage:?}"
+                    );
+                }
+                if usage != Use::Tent && lo[2] > half[1] - 0.8 && hi[1] > 1.2 && lo[1] < 2.48 {
+                    assert!(hi[0] < -0.85 || lo[0] > 0.85, "rear window occluded");
+                }
+                if usage == Use::Tent && hi[2] < half[1] {
+                    assert!(hi[1] < 0.6);
+                }
+            });
+        }
+    }
+    #[test]
+    fn architecture_uvs_and_roof_pitch_survive_building_rotation() {
+        for yaw in [0.0, 0.6, 1.8] {
+            let b = sample(Use::Home, [3.8, 4.8], yaw);
+            let mut mesh = MeshData::default();
+            building(&mut mesh, &b, 0);
+            assert!(mesh.vertices.iter().all(|v| v
+                .position
+                .iter()
+                .chain(v.normal.iter())
+                .all(|f| f.is_finite())));
+            // Transparent glass never enters this opaque/shadow mesh.
+            assert!(mesh.vertices.iter().all(|v| v.material != 13.0));
+            let roofs: Vec<_> = mesh
+                .vertices
+                .iter()
+                .filter(|v| v.texture == 119.0 && v.normal[1] > 0.1 && v.normal[1] < 0.99)
+                .collect();
+            assert!(roofs.len() >= 12);
+            for v in roofs {
+                let q = b.local(v.position[0], v.position[2]);
+                let expected =
+                    b.floor + b.height + b.roof_rise() - q[0].abs() * b.roof_rise() / b.half[0];
+                assert!((v.position[1] - expected).abs() < 0.005);
+            }
+            let mut cube = MeshData::default();
+            block(&mut cube, &b, [-1., 0., -2.], [1., 2., 2.], [0.5; 3], 20.0);
+            for v in cube.vertices.iter().take(6) {
+                let p = b.local(v.position[0], v.position[2]);
+                assert!((v.uv[0] - p[0]).abs() < 0.001);
+                assert!((v.uv[1] - (v.position[1] - b.floor)).abs() < 0.001);
+                assert_eq!(v.texture, 120.0);
+            }
+        }
+    }
 }

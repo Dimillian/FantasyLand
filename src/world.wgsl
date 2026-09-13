@@ -202,7 +202,7 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
     o.normal = surface_normal;
     o.color = v.color;
     o.material = v.material;
-    o.uv = v.uv;
+    o.uv = select(v.uv,(v.uv-vec2<f32>(0.5))*128.0,v.texture>=100.0&&v.texture<200.0);
     o.texture = v.texture;
     return o;
 }
@@ -661,7 +661,8 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     if v.material > 9.5 && v.material < 10.5 {
         return vec4<f32>(atmospheric_color(flame_emission(pixel.pigment,pixel.emission,v.world),v.world,distance),1.0);
     }
-    var pigment = surface_pigment(pixel.pigment, v.world, normal, v.material, material_footprint, distance);
+    var pigment = pixel.pigment;
+    if v.texture<100.0 || v.texture>=200.0 { pigment=surface_pigment(pixel.pigment,v.world,normal,v.material,material_footprint,distance); }
     let room=room_at(v.world);
     var physical_sky=0.0;if room<0{physical_sky=open_sky(v.world);}
     let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
@@ -1040,4 +1041,21 @@ fn sky_radiance(ray: vec3<f32>) -> vec3<f32> {
     let uv = v.clip.xy / 512.0;
     let world_xz = u.cloud_shadow.xy + (uv - vec2<f32>(0.5)) / u.cloud_shadow.z;
     return vec4<f32>(weather_cloud_field(world_xz, false).x, 0.0, 0.0, 1.0);
+}
+
+// Thin imperfect leaded glass, composited over opaque scenery with depth writes off.
+@fragment fn fs_glass(v:VertexOut)->@location(0) vec4<f32>{
+    let pigment=textureSample(material_color,foliage_sampler,v.uv,22).rgb;
+    let packed=textureSample(material_surface,foliage_sampler,v.uv,22);
+    let n=normalize(v.normal+vec3<f32>((packed.x-0.5)*0.10,(packed.y-0.5)*0.06,0.0));let view=normalize(u.camera.xyz-v.world);
+    let fresnel=0.045+0.45*pow(1.0-abs(dot(n,view)),4.0);
+    let reflection=pow(max(sky_gradient(reflect(-view,n)),vec3<f32>(0.0)),vec3<f32>(2.2));
+    let lead=min(abs(fract((v.uv.x+v.uv.y)*3.0)-0.5),abs(fract((v.uv.x-v.uv.y)*3.0)-0.5));
+    let gradient=max(fwidth((v.uv.x+v.uv.y)*3.0),fwidth((v.uv.x-v.uv.y)*3.0));
+    let aa=max(gradient*0.5,0.001);
+    let coverage=(1.0-smoothstep(0.016-aa,0.016+aa,lead))*(1.0-smoothstep(0.20,0.65,gradient));
+    let tint=pow(v.color*pigment,vec3<f32>(2.2));
+    let shine=pow(max(dot(reflect(-normalize(u.light.xyz),n),view),0.0),84.0)*u.direct.w*sun_visibility(v.world,n)*weather_light_visibility(v.world);
+    let glass=mix(tint,reflection,0.65)+u.direct.rgb*shine*0.7;
+    return vec4<f32>(mix(glass,vec3<f32>(0.045,0.048,0.042)*max(u.ambient.w,0.2),coverage),mix(0.10+fresnel,0.94,coverage));
 }
