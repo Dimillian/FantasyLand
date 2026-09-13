@@ -4,7 +4,7 @@
 //! Every layer tiles except the five alpha-cutout plant illustrations.
 
 pub const SIZE: u32 = 128;
-pub const LAYERS: u32 = 17;
+pub const LAYERS: u32 = 20;
 pub const LEVELS: u32 = 8;
 pub const ALPHA_CUTOFF: f32 = 0.4;
 /// Empty top corners removed from conifer cards; shared with the mask guard.
@@ -238,6 +238,43 @@ fn opaque(layer: usize, x: usize, y: usize) -> Pixel {
             let tongue = ((u * 6.0 + warp) * tau).sin() * 0.5 + 0.5;
             let heat = (tongue * 0.56 + medium * 0.26 + broad * 0.18).clamp(0.0, 1.0);
             (0.52 + heat * 0.39, heat, 0.92)
+        }
+        17 => {
+            let row = (v * 7.).floor();
+            let x = (u * 5. + (row % 2.) * 0.5).fract();
+            let y = (v * 7.).fract();
+            let mortar = x < 0.045 || y < 0.065;
+            let stone = hash((u * 5. + (row % 2.) * 0.5).floor() as i32, row as i32, 713);
+            (
+                if mortar {
+                    0.40
+                } else {
+                    0.62 + stone * 0.14 + grain * 0.035
+                },
+                if mortar { 0.12 } else { 0.42 + stone * 0.04 },
+                0.91,
+            )
+        }
+        18 => (
+            0.73 + broad * 0.06 + medium * 0.025 + grain * 0.035,
+            0.1 + medium * 0.025,
+            0.94,
+        ),
+        19 => {
+            let row = (v * 10.).floor();
+            let x = (u * 8. + (row % 2.) * 0.5).fract();
+            let y = (v * 10.).fract();
+            let seam = x < 0.045 || y < 0.09;
+            let tile = hash((u * 8. + (row % 2.) * 0.5).floor() as i32, row as i32, 491);
+            (
+                if seam {
+                    0.36
+                } else {
+                    0.57 + tile * 0.12 + y * 0.05
+                },
+                if seam { 0.08 } else { 0.26 + y * 0.08 },
+                0.84,
+            )
         }
         _ => unreachable!(),
     };
@@ -673,13 +710,14 @@ impl MaterialPixels {
     }
 }
 
-/// GPU array textures are less than 2.9 MiB including every mip. They are built
+/// GPU array textures are less than 3.4 MiB including every mip. They are built
 /// once at renderer initialization and sampled by all streaming chunks.
 pub struct MaterialLibrary {
     pub layout: wgpu::BindGroupLayout,
     pub bind_group: wgpu::BindGroup,
     _albedo: wgpu::Texture,
     _surface: wgpu::Texture,
+    _people: wgpu::Texture,
 }
 
 impl MaterialLibrary {
@@ -730,6 +768,8 @@ impl MaterialLibrary {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         };
+        let people = crate::people_sprites::texture(device, queue);
+        let people_view = people.create_view(&view_descriptor);
         let albedo_view = albedo.create_view(&view_descriptor);
         let surface_view = surface.create_view(&view_descriptor);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -766,6 +806,7 @@ impl MaterialLibrary {
             entries: &[
                 texture_entry(0),
                 texture_entry(1),
+                texture_entry(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -784,6 +825,10 @@ impl MaterialLibrary {
             label: Some("Pixel material texture arrays"),
             layout: &layout,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&people_view),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&albedo_view),
@@ -807,6 +852,7 @@ impl MaterialLibrary {
             bind_group,
             _albedo: albedo,
             _surface: surface,
+            _people: people,
         }
     }
 }
@@ -850,7 +896,8 @@ mod tests {
             );
             assert_eq!(first.surface[level].len(), first.albedo[level].len());
         }
-        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 3_000_000);
+        // Twenty 128px albedo/surface layers, including masonry, plaster and roofs.
+        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 3_600_000);
     }
 
     #[test]

@@ -34,6 +34,10 @@ struct Globals {
     shelter_params: vec4<f32>,
     hearths: array<vec4<f32>,8>,
     cloud_shadow: vec4<f32>, // cached world center x/z, inverse span, valid
+    rooms_a:array<vec4<f32>,12>,
+    rooms_b:array<vec4<f32>,12>,
+    rooms_c:array<vec4<f32>,12>,
+    hearth_rooms:array<vec4<f32>,2>,
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 
@@ -391,7 +395,7 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     // screen-space shoreline that leaks across the terrain or floating props.
     let contact = (1.0 - smoothstep(0.018, 0.20, depth)) * has_depth;
     color *= 1.0 - contact * 0.12;
-    color += hearth_illumination(world,normal,view,vec3<f32>(0.0),roughness,0.0,false);
+    color += hearth_illumination(world,normal,view,vec3<f32>(0.0),roughness,0.0,false,-1);
     return max(color, vec3<f32>(0.0));
 }
 
@@ -658,7 +662,8 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
         return vec4<f32>(atmospheric_color(flame_emission(pixel.pigment,pixel.emission,v.world),v.world,distance),1.0);
     }
     var pigment = surface_pigment(pixel.pigment, v.world, normal, v.material, material_footprint, distance);
-    let physical_sky = open_sky(v.world);
+    let room=room_at(v.world);
+    var physical_sky=0.0;if room<0{physical_sky=open_sky(v.world);}
     let sky_access = select(1.0, physical_sky, u.shelter_params.z > 0.5);
     let deposition = smoothstep(0.15,0.72,normal.y) * physical_sky;
     var snow = 0.0;
@@ -671,13 +676,17 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     let pigment_linear = pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2));
     let light = normalize(u.light.xyz);
     let view = (u.camera.xyz-v.world)/max(distance,0.0001);
-    let visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
+    var visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
+    if room>=0 {visibility*=room_aperture(v.world,light,u32(room));}
     var color = surface_lighting(pigment, pigment_linear, normal, v.material, visibility, distance, sky_access);
+    if room>=0 {
+        color=pigment_linear*(u.ambient.rgb*room_ambient(v.world,u32(room))*0.62+u.direct.rgb*u.direct.w*visibility*max(dot(normal,light),0.0));
+    }
     let wet = u.surface.x * deposition * (1.0-snow);
     let roughness = mix(pixel.roughness,0.92,snow);
     let vegetation = (v.material>0.5 && v.material<1.5)
         || (v.material>5.5 && v.material<6.5) || (v.material>8.5 && v.material<9.5);
-    if distance < 450.0 {
+    if distance < 450.0 && room<0 {
         let tree_leaf = v.texture == 5.0 || v.texture == 6.0;
         if vegetation && (tree_leaf || distance > 24.0) {
             var highlight = vegetation_highlight(normal,view,light,roughness,wet,visibility);
@@ -698,7 +707,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     }
     if u.hearths[0].w > 0.0 {
         color += hearth_illumination(v.world,normal,view,pigment_linear,
-            mix(roughness,0.2,wet),pixel.metal,vegetation);
+            mix(roughness,0.2,wet),pixel.metal,vegetation,room);
     }
 
     color = atmospheric_color(max(color,vec3<f32>(0.0)), v.world, distance);

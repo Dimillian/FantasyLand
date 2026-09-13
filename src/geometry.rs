@@ -784,17 +784,28 @@ fn road_on_triangle(
     let [a, b, c] = triangle;
     let determinant = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
     let drape = |p: [f32; 2]| {
+        // Drape the representable world coordinate, not its unrounded precursor.
+        let x = ox + p[0];
+        let z = oz + p[1];
+        let p = [x - ox, z - oz];
         let u = ((p[0] - a[0]) * (c[2] - a[2]) - (p[1] - a[2]) * (c[0] - a[0])) / determinant;
         let v = ((b[0] - a[0]) * (p[1] - a[2]) - (b[2] - a[2]) * (p[0] - a[0])) / determinant;
-        [
-            ox + p[0],
-            a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + 0.025,
-            oz + p[1],
-        ]
+        [x, a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + 0.025, z]
     };
     let first = drape(polygon[0]);
     for i in 1..count - 1 {
-        mesh.triangle(first, drape(polygon[i]), drape(polygon[i + 1]), color, 0.0);
+        let b = drape(polygon[i]);
+        let c = drape(polygon[i + 1]);
+        let up = (b[2] - first[2]) * (c[0] - first[0]) - (b[0] - first[0]) * (c[2] - first[2]);
+        // Clipped slivers can collapse in XZ at continental f32 coordinates.
+        if up.abs() <= 0.000001 {
+            continue;
+        }
+        if up > 0.0 {
+            mesh.triangle(first, b, c, color, 0.0);
+        } else {
+            mesh.triangle(first, c, b, color, 0.0);
+        }
     }
 }
 
@@ -832,7 +843,8 @@ pub fn terrain_surface_height_lod(world: &World, x: f32, z: f32, lod: u32) -> f3
 /// Ground/deck surface used for walking. This uses the same five-meter bridge spans
 /// as the visible mesh, including bank approaches and each road class's deck width.
 pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
-    let mut height = terrain_surface_height(world, x, z);
+    let mut height =
+        crate::settlement_mesh::floor(world, x, z, terrain_surface_height(world, x, z));
     if let Some(ice) = ice_surface_height(world, x, z) {
         height = height.max(ice + 0.025);
     }
@@ -1209,19 +1221,7 @@ fn props_for_pass(
             }
         }
     }
-    for site in sites {
-        if owns(ox, oz, site.x, site.z) {
-            let seed = hash(world.seed, site.x as i32, site.z as i32);
-            settlement_marker(
-                world,
-                &mut mesh,
-                [site.x, 0.0, site.z],
-                seed,
-                &site.kind,
-                lod,
-            );
-        }
-    }
+    crate::settlement_mesh::append_chunk(world, &mut mesh, cx, cz, lod);
     for landmark in landmarks {
         if owns(ox, oz, landmark.x, landmark.z) {
             let seed = hash(world.seed ^ 7123, landmark.x as i32, landmark.z as i32);
@@ -1427,7 +1427,9 @@ pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
 
 /// Body-height collision preserves the empty space underneath arches and roofs.
 pub fn blocks_body(world: &World, x: f32, feet: f32, z: f32) -> bool {
-    blocks_legacy_props(world, x, z) || crate::natural::blocks_player(world, x, feet, z, 0.35, 1.80)
+    crate::settlement_mesh::blocked(world, x, feet, z)
+        || blocks_legacy_props(world, x, z)
+        || crate::natural::blocks_player(world, x, feet, z, 0.35, 1.80)
 }
 
 fn blocks_legacy_props(world: &World, x: f32, z: f32) -> bool {
@@ -3839,7 +3841,11 @@ mod road_grounding_tests {
                 for triangle in roads.vertices.chunks_exact(3) {
                     assert!(
                         triangle.iter().all(|v| v.normal[1] > 0.0),
-                        "road winding faces down"
+                        "road winding faces down chunk {cx},{cz} lod {lod}: {:?}",
+                        triangle
+                            .iter()
+                            .map(|v| (v.position, v.normal))
+                            .collect::<Vec<_>>()
                     );
                     for (u, v) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.2, 0.4), (0.6, 0.2)] {
                         let a = triangle[0].position;
@@ -6134,17 +6140,14 @@ pub fn formation_locations(world: &World, x: f32, z: f32, radius: f32) -> Vec<[f
 }
 
 /// Positions of actual generated camp hearths, shared with local illumination.
-/// Radius selection happens before sampling support heights. Settlement marker
-/// and independent-camp offsets match their `camp()` calls exactly.
+/// Radius selection happens before sampling support heights. Independent-camp
+/// offsets match their `camp()` calls exactly; building hearths live in Life.
 pub fn campfire_emitters(world: &World, x: f32, z: f32, radius: f32) -> Vec<[f32; 4]> {
     if !x.is_finite() || !z.is_finite() || !radius.is_finite() || radius < 0.0 {
         return Vec::new();
     }
     let radius = radius.min(512.0);
     let mut centers = Vec::new();
-    for site in world.sites_near(x, z, radius + 16.0) {
-        centers.push([site.x - 4.0, site.z + 8.0]);
-    }
     for landmark in world.landmarks_near(x, z, radius + 8.0) {
         if landmark.kind == "camp" {
             centers.push([landmark.x + 6.0, landmark.z]);
@@ -6177,8 +6180,9 @@ mod campfire_material_tests {
     fn hearth_light_lies_inside_its_actual_generated_flame() {
         let world = World::new(1337);
         let site = world
-            .sites_near(-16545.926, -12303.939, 12000.0)
+            .landmarks_near(-16545.926, -12303.939, 12000.0)
             .into_iter()
+            .filter(|p| p.kind == "camp")
             .min_by(|a, b| {
                 (a.x + 16545.926)
                     .hypot(a.z + 12303.939)
@@ -6186,8 +6190,8 @@ mod campfire_material_tests {
             })
             .unwrap();
         let mut mesh = MeshData::default();
-        camp(&world, &mut mesh, [site.x - 10.0, 0.0, site.z + 8.0], 31, 0);
-        let lights = campfire_emitters(&world, site.x - 4.0, site.z + 8.0, 1.0);
+        camp(&world, &mut mesh, [site.x, 0.0, site.z], 31, 0);
+        let lights = campfire_emitters(&world, site.x + 6.0, site.z, 1.0);
         assert_eq!(lights.len(), 1);
         let light = lights[0];
         let eye = glam::Vec3::new(

@@ -15,6 +15,7 @@ class Element {
   getContext(){return {};}
   setPointerCapture(){}
   append(child){(this.children ||= []).push(child);}
+  replaceChildren(...children){this.children=children;}
 }
 const ids = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((m)=>[m[1],new Element(m[1])]));
 ids.world.tagName='CANVAS'; ids['map-canvas'].tagName='CANVAS';
@@ -27,7 +28,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -46,7 +47,7 @@ function filterHarness(snapshot, destinations = []) {
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
-  const engine = {
+  const engine = {end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},
     // Keep these separate: existing renderer boot-order assertions stay strict.
     set_weather_mode:value=>{weatherCalls.push(['mode',value]);},
     set_weather_speed:value=>{weatherCalls.push(['speed',value]);},
@@ -71,7 +72,7 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=geography-2');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlements-1');", 'const { default: init, Game } = fakeModule;');
   vm.runInContext(bootSource,filterContext);
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
@@ -450,6 +451,18 @@ async function main(){
   const before=run('JSON.stringify(screenToWorld(140,180))');run('zoomMap(.7,140,180)');const after=run('JSON.stringify(screenToWorld(140,180))');assert.deepEqual(JSON.parse(before),JSON.parse(after));
   key('KeyI');assert.equal(run('modal'),'bag');key('KeyC');assert.equal(run('modal'),'character');assert.equal(ids['character-stamina'].textContent,'75 / 100');key('KeyK');assert.equal(run('modal'),'skills');key('Escape');assert.equal(run('modal'),null);
   assert.equal(key('Space').prevented,true);assert.equal(run('jumpQueued'),true);
+  // Exercise E through the real keyboard/modal code and factual topic callback.
+  let ends=0, questions=[];
+  fakeGame.end_dialogue=()=>ends++;
+  fakeGame.interact=()=>({name:'Mira Vale',role:'ranger',detail:'Resident of Alderfield',text:'Good morning.',topics:[{id:'inn',label:'Nearest inn'}]});
+  fakeGame.dialogue=topic=>{questions.push(topic);return {text:'The Birch Inn is east, about 60 paces.'};};
+  key('KeyE');assert.equal(run('modal'),'dialogue');assert.equal(ids['dialogue-name'].textContent,'Mira Vale');
+  assert.equal(document.activeElement,ids['dialogue-close']);assert.equal(run('locked'),false);
+  ids['dialogue-topics'].children[0].fire('click');assert.deepEqual(questions,['inn']);assert.match(ids['dialogue-text'].textContent,/east/);
+  key('Escape');assert.equal(run('modal'),null);assert.equal(ends,1);assert.equal(ids['dialogue-modal'].classList.contains('hidden'),true);
+  fakeGame.interact=()=> 'The door opens.';key('KeyE');assert.equal(run('modal'),null);
+  console.log('PASS: E conversation focus, factual topic response, Escape resumes life, and door interaction stays in the world.');
+
   verifyAtlasRoutes();
   await verifyFilterSettings();
   await verifyResolutionSettings();

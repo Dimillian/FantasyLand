@@ -293,6 +293,9 @@ fn build_at(world: &World, gx: i32, gz: i32) -> Option<NaturalLandmark> {
 }
 
 fn eligible_footprint(world: &World, n: &NaturalLandmark) -> bool {
+    if world.settlements.clears(n.x, n.z, n.radius + 30.) {
+        return false;
+    }
     // Roads and existing cultural markers keep their actual travel clearances.
     if world
         .sites_near(n.x, n.z, n.radius + 65.)

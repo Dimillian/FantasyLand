@@ -43,6 +43,10 @@ struct Globals {
     shelter_params: [f32; 4],
     hearths: [[f32; 4]; 8],
     cloud_shadow: [f32; 4],
+    rooms_a: [[f32; 4]; 12],
+    rooms_b: [[f32; 4]; 12],
+    rooms_c: [[f32; 4]; 12],
+    hearth_rooms: [[f32; 4]; 2],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -208,6 +212,13 @@ pub struct Renderer {
     air: [f32; 4],
     atmosphere_position: Option<Vec3>,
     hearths: [[f32; 4]; 8],
+    dynamic: Option<GpuMesh>,
+    people_light_origin: Option<Vec3>,
+    room_doors: [u32; 12],
+    rooms_a: [[f32; 4]; 12],
+    rooms_b: [[f32; 4]; 12],
+    rooms_c: [[f32; 4]; 12],
+    hearth_rooms: [[f32; 4]; 2],
     cover: CoverLayer,
     ground_cover_density: f32,
     meadow_enabled: bool,
@@ -319,7 +330,9 @@ impl Renderer {
                     "\n",
                     include_str!("materials.wgsl"),
                     "\n",
-                    include_str!("fire_lighting.wgsl")
+                    include_str!("fire_lighting.wgsl"),
+                    "\n",
+                    include_str!("interiors.wgsl")
                 )
                 .into(),
             ),
@@ -693,6 +706,13 @@ impl Renderer {
             air: [0., 0.4, 0.5, 0.],
             atmosphere_position: None,
             hearths: [[0.0; 4]; 8],
+            dynamic: None,
+            people_light_origin: None,
+            room_doors: [0; 12],
+            rooms_a: [[0.; 4]; 12],
+            rooms_b: [[0.; 4]; 12],
+            rooms_c: [[0.; 4]; 12],
+            hearth_rooms: [[-1.; 4]; 2],
             cover,
             ground_cover_density: 4.0,
             meadow_enabled: true,
@@ -1041,6 +1061,7 @@ impl Renderer {
         }
     }
     pub fn clear_chunks(&mut self) {
+        self.people_light_origin = None;
         self.atmosphere_position = None;
         self.hearths = [[0.0; 4]; 8];
         self.shelter_valid = false;
@@ -1149,12 +1170,6 @@ impl Renderer {
         });
         if travel < 3.0 {
             return;
-        }
-        self.hearths = [[0.0; 4]; 8];
-        for (target, source) in self.hearths.iter_mut().zip(geometry::campfire_emitters(
-            world, position.x, position.z, 96.0,
-        )) {
-            *target = source;
         }
         let sample = world.natural_sample(position.x, position.z);
         let region = crate::regions::sample(world.seed, position.x, position.z, &sample);
@@ -1639,6 +1654,135 @@ impl Renderer {
         self.shelter_elapsed += dt;
         self.reflection_elapsed += dt;
     }
+    pub fn update_people(
+        &mut self,
+        world: &World,
+        life: &crate::citizens::Life,
+        eye: Vec3,
+        yaw: f32,
+    ) {
+        let data = life.mesh(world, eye.to_array(), yaw);
+        let vertices: Vec<crate::vertex::PackedVertex> = data
+            .vertices
+            .iter()
+            .map(crate::vertex::PackedVertex::from)
+            .collect();
+        let vb = bytemuck::cast_slice(&vertices);
+        let ib = bytemuck::cast_slice(&data.indices);
+        if !ib.is_empty() {
+            if self.dynamic.as_ref().is_none_or(|m| {
+                m.vertices.size() < vb.len() as u64 || m.indices.size() < ib.len() as u64
+            }) {
+                let buffer = |label, bytes: usize, usage| {
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(label),
+                        size: bytes.next_power_of_two().max(256) as u64,
+                        usage: usage | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    })
+                };
+                self.dynamic = Some(GpuMesh {
+                    vertices: buffer(
+                        "Reusable citizens and doors",
+                        vb.len(),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                    indices: buffer(
+                        "Reusable entity indices",
+                        ib.len(),
+                        wgpu::BufferUsages::INDEX,
+                    ),
+                    count: 0,
+                    bounds: [Vec3::ZERO; 2],
+                    bytes: 0,
+                });
+            }
+            let m = self.dynamic.as_mut().unwrap();
+            self.queue.write_buffer(&m.vertices, 0, vb);
+            self.queue.write_buffer(&m.indices, 0, ib);
+            m.count = data.indices.len() as u32;
+            m.bounds = [eye - Vec3::splat(200.), eye + Vec3::splat(200.)];
+        } else if let Some(m) = &mut self.dynamic {
+            m.count = 0;
+        }
+        let doors = world.doors.borrow();
+        let moving_door = doors.values().any(|d| (d.target - d.angle).abs() > 0.01);
+        if moving_door {
+            self.shelter_valid = false;
+            self.reflection_valid = false;
+        }
+        if self
+            .people_light_origin
+            .is_some_and(|p| p.distance_squared(eye) < 1.0)
+        {
+            for (i, id) in self.room_doors.iter().enumerate() {
+                self.rooms_c[i][0] = doors.get(id).map_or(0., |d| d.angle);
+            }
+            return;
+        }
+        drop(doors);
+        self.people_light_origin = Some(eye);
+        self.room_doors = [0; 12];
+        self.rooms_a = [[0.; 4]; 12];
+        self.rooms_b = [[0.; 4]; 12];
+        self.rooms_c = [[0.; 4]; 12];
+        let layouts = world.settlements.layouts_near(world, eye.x, eye.z, 100.);
+        let mut buildings: Vec<_> = layouts
+            .iter()
+            .flat_map(|l| l.buildings.iter())
+            .filter(|b| {
+                b.usage != crate::settlements::Use::Tent
+                    && b.usage != crate::settlements::Use::Market
+                    && b.usage != crate::settlements::Use::Stable
+            })
+            .collect();
+        buildings.sort_by(|a, b| {
+            ((a.x - eye.x).hypot(a.z - eye.z)).total_cmp(&((b.x - eye.x).hypot(b.z - eye.z)))
+        });
+        for (i, b) in buildings.iter().take(12).enumerate() {
+            self.room_doors[i] = b.id;
+            self.rooms_a[i] = [b.x, b.floor, b.z, b.height];
+            self.rooms_b[i] = [b.half[0], b.half[1], b.yaw.cos(), b.yaw.sin()];
+            self.rooms_c[i] = [
+                world.doors.borrow().get(&b.id).map_or(0., |d| d.angle),
+                0.,
+                0.,
+                0.,
+            ];
+        }
+        let mut lights: Vec<_> = layouts
+            .iter()
+            .flat_map(|l| l.buildings.iter())
+            .flat_map(|b| std::iter::once(b.hearth()).chain(b.torch()))
+            .collect();
+        lights.extend(geometry::campfire_emitters(world, eye.x, eye.z, 70.));
+        lights.sort_by(|a, b| {
+            Vec3::from_slice(a)
+                .distance_squared(eye)
+                .total_cmp(&Vec3::from_slice(b).distance_squared(eye))
+        });
+        self.hearths = [[0.; 4]; 8];
+        self.hearth_rooms = [[-1.; 4]; 2];
+        for (i, (target, source)) in self.hearths.iter_mut().zip(lights).enumerate() {
+            *target = source;
+            for (j, b) in buildings.iter().take(12).enumerate() {
+                if b.inside(source[0], source[2], 0.) {
+                    self.hearth_rooms[i / 4][i % 4] = j as f32;
+                    break;
+                }
+            }
+        }
+        // An animated leaf can reveal a window-sized patch without player travel.
+        if world
+            .doors
+            .borrow()
+            .values()
+            .any(|d| (d.target - d.angle).abs() > 0.01)
+        {
+            self.shelter_valid = false;
+            self.reflection_valid = false;
+        }
+    }
     pub fn render(&mut self, eye: Vec3, yaw: f32, pitch: f32, hour: f32) -> Result<(), String> {
         if let Ok(mut error) = self.gpu_error.lock() {
             if let Some(error) = error.take() {
@@ -1791,6 +1935,10 @@ impl Renderer {
             ],
             hearths: self.hearths,
             cloud_shadow: self.cloud_shadow.uniform(),
+            rooms_a: self.rooms_a,
+            rooms_b: self.rooms_b,
+            rooms_c: self.rooms_c,
+            hearth_rooms: self.hearth_rooms,
             shelter_matrix: self.shelter_matrix.to_cols_array_2d(),
             shelter_origin: self.shelter_origin.extend(1.0).to_array(),
             shelter_params: [
@@ -1882,6 +2030,11 @@ impl Renderer {
             pass.set_bind_group(1, &self.empty_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
+            if let Some(mesh) = &self.dynamic {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
             for chunk in self.chunks.values() {
                 for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
                     let nearest = eye.clamp(mesh.bounds[0], mesh.bounds[1]);
@@ -1917,6 +2070,11 @@ impl Renderer {
             pass.set_bind_group(1, &self.empty_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
+            if let Some(mesh) = &self.dynamic {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
             for chunk in self.chunks.values() {
                 for mesh in [&chunk.terrain, &chunk.props].into_iter().flatten() {
                     if !bounds_visible(&planes, mesh.bounds, eye) {
@@ -1959,6 +2117,12 @@ impl Renderer {
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
+            if let Some(mesh) = &self.dynamic {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
+
             let mut visible: Vec<_> = self
                 .horizon
                 .values()
@@ -2028,6 +2192,12 @@ impl Renderer {
             self.cover.draw_meadow(&mut pass);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_pipeline(&self.world_pipeline);
+            if let Some(mesh) = &self.dynamic {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
+
             // Draw nearer occluders first. A forest must not shade every distant
             // canopy behind the same trunk before depth can reject those pixels.
             let mut visible: Vec<_> = self

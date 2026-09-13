@@ -124,6 +124,6 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     let wet=u.surface.x*sky*(1.0-snow);
     let rough=mix(0.82,0.92,snow);
     color+=vegetation_highlight(n,view,light,rough,wet,visibility)*0.30;
-    if u.hearths[0].w>0.0 { color+=hearth_illumination(v.world,n,view,linear,rough,0.0,true); }
+    if u.hearths[0].w>0.0 { color+=hearth_illumination(v.world,n,view,linear,rough,0.0,true,-1); }
     return vec4<f32>(atmospheric_color(color,v.world,distance),1.0);
 }

@@ -7,7 +7,7 @@ fn hearth_flicker(origin: vec3<f32>) -> f32 {
 }
 
 fn hearth_illumination(world: vec3<f32>, normal: vec3<f32>, view: vec3<f32>,
-    albedo: vec3<f32>, roughness: f32, metal: f32, two_sided: bool) -> vec3<f32> {
+    albedo: vec3<f32>, roughness: f32, metal: f32, two_sided: bool, room:i32) -> vec3<f32> {
     var illumination = vec3<f32>(0.0);
     for (var i = 0u; i < 8u; i += 1u) {
         let source = u.hearths[i];
@@ -18,8 +18,8 @@ fn hearth_illumination(world: vec3<f32>, normal: vec3<f32>, view: vec3<f32>,
         let distance = sqrt(max(distance_squared,0.0001));
         let light = delta/distance;
         let radius_fade = 1.0-smoothstep(source.w*0.45,source.w,distance);
-        let intensity = 34.0*radius_fade*radius_fade*hearth_flicker(source.xyz)/(1.0+distance_squared);
-        let warm = vec3<f32>(1.0,0.385,0.075)*intensity;
+        let intensity = select(34.0,14.0,source.w<10.0)*radius_fade*radius_fade*hearth_flicker(source.xyz)/(1.0+distance_squared);
+        let warm = vec3<f32>(1.0,0.385,0.075)*intensity*room_fire_visibility(world,source.xyz,i32(u.hearth_rooms[i/4u][i%4u]),room);
         let nl = select(max(dot(normal,light),0.0),abs(dot(normal,light))*0.78+0.14,two_sided);
         let diffuse = albedo*(1.0-metal)*nl;
         let facing_normal = select(-normal,normal,dot(normal,view)>=0.0);

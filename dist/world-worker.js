@@ -1,11 +1,11 @@
 // One worker owns a deterministic Rust world and packs meshes away from input
 // and rendering. Transfer buffers rather than cloning thousands of JS objects.
-import init, { StreamGenerator } from './pkg/fantasy_land.js?v=geography-2';
+import init, { StreamGenerator } from './pkg/fantasy_land.js?v=settlements-1';
 let generator;
 self.onmessage = async ({data}) => {
   try {
     if (data.type === 'init') {
-      await init({module_or_path:new URL('./pkg/fantasy_land_bg.wasm?v=geography-2', import.meta.url)});
+      await init({module_or_path:new URL('./pkg/fantasy_land_bg.wasm?v=settlements-1', import.meta.url)});
       generator = new StreamGenerator(data.seed);
       self.postMessage({type:'ready'});
     } else if (data.type === 'generate' && generator) {

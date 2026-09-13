@@ -212,37 +212,26 @@ impl Network {
     pub fn new(world: &World) -> Self {
         let mut result = Self::empty();
         let mut cells = HashMap::new();
-        for i in -SITE_EXTENT..=SITE_EXTENT {
-            for j in -SITE_EXTENT..=SITE_EXTENT {
-                let p = world.node(i, j);
-                if p[0].abs() > HALF_WORLD || p[1].abs() > HALF_WORLD {
-                    continue;
-                }
-                let coast = world.coast_info(p[0], p[1]);
-                let Some(landmass) = coast.landmass_id else {
-                    continue;
-                };
-                // Buildings and their approach roads need a dry, stable margin.
-                let river = world.river(p[0], p[1]);
-                if coast.distance < 100.
-                    || world.ground(p[0], p[1]) < 3.
-                    || river.distance < river.width * 2. + 35.
-                    || world.lake_at(p[0], p[1]).is_some()
-                {
-                    continue;
-                }
-                let id = hash(world.seed ^ 0x4101, i, j);
-                cells.insert((i, j), result.nodes.len());
-                result.nodes.push(Node {
-                    id,
-                    key: (i + SITE_EXTENT) as u32 * SITE_AXIS + (j + SITE_EXTENT) as u32,
-                    landmass,
-                    p,
-                    height: world.ground(p[0], p[1]),
-                    cell: [i, j],
-                    kind: kind_number(site_kind(id)),
-                });
-            }
+        for entry in &world.settlements.entries {
+            let [i, j] = entry.cell;
+            let p = [entry.site.x, entry.site.z];
+            let Some(landmass) = world.landmass_id(p[0], p[1]) else {
+                continue;
+            };
+            cells.insert((i, j), result.nodes.len());
+            result.nodes.push(Node {
+                id: entry.site.id,
+                key: (i + SITE_EXTENT) as u32 * SITE_AXIS + (j + SITE_EXTENT) as u32,
+                landmass,
+                p,
+                height: world.ground(p[0], p[1]),
+                cell: [i, j],
+                kind: match entry.kind {
+                    crate::settlements::Kind::City | crate::settlements::Kind::Town => 0,
+                    crate::settlements::Kind::Village | crate::settlements::Kind::Fort => 1,
+                    _ => 2,
+                },
+            });
         }
         let nodes = &result.nodes;
         let towns: Vec<usize> = nodes
@@ -1430,11 +1419,20 @@ mod road_network_tests {
         let network = &world.roads;
         let mut joins = 0;
         let mut checked = 0;
-        for index in network
-            .candidates(-16500., -12400., 14000.)
-            .into_iter()
-            .filter(|i| *i < network.edges.len())
-        {
+        let mut candidates = network.candidates(-16500., -12400., 14000.);
+        // Catalogue changes may move junctions outside the old geographic fixture.
+        candidates.extend(
+            network
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.join.is_some())
+                .take(3)
+                .map(|(i, _)| i),
+        );
+        candidates.sort_unstable();
+        candidates.dedup();
+        for index in candidates.into_iter().filter(|i| *i < network.edges.len()) {
             let edge = &network.edges[index];
             let route = network.route(&world, index);
             assert_eq!(route.points[0], edge.ends[0]);

@@ -1,5 +1,6 @@
 mod antialias;
 pub mod celestial;
+pub mod citizens;
 pub mod climate;
 mod cloud_shadow;
 pub mod cover;
@@ -14,6 +15,7 @@ pub mod journeys;
 pub mod materials;
 pub mod meadow;
 pub mod natural;
+pub mod people_sprites;
 mod plants;
 mod player;
 mod postprocess;
@@ -21,6 +23,8 @@ pub mod precipitation;
 mod rays;
 pub mod regions;
 pub mod renderer;
+pub mod settlement_mesh;
+pub mod settlements;
 mod shadow;
 pub mod streaming;
 pub mod traversal;
@@ -41,6 +45,7 @@ pub struct Game {
     player: Player,
     renderer: Renderer,
     hour: f32,
+    life: citizens::Life,
 }
 
 #[derive(Serialize)]
@@ -64,6 +69,9 @@ struct GameState {
     altitude: f32,
     site_name: String,
     day_time: f32,
+    world_clock: f64,
+    nearby_people: usize,
+    interaction: String,
     chunk_count: usize,
     triangle_count: usize,
     ground_cover_density: f32,
@@ -96,6 +104,7 @@ impl Game {
             player,
             renderer,
             hour: 9.0,
+            life: citizens::Life::new(),
         })
     }
     pub fn set_async_streaming(&mut self, enabled: bool) {
@@ -124,15 +133,24 @@ impl Game {
         sprint: bool,
         jump: bool,
     ) -> Result<(), JsValue> {
-        let dt = dt.clamp(0.0, 0.05);
+        let dt = if self.life.talking.is_some() {
+            0.
+        } else {
+            dt.clamp(0.0, 0.05)
+        };
         self.player
             .update(&self.world, dt, forward, strafe, sprint, jump);
-        self.hour = (self.hour + dt / 120.0) % 24.0;
+        self.life
+            .update(&self.world, self.player.eye().to_array(), dt);
+        self.hour = (self.life.clock / 120. % 24.) as f32;
         self.renderer.advance_time(dt);
         self.renderer
             .update_weather(&self.world, self.player.eye(), self.hour, dt);
         self.renderer
             .update_chunks(&self.world, self.player.position, false);
+        self.life.weather = self.renderer.weather_state().label.to_string();
+        self.renderer
+            .update_people(&self.world, &self.life, self.player.eye(), self.player.yaw);
         self.renderer
             .render(
                 self.player.eye(),
@@ -143,6 +161,8 @@ impl Game {
             .map_err(|e| JsValue::from_str(&e))
     }
     pub fn teleport(&mut self, x: f32, z: f32) {
+        self.life.talking = None;
+        self.life.invalidate();
         if !x.is_finite() || !z.is_finite() {
             return;
         }
@@ -164,13 +184,21 @@ impl Game {
         let sample = self.world.sample(p.position.x, p.position.z);
         let nearest = self
             .world
-            .sites_near(p.position.x, p.position.z, 130.0)
+            .settlements
+            .layouts_near(&self.world, p.position.x, p.position.z, 0.)
             .into_iter()
+            .filter(|l| {
+                (l.entry.site.x - p.position.x).hypot(l.entry.site.z - p.position.z)
+                    < l.entry.radius + 12.
+            })
             .min_by(|a, b| {
-                let da = (a.x - p.position.x).powi(2) + (a.z - p.position.z).powi(2);
-                let db = (b.x - p.position.x).powi(2) + (b.z - p.position.z).powi(2);
-                da.total_cmp(&db)
-            });
+                (a.entry.site.x - p.position.x)
+                    .hypot(a.entry.site.z - p.position.z)
+                    .total_cmp(
+                        &(b.entry.site.x - p.position.x).hypot(b.entry.site.z - p.position.z),
+                    )
+            })
+            .map(|l| l.entry.site.clone());
         let landmark = self
             .world
             .landmarks_near(p.position.x, p.position.z, 55.0)
@@ -234,6 +262,9 @@ impl Game {
             altitude: p.position.y,
             site_name: place_name,
             day_time: self.hour,
+            world_clock: self.life.clock,
+            nearby_people: self.life.actors.len(),
+            interaction: self.interaction_label(),
             chunk_count: self.renderer.chunk_count(),
             triangle_count: self.renderer.triangle_count(),
             ground_cover_density: self.renderer.ground_cover_density(),
@@ -247,6 +278,155 @@ impl Game {
             streaming_pending: self.renderer.pending_count(),
         })
         .unwrap_or(JsValue::NULL)
+    }
+    pub fn interaction_label(&self) -> String {
+        match self.life.target(
+            &self.world,
+            self.player.eye().to_array(),
+            self.player.yaw,
+            self.player.pitch,
+        ) {
+            Some((kind, id)) if kind == "person" => self
+                .life
+                .actors
+                .iter()
+                .find(|a| a.person.id == id)
+                .map_or(String::new(), |a| {
+                    format!(
+                        "[E] Talk · {} · {}",
+                        a.person.name,
+                        citizens::ROLES[a.person.role as usize]
+                    )
+                }),
+            Some((_, id)) => format!(
+                "[E] {} door",
+                if self
+                    .world
+                    .doors
+                    .borrow()
+                    .get(&(id as u32))
+                    .is_some_and(|d| d.target > 0.5)
+                {
+                    "Close"
+                } else {
+                    "Open"
+                }
+            ),
+            _ => String::new(),
+        }
+    }
+    pub fn interact(&mut self) -> JsValue {
+        let Some((kind, id)) = self.life.target(
+            &self.world,
+            self.player.eye().to_array(),
+            self.player.yaw,
+            self.player.pitch,
+        ) else {
+            return JsValue::NULL;
+        };
+        if kind == "person" {
+            self.life.talking = Some(id);
+            return self.dialogue("greeting");
+        }
+        let layouts = self.world.settlements.layouts_near(
+            &self.world,
+            self.player.position.x,
+            self.player.position.z,
+            6.,
+        );
+        let b = layouts
+            .iter()
+            .flat_map(|l| l.buildings.iter())
+            .find(|b| b.id == id as u32);
+        let Some(b) = b else {
+            return JsValue::NULL;
+        };
+        let inside = b.inside(self.player.position.x, self.player.position.z, 0.);
+        if !b.usage.public() && !inside && !self.life.home_occupied(b.id) {
+            return JsValue::from_str("The door is closed. Its residents are away.");
+        }
+        let mut doors = self.world.doors.borrow_mut();
+        let d = doors.entry(b.id).or_default();
+        d.target = if d.target > 0.5 { 0. } else { 1. };
+        d.hold = if d.target > 0.5 { 120. } else { 0. };
+        JsValue::from_str(if d.target > 0.5 {
+            "Opening the door."
+        } else {
+            "Closing the door."
+        })
+    }
+    pub fn dialogue(&self, topic: &str) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.life.conversation(&self.world, topic))
+            .unwrap_or(JsValue::NULL)
+    }
+    pub fn end_dialogue(&mut self) {
+        self.life.talking = None;
+    }
+    pub fn restore_clock(&mut self, clock: f64) {
+        if clock.is_finite() && clock >= 0. {
+            self.life.clock = clock.min(1e10);
+            self.hour = (clock / 120. % 24.) as f32;
+            self.life.invalidate();
+        }
+    }
+    pub fn settlement_destinations(&self) -> JsValue {
+        #[derive(Serialize)]
+        struct Destination {
+            id: u32,
+            name: String,
+            kind: String,
+            region: String,
+            x: f32,
+            z: f32,
+        }
+        let mut out = vec![];
+        for kind in [
+            settlements::Kind::Camp,
+            settlements::Kind::Hamlet,
+            settlements::Kind::Fort,
+            settlements::Kind::Village,
+            settlements::Kind::Town,
+            settlements::Kind::City,
+        ] {
+            let mut entries: Vec<_> = self
+                .world
+                .settlements
+                .entries
+                .iter()
+                .filter(|e| e.kind == kind)
+                .collect();
+            entries.sort_by(|a, b| {
+                settlements::dist(
+                    [a.site.x, a.site.z],
+                    [self.player.position.x, self.player.position.z],
+                )
+                .total_cmp(&settlements::dist(
+                    [b.site.x, b.site.z],
+                    [self.player.position.x, self.player.position.z],
+                ))
+            });
+            for e in entries.into_iter().take(2) {
+                out.push(Destination {
+                    id: e.site.id,
+                    name: e.site.name.clone(),
+                    kind: kind.name().into(),
+                    region: e.region.clone(),
+                    x: e.site.x,
+                    z: e.site.z,
+                });
+            }
+        }
+        serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+    }
+    pub fn visit_settlement(&mut self, id: u32) {
+        if let Some(l) = self.world.settlements.layout(&self.world, id) {
+            self.teleport(l.entry.site.x, l.entry.site.z);
+            self.face(0., 0.);
+        }
+    }
+    pub fn settlement_inspect(&self, id: u32) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.world.settlements.layout(&self.world, id).as_deref())
+            .unwrap_or(JsValue::NULL)
     }
     pub fn map_data(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
         self.world.map_background_rgba(
@@ -263,13 +443,15 @@ impl Game {
             landmarks: Vec<world::Landmark>,
             roads: Vec<Vec<[f32; 2]>>,
             routes: Vec<world::Road>,
+            buildings: Vec<settlements::Building>,
+            streets: Vec<settlements::Street>,
         }
         // Showing all regional sites at continent scale adds noise and expensive geometry.
         let radius = span * 0.72;
         let mut sites = self.world.sites_near(cx, cz, radius);
         if span > 16000.0 {
             let stride = (span / 10000.0).ceil() as u32;
-            sites.retain(|s| s.id % stride == 0);
+            sites.retain(|s| s.kind == "city" || s.id % stride == 0);
         }
         let mut landmarks = if span < 14000.0 {
             self.world.landmarks_near(cx, cz, radius)
@@ -326,6 +508,26 @@ impl Game {
             landmarks,
             roads,
             routes,
+            buildings: if span < 5000. {
+                self.world
+                    .settlements
+                    .layouts_near(&self.world, cx, cz, radius)
+                    .iter()
+                    .flat_map(|l| l.buildings.clone())
+                    .collect()
+            } else {
+                vec![]
+            },
+            streets: if span < 5000. {
+                self.world
+                    .settlements
+                    .layouts_near(&self.world, cx, cz, radius)
+                    .iter()
+                    .flat_map(|l| l.streets.clone())
+                    .collect()
+            } else {
+                vec![]
+            },
         })
         .unwrap_or(JsValue::NULL)
     }
@@ -393,6 +595,8 @@ impl Game {
     pub fn set_time(&mut self, hour: f32) {
         if hour.is_finite() {
             self.hour = hour.rem_euclid(24.0);
+            self.life.clock = (self.life.clock / 2880.).floor() * 2880. + self.hour as f64 * 120.;
+            self.life.invalidate();
         }
     }
     pub fn is_ready(&self) -> bool {

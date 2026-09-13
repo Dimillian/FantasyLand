@@ -1,0 +1,33 @@
+{
+  "seed": 1337,
+  "notes": "Stationary native simulation and CPU mesh construction, 240 iterations per scene after generation. Excludes GPU drawing, WASM overhead and streaming. No browser FPS conclusion. Other build/test processes had finished before measurement.",
+  "scenes": [
+    {
+      "frames": 240,
+      "meanMs": 0.19276337916666678,
+      "p95Ms": 0.429,
+      "p99Ms": 0.4445,
+      "people": 320,
+      "platform": "native Metal, CPU simulation/mesh only; not browser FPS",
+      "scene": "capital"
+    },
+    {
+      "frames": 240,
+      "meanMs": 0.1875237916666667,
+      "p95Ms": 0.415125,
+      "p99Ms": 0.432666,
+      "people": 320,
+      "platform": "native Metal, CPU simulation/mesh only; not browser FPS",
+      "scene": "inn-day"
+    },
+    {
+      "frames": 240,
+      "meanMs": 0.23070380833333334,
+      "p95Ms": 0.6441669999999999,
+      "p99Ms": 0.6707500000000001,
+      "people": 320,
+      "platform": "native Metal, CPU simulation/mesh only; not browser FPS",
+      "scene": "inn-night"
+    }
+  ]
+}

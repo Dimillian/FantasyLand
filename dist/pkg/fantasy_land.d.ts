@@ -7,8 +7,12 @@ export class Game {
     [Symbol.dispose](): void;
     accept_stream_result(ticket: number, bytes: Uint8Array): boolean;
     static create(canvas: HTMLCanvasElement, seed: number): Promise<Game>;
+    dialogue(topic: string): any;
+    end_dialogue(): void;
     face(yaw: number, pitch: number): void;
     features(cx: number, cz: number, span: number): any;
+    interact(): any;
+    interaction_label(): string;
     is_ready(): boolean;
     landscape_destinations(): any;
     look(dx: number, dy: number): void;
@@ -18,6 +22,7 @@ export class Game {
     pending_chunks(): number;
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
+    restore_clock(clock: number): void;
     return_to_spawn(): void;
     set_antialiasing(mode: number): void;
     set_async_streaming(enabled: boolean): void;
@@ -33,10 +38,13 @@ export class Game {
     set_weather_mode(mode: number): void;
     set_weather_paused(paused: boolean): void;
     set_weather_speed(speed: number): void;
+    settlement_destinations(): any;
+    settlement_inspect(id: number): any;
     spawn(): Float32Array;
     state(): any;
     teleport(x: number, z: number): void;
     tick(dt: number, forward: number, strafe: number, sprint: boolean, jump: boolean): void;
+    visit_settlement(id: number): void;
     walking_journeys(): any;
     world_size(): number;
 }
@@ -64,8 +72,12 @@ export interface InitOutput {
     readonly __wbg_streamgenerator_free: (a: number, b: number) => void;
     readonly game_accept_stream_result: (a: number, b: number, c: number, d: number) => number;
     readonly game_create: (a: any, b: number) => any;
+    readonly game_dialogue: (a: number, b: number, c: number) => any;
+    readonly game_end_dialogue: (a: number) => void;
     readonly game_face: (a: number, b: number, c: number) => void;
     readonly game_features: (a: number, b: number, c: number, d: number) => any;
+    readonly game_interact: (a: number) => any;
+    readonly game_interaction_label: (a: number) => [number, number];
     readonly game_is_ready: (a: number) => number;
     readonly game_landscape_destinations: (a: number) => any;
     readonly game_look: (a: number, b: number, c: number) => void;
@@ -75,6 +87,7 @@ export interface InitOutput {
     readonly game_pending_chunks: (a: number) => number;
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
+    readonly game_restore_clock: (a: number, b: number) => void;
     readonly game_return_to_spawn: (a: number) => void;
     readonly game_set_antialiasing: (a: number, b: number) => void;
     readonly game_set_async_streaming: (a: number, b: number) => void;
@@ -90,10 +103,13 @@ export interface InitOutput {
     readonly game_set_weather_mode: (a: number, b: number) => void;
     readonly game_set_weather_paused: (a: number, b: number) => void;
     readonly game_set_weather_speed: (a: number, b: number) => void;
+    readonly game_settlement_destinations: (a: number) => any;
+    readonly game_settlement_inspect: (a: number, b: number) => any;
     readonly game_spawn: (a: number) => [number, number];
     readonly game_state: (a: number) => any;
     readonly game_teleport: (a: number, b: number, c: number) => void;
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly game_visit_settlement: (a: number, b: number) => void;
     readonly game_walking_journeys: (a: number) => any;
     readonly game_world_size: (a: number) => number;
     readonly inspect_landscapes: (a: number) => any;
@@ -105,7 +121,7 @@ export interface InitOutput {
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__43: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__51: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

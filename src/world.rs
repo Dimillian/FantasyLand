@@ -107,6 +107,8 @@ pub struct Landmark {
 #[derive(Clone, Debug)]
 pub struct World {
     pub seed: u32,
+    pub settlements: Rc<crate::settlements::Catalog>,
+    pub doors: Rc<RefCell<std::collections::HashMap<u32, crate::settlement_mesh::Door>>>,
     hydrology: Rc<hydrology::Hydrology>,
     roads: Rc<roads::Network>,
     spawn_cache: RefCell<Option<([f32; 2], f32)>>,
@@ -193,10 +195,13 @@ impl World {
     pub fn new(seed: u32) -> Self {
         let mut world = Self {
             seed,
+            settlements: Rc::new(crate::settlements::Catalog::default()),
+            doors: Rc::new(RefCell::new(std::collections::HashMap::new())),
             hydrology: Rc::new(hydrology::Hydrology::new(seed)),
             roads: Rc::new(roads::Network::empty()),
             spawn_cache: RefCell::new(None),
         };
+        world.settlements = Rc::new(crate::settlements::Catalog::new(&world));
         world.roads = Rc::new(roads::Network::new(&world));
         world
     }
@@ -308,7 +313,7 @@ impl World {
         crate::ecology::tree_density(self.seed, x, z, sample)
     }
 
-    fn node(&self, i: i32, j: i32) -> [f32; 2] {
+    pub(crate) fn node(&self, i: i32, j: i32) -> [f32; 2] {
         let original = [
             i as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2401, i, j)) - 0.5) * 1600.0,
             j as f32 * SITE_SPACING + (rand01(hash(self.seed ^ 0x2402, i, j)) - 0.5) * 1600.0,
@@ -387,7 +392,7 @@ impl World {
                 kind: None,
             }
         };
-        let road = road_hit
+        let mut road = road_hit
             .kind
             .map_or(0., |kind| kind.strength(road_hit.distance));
         if road > 0.0 && water.water < height {
@@ -396,6 +401,11 @@ impl World {
                 self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
                 road * road_hit.kind.map_or(0., RoadKind::grading),
             );
+        }
+        if include_roads && !ocean {
+            let ground = crate::settlements::surface(self, x, z, height);
+            height = ground.0;
+            road = road.max(ground.1);
         }
         let temperature = crate::climate::temperature(self.seed, x, z, height);
         let rain = regional.rainfall;
@@ -485,7 +495,7 @@ impl World {
         let road = road_hit
             .kind
             .map_or(0., |kind| kind.strength(road_hit.distance));
-        if road > 0.0 && water.water < water.height {
+        let height = if road > 0.0 && water.water < water.height {
             lerp(
                 water.height,
                 self.ground(road_hit.point[0], road_hit.point[1]) + 0.015,
@@ -493,10 +503,15 @@ impl World {
             )
         } else {
             water.height
+        };
+        if ocean {
+            height
+        } else {
+            crate::settlements::surface(self, x, z, height).0
         }
     }
 
-    fn site(&self, i: i32, j: i32) -> Site {
+    pub(crate) fn site(&self, i: i32, j: i32) -> Site {
         let id = hash(self.seed ^ 0x4101, i, j);
         let p = self.node(i, j);
         const PREFIX: [&str; 24] = [
@@ -522,30 +537,11 @@ impl World {
     }
 
     pub fn sites_near(&self, x: f32, z: f32, radius: f32) -> Vec<Site> {
-        if !radius.is_finite() || radius < 0.0 {
-            return Vec::new();
-        }
-        let radius = radius.min(WORLD_SIZE * 1.5);
-        let min_i = (((x - radius) / SITE_SPACING).floor() as i32 - 1).max(-SITE_LIMIT);
-        let max_i = (((x + radius) / SITE_SPACING).ceil() as i32 + 1).min(SITE_LIMIT);
-        let min_j = (((z - radius) / SITE_SPACING).floor() as i32 - 1).max(-SITE_LIMIT);
-        let max_j = (((z + radius) / SITE_SPACING).ceil() as i32 + 1).min(SITE_LIMIT);
-        let mut result = Vec::new();
-        for i in min_i..=max_i {
-            for j in min_j..=max_j {
-                let p = self.node(i, j);
-                if p[0].abs() <= HALF_WORLD
-                    && p[1].abs() <= HALF_WORLD
-                    && self.coast_info(p[0], p[1]).distance > 80.
-                    && self.ground(p[0], p[1]) > SEA_LEVEL + 0.5
-                    && self.lake_at(p[0], p[1]).is_none()
-                    && distance2(p, [x, z]) <= radius * radius
-                {
-                    result.push(self.site(i, j));
-                }
-            }
-        }
-        result
+        self.settlements
+            .near(x, z, radius)
+            .into_iter()
+            .map(|e| e.site.clone())
+            .collect()
     }
 
     pub fn landmarks_near(&self, x: f32, z: f32, radius: f32) -> Vec<Landmark> {
@@ -607,6 +603,9 @@ impl World {
                     + (rand01(hash(self.seed ^ 0x5102, i, j)) - 0.5) * 240.0;
                 let pz = (j as f32 + 0.5) * LANDMARK_SPACING
                     + (rand01(hash(self.seed ^ 0x5103, i, j)) - 0.5) * 240.0;
+                if self.settlements.clears(px, pz, 40.) {
+                    continue;
+                }
                 if px.abs() > HALF_WORLD
                     || pz.abs() > HALF_WORLD
                     || distance2([px, pz], [x, z]) > radius * radius

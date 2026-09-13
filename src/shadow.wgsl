@@ -47,7 +47,7 @@ struct ShadowOut {
 
 @fragment fn fs_shadow(v:ShadowOut) {
     let dx=dpdx(v.uv);let dy=dpdy(v.uv);
-    if v.texture==16.0 {discard;}
+    if v.texture==16.0 || v.texture>=1000.0 {discard;}
     if v.texture>=5.0 && v.texture<10.0 {
         if textureSampleGrad(leaf_atlas,leaf_sampler,v.uv,i32(v.texture),dx,dy).a<0.4 {discard;}
     }

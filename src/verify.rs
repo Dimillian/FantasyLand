@@ -36,6 +36,82 @@ fn main() {
         generation_time.elapsed(),
         world.hydrology_stats()
     );
+    if check.as_deref() == Some("settlement-data") {
+        use fantasy_land::settlements::{dist, segment_rect, Kind};
+        let mut summaries = vec![];
+        for kind in [
+            Kind::Camp,
+            Kind::Hamlet,
+            Kind::Fort,
+            Kind::Village,
+            Kind::Town,
+            Kind::City,
+        ] {
+            let e = world
+                .settlements
+                .entries
+                .iter()
+                .filter(|e| e.kind == kind)
+                .min_by(|a, b| {
+                    dist([a.site.x, a.site.z], [0., 0.])
+                        .total_cmp(&dist([b.site.x, b.site.z], [0., 0.]))
+                })
+                .unwrap();
+            let start = Instant::now();
+            let l = world.settlements.layout(&world, e.site.id).unwrap();
+            let mut crossings = vec![];
+            let mut wet = 0;
+            for (a, links) in l.links.iter().enumerate() {
+                for &b in links {
+                    if b < a {
+                        continue;
+                    }
+                    let pa = l.nodes[a];
+                    let pb = l.nodes[b];
+                    for building in &l.buildings {
+                        if (a == building.room_node && b == building.porch_node)
+                            || (b == building.room_node && a == building.porch_node)
+                        {
+                            continue;
+                        }
+                        if segment_rect(
+                            building.local(pa[0], pa[2]),
+                            building.local(pb[0], pb[2]),
+                            [building.half[0] + 0.3, building.half[1] + 0.3],
+                        ) {
+                            crossings.push((a, b, building.id));
+                        }
+                    }
+                    for t in [0., 0.25, 0.5, 0.75, 1.] {
+                        let p = [pa[0] + (pb[0] - pa[0]) * t, pa[2] + (pb[2] - pa[2]) * t];
+                        let ground = world.natural_sample(p[0], p[1]);
+                        if ground.ocean || ground.height < ground.water_height {
+                            wet += 1;
+                        }
+                    }
+                }
+            }
+            let data = serde_json::json!({"kind":kind,"id":e.site.id,"name":e.site.name,"x":e.site.x,"z":e.site.z,"buildings":l.buildings.len(),"population":l.population,"radius":l.entry.radius,"generationMs":start.elapsed().as_millis(),"crossingCount":crossings.len(),"crossings":crossings.iter().take(12).collect::<Vec<_>>(),"wet":wet});
+            println!("{data}");
+            summaries.push(data);
+            fs::write(
+                format!("{dir}/{}.json", kind.name()),
+                serde_json::to_string(&*l).unwrap(),
+            )
+            .unwrap();
+        }
+        let mut counts = std::collections::BTreeMap::new();
+        for e in &world.settlements.entries {
+            *counts.entry(e.kind.name()).or_insert(0) += 1;
+        }
+        fs::write(
+            format!("{dir}/settlements.json"),
+            serde_json::to_string_pretty(&serde_json::json!({"counts":counts,"samples":summaries}))
+                .unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     if check.as_deref() == Some("map-relief") {
         let cx = std::env::args()
             .nth(4)
@@ -150,6 +226,94 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
+    if check.as_deref() == Some("settlement-scenes") {
+        use fantasy_land::settlements::{dist, Kind, Use};
+        let mut life = fantasy_land::citizens::Life::new();
+        renderer.set_quality(0);
+        renderer.set_render_resolution(540);
+        renderer.set_weather_mode(1);
+        renderer.set_antialiasing(1);
+        let chosen: Vec<_> = world
+            .settlements
+            .entries
+            .iter()
+            .filter(|e| e.kind == Kind::City)
+            .collect();
+        let e = chosen
+            .iter()
+            .min_by(|a, b| {
+                dist([a.site.x, a.site.z], [0., 0.])
+                    .total_cmp(&dist([b.site.x, b.site.z], [0., 0.]))
+            })
+            .unwrap();
+        let l = world.settlements.layout(&world, e.site.id).unwrap();
+        let inn = l.buildings.iter().find(|b| b.usage == Use::Inn).unwrap();
+        let scenes = [
+            (
+                "capital",
+                [e.site.x, world.height(e.site.x, e.site.z) + 1.72, e.site.z],
+                0.75,
+                0.05,
+                9.,
+            ),
+            (
+                "inn-day",
+                inn.point(0., 1.72, -inn.half[1] + 2.2),
+                std::f32::consts::PI - inn.yaw,
+                0.,
+                11.,
+            ),
+            (
+                "inn-night",
+                inn.point(0., 1.72, -inn.half[1] + 2.2),
+                std::f32::consts::PI - inn.yaw,
+                0.,
+                22.,
+            ),
+        ];
+        for (name, p, yaw, pitch, hour) in scenes {
+            let eye = glam::Vec3::from_array(p);
+            renderer.clear_chunks();
+            renderer.update_chunks(&world, eye, true);
+            while renderer.pending_count() > 0 {
+                renderer.update_chunks(&world, eye, false);
+            }
+            life.clock = hour as f64 * 120.;
+            life.invalidate();
+            life.update(&world, p, 0.1);
+            renderer.update_weather(&world, eye, hour, 0.);
+            renderer.update_people(&world, &life, eye, yaw);
+            for _ in 0..4 {
+                renderer.render(eye, yaw, pitch, hour).unwrap();
+                renderer.device.poll(wgpu::PollType::Wait).unwrap();
+            }
+            save_png(
+                &format!("{dir}/{name}.png"),
+                1280,
+                720,
+                &renderer.capture_rgba().unwrap(),
+            );
+            println!("captured {name}: {} people", life.actors.len());
+            let mut cpu = Vec::new();
+            for _ in 0..240 {
+                let start = Instant::now();
+                life.update(&world, p, 1. / 60.);
+                let mesh = life.mesh(&world, p, yaw);
+                std::hint::black_box(mesh);
+                cpu.push(start.elapsed().as_secs_f64() * 1000.);
+            }
+            cpu.sort_by(f64::total_cmp);
+            let report = serde_json::json!({"scene":name,"platform":"native Metal, CPU simulation/mesh only; not browser FPS","people":life.actors.len(),"frames":cpu.len(),"meanMs":cpu.iter().sum::<f64>()/cpu.len() as f64,"p95Ms":cpu[cpu.len()*95/100],"p99Ms":cpu[cpu.len()*99/100]});
+            fs::write(
+                format!("{dir}/{name}-cpu.json"),
+                serde_json::to_string_pretty(&report).unwrap(),
+            )
+            .unwrap();
+            println!("{report}");
+        }
+        return;
+    }
+
     if check.as_deref() == Some("materials") || foliage_only || forests_only || geography_only {
         renderer.set_quality(if foliage_only { 2 } else { 1 });
         renderer.set_render_resolution(720);

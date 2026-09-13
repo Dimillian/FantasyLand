@@ -38,6 +38,19 @@ export class Game {
         return ret;
     }
     /**
+     * @param {string} topic
+     * @returns {any}
+     */
+    dialogue(topic) {
+        const ptr0 = passStringToWasm0(topic, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.game_dialogue(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    end_dialogue() {
+        wasm.game_end_dialogue(this.__wbg_ptr);
+    }
+    /**
      * @param {number} yaw
      * @param {number} pitch
      */
@@ -53,6 +66,28 @@ export class Game {
     features(cx, cz, span) {
         const ret = wasm.game_features(this.__wbg_ptr, cx, cz, span);
         return ret;
+    }
+    /**
+     * @returns {any}
+     */
+    interact() {
+        const ret = wasm.game_interact(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {string}
+     */
+    interaction_label() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.game_interaction_label(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * @returns {boolean}
@@ -126,6 +161,12 @@ export class Game {
      */
     resize(width, height) {
         wasm.game_resize(this.__wbg_ptr, width, height);
+    }
+    /**
+     * @param {number} clock
+     */
+    restore_clock(clock) {
+        wasm.game_restore_clock(this.__wbg_ptr, clock);
     }
     return_to_spawn() {
         wasm.game_return_to_spawn(this.__wbg_ptr);
@@ -216,6 +257,21 @@ export class Game {
         wasm.game_set_weather_speed(this.__wbg_ptr, speed);
     }
     /**
+     * @returns {any}
+     */
+    settlement_destinations() {
+        const ret = wasm.game_settlement_destinations(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @param {number} id
+     * @returns {any}
+     */
+    settlement_inspect(id) {
+        const ret = wasm.game_settlement_inspect(this.__wbg_ptr, id);
+        return ret;
+    }
+    /**
      * @returns {Float32Array}
      */
     spawn() {
@@ -250,6 +306,12 @@ export class Game {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @param {number} id
+     */
+    visit_settlement(id) {
+        wasm.game_visit_settlement(this.__wbg_ptr, id);
     }
     /**
      * @returns {any}
@@ -1485,18 +1547,18 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 101, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 107, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 50, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 57, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 50, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__43);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 57, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__51);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -1539,8 +1601,8 @@ function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bin
     wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__43(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__43(arg0, arg1, arg2);
+function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__51(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__51(arg0, arg1, arg2);
 }
 
 function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_(arg0, arg1, arg2) {

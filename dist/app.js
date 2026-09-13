@@ -87,7 +87,7 @@ function saveProgress() {
   if (benchmark || motionCapture || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -363,6 +363,7 @@ function openModal(type) {
   if (!game || !initialReady) return;
   if (motionCapture) finishMotionCapture(true);
   if (benchmark) finishBenchmark(true);
+  game?.end_dialogue();$('dialogue-modal').classList.add('hidden');
   modal = type;
   releaseMouse();
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.toggle('hidden', name !== type);
@@ -378,6 +379,7 @@ function openModal(type) {
 }
 
 function closeModal() {
+  game?.end_dialogue();$('dialogue-modal').classList.add('hidden');
   modal = null;
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.add('hidden');
   for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', 'false');
@@ -531,6 +533,12 @@ function drawMap(now) {
   for (let z = Math.ceil(left.z / gridStep) * gridStep; z < right.z; z += gridStep) { const p = worldToScreen(0, z); ctx.moveTo(0, p.y); ctx.lineTo(w, p.y); }
   ctx.stroke();
   drawMapRoutes(ctx, map.features, map.span);
+  if(map.span<5000){
+    ctx.save();ctx.strokeStyle='#baa77d';ctx.lineWidth=1;
+    for(const street of map.features.streets||[]){ctx.beginPath();street.points.forEach((p,i)=>{const q=worldToScreen(p[0],p[1]);if(i)ctx.lineTo(q.x,q.y);else ctx.moveTo(q.x,q.y);});ctx.stroke();}
+    for(const b of map.features.buildings||[]){ctx.fillStyle=b.usage==='home'?'#b5a17d':'#d4bd84';ctx.strokeStyle='#524c37';ctx.beginPath();const cs=Math.cos(b.yaw),sn=Math.sin(b.yaw);[[-1,-1],[1,-1],[1,1],[-1,1]].forEach(([x,z],i)=>{const p=worldToScreen(b.x+x*b.half[0]*cs+z*b.half[1]*sn,b.z-x*b.half[0]*sn+z*b.half[1]*cs);if(i)ctx.lineTo(p.x,p.y);else ctx.moveTo(p.x,p.y);});ctx.closePath();ctx.fill();ctx.stroke();}
+    ctx.restore();
+  }
   if (activeJourney) {
     ctx.save(); ctx.beginPath(); ctx.strokeStyle = '#f4d695'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
     activeJourney.points.forEach((point, i) => { const p = worldToScreen(point[0], point[1]); if (i) ctx.lineTo(p.x, p.y); else ctx.moveTo(p.x, p.y); });
@@ -634,6 +642,8 @@ function updateCharacter() {
 }
 
 function updateHUD(now) {
+  const prompt=state.interaction || ''; $('interaction-prompt').textContent=prompt;$('interaction-prompt').classList.toggle('hidden',!prompt||!!modal||!started);
+
   const radians = Number(state.yaw || 0);
   const degrees = (radians * 180 / Math.PI % 360 + 360) % 360;
   const headings = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -739,7 +749,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=geography-2',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=settlements-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -837,8 +847,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=geography-2');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=geography-2', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlements-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=settlements-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -853,9 +863,12 @@ async function boot() {
     applyWeatherPreferences();
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
+    if(saved.seed===seed && Number.isFinite(saved.worldClock))game.restore_clock(saved.worldClock);
+    const destinations=game.settlement_destinations();
+    for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'geography-2' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'settlements-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -1029,6 +1042,20 @@ $('return-to-spawn').addEventListener('click', () => {
   activeJourney = null; game.return_to_spawn(); state = game.state(); saveProgress(); closeModal(); toast('Back on the starting road.');
 });
 
+function renderConversation(data){
+  if(!data)return;
+  $('dialogue-name').textContent=data.name;$('dialogue-role').textContent=data.role.toUpperCase();$('dialogue-detail').textContent=data.detail;$('dialogue-text').textContent=data.text;
+  const topics=$('dialogue-topics');topics.replaceChildren();
+  for(const topic of data.topics){const button=document.createElement('button');button.type='button';button.textContent=topic.label;button.addEventListener('click',()=>{const answer=game.dialogue(topic.id);if(answer){$('dialogue-text').textContent=answer.text;}});topics.append(button);}
+}
+function interact(){
+  const result=game?.interact();if(!result)return;if(typeof result==='string'){toast(result);return;}
+  renderConversation(result);modal='dialogue';releaseMouse();$('dialogue-modal').classList.remove('hidden');document.body.classList.add('modal-open');$('dialogue-close').focus();
+}
+$('dialogue-close').addEventListener('click',closeModal);
+$('dialogue-modal').addEventListener('keydown',event=>{if(event.code!=='Tab')return;const items=[...$('dialogue-modal').querySelectorAll('button')];const first=items[0],last=items.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
+$('settlement-form').addEventListener('submit',event=>{event.preventDefault();const id=Number($('settlement-select').value);if(!id||!game)return;game.visit_settlement(id);state=game.state();closeModal();toast('Arrived. Follow the lanes; press E to talk or open a door.');});
+
 const menuKeys = { KeyM: 'map', Tab: 'map', KeyI: 'bag', KeyC: 'character', KeyK: 'skills', KeyO: 'settings' };
 document.addEventListener('keydown', (event) => {
   const editing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName);
@@ -1057,8 +1084,9 @@ document.addEventListener('keydown', (event) => {
     if (modal === menu) closeModal(); else if (menu === 'map') openMap(); else openModal(menu);
     return;
   }
+  if(event.code==='KeyE'&&!event.repeat&&!modal){event.preventDefault();interact();return;}
   if (modal) {
-    if (modal === 'map' && event.target === mapCanvas) {
+    if (modal === 'map'  && event.target === mapCanvas) {
       const pan = map.span * .08;
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.code)) {
         event.preventDefault();
