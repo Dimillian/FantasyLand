@@ -36,6 +36,34 @@ fn main() {
         generation_time.elapsed(),
         world.hydrology_stats()
     );
+    if check.as_deref() == Some("map-relief") {
+        let cx = std::env::args()
+            .nth(4)
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.);
+        let cz = std::env::args()
+            .nth(5)
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.);
+        for (name, span) in [
+            ("detail", 16000.),
+            ("region", 42000.),
+            ("continent", WORLD_SIZE),
+        ] {
+            let (x, z) = if name == "continent" {
+                (0., 0.)
+            } else {
+                (cx, cz)
+            };
+            save_png(
+                &format!("{dir}/{name}.png"),
+                768,
+                768,
+                &world.map_background_rgba(x, z, span, 768),
+            );
+        }
+        return;
+    }
     if check.as_deref() == Some("atlas") {
         let mut biomes = std::collections::BTreeMap::new();
         let (mut land, mut wet, mut alpine, mut high, mut peak) = (0u32, 0u32, 0u32, 0u32, 0f32);

@@ -795,6 +795,7 @@ impl World {
         let mut pixels = vec![0u8; res * res * 4];
         let mut heights = vec![0.0f32; res * res];
         let mpp = span / res as f32;
+        let generalize = smooth(3., 32., mpp);
         for py in 0..res {
             let z = cz + (py as f32 + 0.5 - res as f32 * 0.5) * mpp;
             for px in 0..res {
@@ -806,10 +807,35 @@ impl World {
                     continue;
                 }
                 let s = self.natural_sample(x, z);
-                heights[idx] = if s.ocean { 0.0 } else { s.height };
-                let mut c = crate::ecology::ground_color(self.seed, x, z, &s);
+                let mut relief = s.height;
+                let mut c = s.biome.color();
+                if !s.ocean && generalize > 0. {
+                    let mut broad = crate::regions::base(self.seed, x, z);
+                    broad.height = broad.macro_height;
+                    let macro_height =
+                        coast::regional_elevation(self.seed, x, z, self.coast_info(x, z), &broad);
+                    relief = lerp(s.height, macro_height, generalize);
+                    let snow = crate::climate::snow_cover(s.temperature, 0.)
+                        * smooth(1400., 2000., s.height);
+                    for k in 0..3 {
+                        c[k] = lerp(c[k], [0.82, 0.87, 0.90][k], snow);
+                    }
+                }
+                if generalize < 1. {
+                    let detail = crate::ecology::ground_color(self.seed, x, z, &s);
+                    for k in 0..3 {
+                        c[k] = lerp(detail[k], c[k], generalize);
+                    }
+                }
                 // Ensure rivers remain legible when narrower than a map pixel.
                 let water = s.water_height > s.height;
+                heights[idx] = if s.ocean {
+                    SEA_LEVEL
+                } else if water {
+                    s.water_height
+                } else {
+                    relief
+                };
                 if s.ocean {
                     c = coast::ocean_color((SEA_LEVEL - s.height).max(0.));
                 } else if water {
@@ -829,13 +855,15 @@ impl World {
                 pixels[out + 3] = 255;
             }
         }
-        // Neighbor heights provide hill shading without extra terrain queries.
+        // Neighbor heights shade the scale-appropriate relief. Fine outcrops
+        // fade before they become smaller than a map pixel; water and network
+        // masks stay crisp and are never blurred with the land.
         for py in 1..res.saturating_sub(1) {
             for px in 1..res.saturating_sub(1) {
                 let i = py * res + px;
                 let gx = (heights[i + 1] - heights[i - 1]) / (2.0 * mpp);
                 let gz = (heights[i + res] - heights[i - res]) / (2.0 * mpp);
-                let shade = (0.98 - gx * 0.85 - gz * 0.55).clamp(0.64, 1.24);
+                let shade = (0.98 - gx * 0.85 - gz * 0.55).clamp(0.72, 1.18);
                 for k in 0..3 {
                     pixels[i * 4 + k] = (pixels[i * 4 + k] as f32 * shade).min(255.0) as u8;
                 }
@@ -1030,7 +1058,7 @@ mod tests {
             assert!(sample.height < sample.water, "dry river {p:?}");
             assert!(
                 h.lake_membership(p[0], p[1]).is_some()
-                    || (sample.water - (s.level_a + s.level_b) * 0.5).abs() < 0.5,
+                    || (sample.water - s.profile(0.5).0).abs() < 0.5,
                 "inconsistent surface {p:?}"
             );
         }
@@ -1086,7 +1114,7 @@ mod tests {
         let mut max_step = 0.0f32;
         for s in h.segments.iter().step_by(11) {
             let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
-            let water = (s.level_a + s.level_b) * 0.5;
+            let water = s.profile(0.5).0;
             incision.push((raw_height(w.seed, p[0], p[1]) - water).max(0.0));
             let dx = s.b[0] - s.a[0];
             let dz = s.b[1] - s.a[1];

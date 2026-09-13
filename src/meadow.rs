@@ -380,13 +380,6 @@ mod tests {
                     lush += 1;
                 }
             }
-            if x == -57269. {
-                assert!(
-                    tile.meadow.len() > 900,
-                    "meadow must not inherit sparse accent occupancy"
-                );
-                assert!(tile.meadow.len() > tile.instances.len());
-            }
         }
         // Geography can turn an old showcase into woodland. Find a genuinely
         // open grassland before requiring continuous lush meadow coverage.
@@ -410,7 +403,7 @@ mod tests {
                 }
                 let t = cover::tile_data(&world, x.div_euclid(48), z.div_euclid(48));
                 let healthy = t.meadow.iter().filter(|c| c.data[2] >> 8 > 220).count();
-                if healthy > 800 {
+                if healthy > 800 && t.meadow.len() > 900 && t.meadow.len() > t.instances.len() {
                     found = true;
                     break 'search;
                 }

@@ -94,6 +94,9 @@ pub struct Landscape {
 #[derive(Clone, Copy, Debug)]
 pub struct Base {
     pub height: f32,
+    /// Relief before walk-scale outcrops and soil hollows. Used to generalize
+    /// atlas shading without undersampling fine terrain into false ridgelines.
+    pub macro_height: f32,
     pub slope: f32,
     pub exposure: f32,
     pub rainfall: f32,
@@ -183,7 +186,7 @@ fn provinces(seed: u32, x: f32, z: f32) -> ([f32; 5], [[f32; 2]; 5]) {
     (w, g)
 }
 // A small first-order value keeps the formation profiles and their true slope
-// together. There are only two extra noise evaluations, no neighbor resampling.
+// together. Formation derivatives never need neighboring terrain queries.
 #[derive(Clone, Copy)]
 struct Differential {
     v: f32,
@@ -239,26 +242,31 @@ struct LocalForms {
     axis: [f32; 2],
 }
 fn local_forms(seed: u32, x: f32, z: f32) -> LocalForms {
-    // A long geological strike, gently warped by a lower-frequency joint field,
-    // yields connected ribs and non-repeating broken scarps at walking scales.
+    // Outcrops occupy irregular patches. An isotropic, domain-warped fold field
+    // avoids the old globally stretched bands shared by every geological family.
+    // Warp coordinates, not the angle of absolute world positions: distortion
+    // must remain bounded equally far from the origin and across chunk edges.
+    let (wx, wxg) = field(seed ^ 0x7361, x, z, 3100.);
+    let (wz, wzg) = field(seed ^ 0x7362, x, z, 2700.);
     let (j, jg) = field(
         seed ^ 0x7351,
         x * 0.76 + z * 0.65,
         z * 0.76 - x * 0.65,
-        940.,
+        1600.,
     );
     let jg = [jg[0] * 0.76 - jg[1] * 0.65, jg[0] * 0.65 + jg[1] * 0.76];
-    let u = (x * 0.82 + z * 0.5723635) * 0.33;
-    let v = -x * 0.5723635 + z * 0.82 + (j - 0.5) * 210.;
-    let (f, fg) = field(seed ^ 0x7352, u, v, 370.);
+    let u = x + (wx - 0.5) * 650.;
+    let v = z + (wz - 0.5) * 650.;
+    let (f, fg) = field(seed ^ 0x7352, u, v, 520.);
     let fold = Differential {
         v: f,
         g: [
-            fg[0] * 0.82 * 0.33 + fg[1] * (-0.5723635 + jg[0] * 210.),
-            fg[0] * 0.5723635 * 0.33 + fg[1] * (0.82 + jg[1] * 210.),
+            fg[0] * (1. + wxg[0] * 650.) + fg[1] * wzg[0] * 650.,
+            fg[0] * wxg[1] * 650. + fg[1] * (1. + wzg[1] * 650.),
         ],
     };
     let joint = Differential { v: j, g: jg };
+    let outcrop = joint.step(0.42, 0.68);
     let broken = joint.step(0.64, 0.86).scaled(-0.64).shifted(1.);
     let rib = fold
         .scaled(2.)
@@ -286,25 +294,35 @@ fn local_forms(seed: u32, x: f32, z: f32) -> LocalForms {
         .step(0.44, 0.57)
         .scaled(37.)
         .plus(joint.step(0.58, 0.79).scaled(-13.));
-    let transverse = [-0.5723635 + jg[0] * 210., 0.82 + jg[1] * 210.];
-    let length = transverse[0].hypot(transverse[1]).max(0.001);
+    let length = fold.g[0].hypot(fold.g[1]);
+    let axis = if length > 0.0000001 {
+        [fold.g[1] / length, -fold.g[0] / length]
+    } else {
+        [1., 0.]
+    };
     LocalForms {
         profiles: [
             fold.shifted(-0.5).scaled(3.),
-            rib.scaled(68.).plus(ravine.scaled(-21.)).shifted(-15.),
-            ledge.plus(ravine.scaled(-46.)).shifted(-26.),
-            chalk.shifted(-15.),
-            basalt.plus(ravine.scaled(-15.)).shifted(-37.),
+            rib.scaled(68.)
+                .plus(ravine.scaled(-21.))
+                .shifted(-15.)
+                .times(outcrop),
+            ledge.plus(ravine.scaled(-46.)).shifted(-26.).times(outcrop),
+            chalk.shifted(-15.).times(outcrop),
+            basalt
+                .plus(ravine.scaled(-15.))
+                .shifted(-37.)
+                .times(outcrop),
         ],
         strength: [
             0.,
-            rib.v,
-            fold.step(0.18, 0.32).v * (1. - fold.step(0.78, 0.89).v),
-            fold.step(0.37, 0.49).v * (1. - fold.step(0.59, 0.75).v),
-            fold.step(0.15, 0.30).v * (1. - fold.step(0.66, 0.83).v),
+            rib.v * outcrop.v,
+            fold.step(0.18, 0.32).v * (1. - fold.step(0.78, 0.89).v) * outcrop.v,
+            fold.step(0.37, 0.49).v * (1. - fold.step(0.59, 0.75).v) * outcrop.v,
+            fold.step(0.15, 0.30).v * (1. - fold.step(0.66, 0.83).v) * outcrop.v,
         ],
-        ravine: ravine.v,
-        axis: [transverse[1] / length, -transverse[0] / length],
+        ravine: ravine.v * outcrop.v,
+        axis,
     }
 }
 pub fn base(seed: u32, x: f32, z: f32) -> Base {
@@ -491,6 +509,7 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
     }
     Base {
         height,
+        macro_height: (0..5).map(|k| climate_profiles[k] * weights[k]).sum(),
         slope,
         exposure,
         rainfall,
@@ -591,6 +610,67 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Landscape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn outcrops_have_quiet_ground_and_no_continental_stripe_direction() {
+        for seed in [1337, 42, 2026] {
+            let (mut quiet, mut visible) = (0, 0);
+            let (mut xx, mut xz, mut zz) = (0f64, 0f64, 0f64);
+            for i in 0..4000 {
+                let x = (rand01(hash(seed ^ 91, i, 0)) - 0.5) * 300000.;
+                let z = (rand01(hash(seed ^ 91, i, 1)) - 0.5) * 300000.;
+                let f = local_forms(seed, x, z);
+                if f.profiles[1..].iter().all(|p| p.v == 0.) {
+                    quiet += 1;
+                    assert!(f.profiles[1..].iter().all(|p| p.g == [0., 0.]));
+                    assert!(f.strength.iter().all(|&v| v == 0.) && f.ravine == 0.);
+                }
+                for p in &f.profiles[1..] {
+                    assert!(p.v.abs() < 95., "local outcrop became a mountain");
+                    let [a, b] = p.g.map(|g| g as f64);
+                    xx += a * a;
+                    xz += a * b;
+                    zz += b * b;
+                }
+                visible += usize::from(f.profiles[1..].iter().any(|p| p.g[0].hypot(p.g[1]) > 0.1));
+                assert!((f.axis[0].hypot(f.axis[1]) - 1.).abs() < 0.001);
+            }
+            let dominant = 0.5 * (1. + ((xx - zz).powi(2) + 4. * xz * xz).sqrt() / (xx + zz));
+            assert!(
+                quiet > 800 && visible > 400,
+                "quiet{quiet} exposed{visible}"
+            );
+            assert!(
+                dominant < 0.76,
+                "globally aligned outcrop gradients: {dominant}"
+            );
+        }
+    }
+
+    #[test]
+    fn warped_outcrop_derivatives_match_their_actual_faces() {
+        for i in 0..500 {
+            let x = (rand01(hash(914, i, 0)) - 0.5) * 330000.;
+            let z = (rand01(hash(914, i, 1)) - 0.5) * 330000.;
+            let f = local_forms(1337, x, z);
+            let a = local_forms(1337, x - 1., z);
+            let b = local_forms(1337, x + 1., z);
+            let c = local_forms(1337, x, z - 1.);
+            let d = local_forms(1337, x, z + 1.);
+            for k in 0..5 {
+                let gradient = [
+                    (b.profiles[k].v - a.profiles[k].v) * 0.5,
+                    (d.profiles[k].v - c.profiles[k].v) * 0.5,
+                ];
+                for axis in 0..2 {
+                    assert!(
+                        (gradient[axis] - f.profiles[k].g[axis]).abs() < 0.018,
+                        "outcrop derivative at{x},{z} profile{k}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn regional_profiles_are_deterministic_continuous_and_geologically_diverse() {
         let mut families = std::collections::HashSet::new();

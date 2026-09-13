@@ -829,28 +829,41 @@ mod tests {
     #[test]
     fn shoreline_plants_clear_the_rendered_water_surface() {
         let mut count = 0;
-        for (seed, x, z) in [(1337, 9499.871, 2954.6006), (42, -41522.246, 32523.418)] {
+        for seed in [1337, 42] {
             let world = World::new(seed);
-            let tx = (x / TILE_SIZE).floor() as i32;
-            let tz = (z / TILE_SIZE).floor() as i32;
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let tile = tile_data(&world, tx + dx, tz + dz);
-                    for plant in &tile.instances {
-                        let local = [plant.placement[0], plant.placement[1]];
-                        let s = world.sample(tile.origin[0] + local[0], tile.origin[1] + local[1]);
-                        if s.water_height > -999. {
-                            let floor =
-                                surface_height(seed, tile.origin, &tile.heights, local) - 0.018;
-                            assert!(
-                                s.water_height - floor <= 0.121,
-                                "plant rooted below water in a triangulated bank"
-                            );
-                            count += 1;
+            let before = count;
+            // Follow retained lake outlets: fixed coordinates cease to test a
+            // shoreline when a terrain revision moves the drainage network.
+            for lake in world.lakes().iter().filter(|l| l.surface < 650.).take(4) {
+                let tx = (lake.outlet[0] / TILE_SIZE).floor() as i32;
+                let tz = (lake.outlet[1] / TILE_SIZE).floor() as i32;
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let tile = tile_data(&world, tx + dx, tz + dz);
+                        for plant in &tile.instances {
+                            let local = [plant.placement[0], plant.placement[1]];
+                            let s =
+                                world.sample(tile.origin[0] + local[0], tile.origin[1] + local[1]);
+                            if s.water_height > -999. {
+                                let floor =
+                                    surface_height(seed, tile.origin, &tile.heights, local) - 0.018;
+                                assert!(
+                                    s.water_height - floor <= 0.121,
+                                    "plant rooted below water in a triangulated bank"
+                                );
+                                count += 1;
+                            }
                         }
                     }
                 }
+                if count - before > 60 {
+                    break;
+                }
             }
+            assert!(
+                count - before > 30,
+                "no populated actual shore for seed{seed}"
+            );
         }
         assert!(count > 30);
     }
