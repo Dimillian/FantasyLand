@@ -62,6 +62,10 @@ pub fn cell(
             (0.14 + 0.14 * vigor + open * (0.62 + 0.10 * vigor)) * (1. - 0.35 * e.litter)
         }
         Biome::Wetland => 0.83 + 0.17 * vigor,
+        Biome::Swamp => 0.32 + 0.32 * vigor,
+        Biome::Jungle => 0.38 + 0.30 * vigor,
+        Biome::TropicalCoast => 0.66 + 0.25 * vigor,
+        Biome::Savanna => 0.87 + 0.13 * vigor,
         Biome::Moor => 0.52 + 0.24 * vigor,
         Biome::Alpine | Biome::Desert => 0.,
     } * slope_factor
@@ -72,6 +76,8 @@ pub fn cell(
     let height = match s.biome {
         Biome::PineForest => 0.09 + 0.13 * open + 0.025 * vigor,
         Biome::Wetland => 0.18 + 0.10 * vigor,
+        Biome::Savanna => 0.24 + 0.14 * vigor,
+        Biome::Jungle => 0.13 + 0.06 * vigor,
         Biome::Moor => 0.14 + 0.08 * vigor,
         _ => 0.12 + 0.16 * open + 0.03 * vigor,
     };
@@ -382,7 +388,38 @@ mod tests {
                 assert!(tile.meadow.len() > tile.instances.len());
             }
         }
-        assert!(lush > 800, "healthy meadow cells keep at least14of16tufts");
+        // Geography can turn an old showcase into woodland. Find a genuinely
+        // open grassland before requiring continuous lush meadow coverage.
+        let mut found = false;
+        'search: for z in (-90000i32..90000).step_by(2400) {
+            for x in (-90000i32..90000).step_by(2400) {
+                let s = world.sample(x as f32, z as f32);
+                if s.ocean
+                    || s.biome != Biome::Grassland
+                    || s.road > 0.
+                    || s.water_height > s.height - 2.
+                {
+                    continue;
+                }
+                if crate::ecology::tree_density(1337, x as f32, z as f32, &s) > 0.02 {
+                    continue;
+                }
+                let r = crate::regions::sample(1337, x as f32, z as f32, &s);
+                if r.slope > 0.04 {
+                    continue;
+                }
+                let t = cover::tile_data(&world, x.div_euclid(48), z.div_euclid(48));
+                let healthy = t.meadow.iter().filter(|c| c.data[2] >> 8 > 220).count();
+                if healthy > 800 {
+                    found = true;
+                    break 'search;
+                }
+            }
+        }
+        assert!(
+            found,
+            "no dense healthy grassland found; legacy lush={lush}"
+        );
     }
     #[test]
     fn transfer_cell_rejects_out_of_range_fields() {

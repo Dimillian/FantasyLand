@@ -28,6 +28,7 @@ fn main() {
     let vista_only = check.as_deref() == Some("vista");
     let foliage_only = check.as_deref() == Some("foliage");
     let forests_only = check.as_deref() == Some("forests");
+    let geography_only = check.as_deref() == Some("geography");
     let generation_time = Instant::now();
     let world = World::new(seed);
     println!(
@@ -35,6 +36,62 @@ fn main() {
         generation_time.elapsed(),
         world.hydrology_stats()
     );
+    if check.as_deref() == Some("atlas") {
+        let mut biomes = std::collections::BTreeMap::new();
+        let (mut land, mut wet, mut alpine, mut high, mut peak) = (0u32, 0u32, 0u32, 0u32, 0f32);
+        let n = 512u32;
+        let mut map = Vec::new();
+        for iz in 0..n {
+            for ix in 0..n {
+                let x = (ix as f32 + 0.5) / n as f32 * WORLD_SIZE - WORLD_SIZE * 0.5;
+                let z = (iz as f32 + 0.5) / n as f32 * WORLD_SIZE - WORLD_SIZE * 0.5;
+                let t = world.natural_sample(x, z);
+                let color = if t.ocean {
+                    [0.055, 0.17, 0.26]
+                } else {
+                    land += 1;
+                    *biomes.entry(t.biome.name()).or_insert(0u32) += 1;
+                    peak = peak.max(t.height);
+                    high += u32::from(t.height > 2000.);
+                    alpine += u32::from(t.height > 3000.);
+                    if t.water_height > t.height {
+                        wet += 1;
+                        [0.16, 0.48, 0.64]
+                    } else {
+                        let light = (0.80 + t.height / 6500.).min(1.3);
+                        t.biome.color().map(|v| v * light)
+                    }
+                };
+                map.extend(color.map(|v| (v.clamp(0., 1.) * 255.) as u8));
+                map.push(255);
+            }
+        }
+        save_png(&format!("{dir}/climate-atlas.png"), n, n, &map);
+        let data = serde_json::json!({"seed":seed,"landSamples":land,"inlandWaterPercent":100.*wet as f32/land as f32,"above2000Percent":100.*high as f32/land as f32,"above3000Percent":100.*alpine as f32/land as f32,"sampledPeakM":peak,"biomes":biomes,"hydrology":world.hydrology_stats(),"lakes":world.lakes()});
+        fs::write(
+            format!("{dir}/atlas.json"),
+            serde_json::to_string_pretty(&data).unwrap(),
+        )
+        .unwrap();
+        println!("{data}");
+        return;
+    }
+    if check.as_deref() == Some("mountains") {
+        let start = Instant::now();
+        let trails = world.mountain_trails();
+        let summary:Vec<_>=trails.iter().map(|r| {
+            let a=r.points[0];let b=*r.points.last().unwrap();
+            serde_json::json!({"id":r.id,"start":a,"end":b,"gain":world.natural_sample(b[0],b[1]).height-world.natural_sample(a[0],a[1]).height,"length":fantasy_land::traversal::length(&r.points),"points":r.points})
+        }).collect();
+        let data = serde_json::json!({"seed":seed,"seconds":start.elapsed().as_secs_f32(),"trails":summary});
+        fs::write(
+            format!("{dir}/mountain-trails.json"),
+            serde_json::to_string_pretty(&data).unwrap(),
+        )
+        .unwrap();
+        println!("{data}");
+        return;
+    }
     let (spawn, yaw) = world.spawn_view();
     println!(
         "World: {} x {} km, seed {}, spawn {:?}",
@@ -54,6 +111,7 @@ fn main() {
         && !vista_only
         && !foliage_only
         && !forests_only
+        && !geography_only
     {
         let map_time = Instant::now();
         let map = world.map_rgba(0., 0., WORLD_SIZE, 512);
@@ -64,7 +122,7 @@ fn main() {
     }
     let mut renderer =
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
-    if check.as_deref() == Some("materials") || foliage_only || forests_only {
+    if check.as_deref() == Some("materials") || foliage_only || forests_only || geography_only {
         renderer.set_quality(if foliage_only { 2 } else { 1 });
         renderer.set_render_resolution(720);
         renderer.set_ground_cover_density(4.0);
@@ -154,6 +212,43 @@ fn main() {
             )
             .unwrap();
             scenes.push(("orins-woodland", 109764., -15885., -0.9424778, 0.04, 12., 1));
+        }
+        if geography_only {
+            let destinations = fantasy_land::exploration::destinations(&world);
+            fs::write(
+                format!("{dir}/destinations.json"),
+                serde_json::to_string_pretty(&destinations).unwrap(),
+            )
+            .unwrap();
+            let wanted = [
+                "Lowland swamp",
+                "Golden savanna",
+                "Tropical rainforest",
+                "Tropical coast",
+                "Desert & badlands",
+                "Frozen mountain tarn",
+                "Alpine highlands",
+                "Grassland",
+                "Coastal palm grove",
+                "Umbrella acacia savanna",
+                "Alpine heights",
+                "Mountain ascent · I",
+            ];
+            scenes = destinations
+                .iter()
+                .filter(|d| wanted.contains(&d.name))
+                .map(|d| {
+                    let (hour, weather) = match d.name {
+                        "Lowland swamp" => (8.5, 2),
+                        "Tropical rainforest" => (8.0, 1),
+                        "Frozen mountain tarn" => (10.0, 1),
+                        "Alpine highlands" => (15.5, 6),
+                        _ => (9.0, 1),
+                    };
+                    (d.name, d.x, d.z, d.yaw, d.pitch, hour, weather)
+                })
+                .collect();
+            renderer.set_antialiasing(1);
         }
         for (name, x, z, yaw, pitch, hour, weather) in scenes {
             if foliage_only && name != "orins-woodland" {

@@ -1171,7 +1171,12 @@ impl Renderer {
             reference = 0.;
         }
         let wet = (region.wetness
-            * if sample.biome == crate::world::Biome::Wetland {
+            * if matches!(
+                sample.biome,
+                crate::world::Biome::Wetland
+                    | crate::world::Biome::Swamp
+                    | crate::world::Biome::Jungle
+            ) {
                 1.0
             } else {
                 0.42

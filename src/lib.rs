@@ -1,5 +1,6 @@
 mod antialias;
 pub mod celestial;
+pub mod climate;
 mod cloud_shadow;
 pub mod cover;
 pub mod ecology;
@@ -205,7 +206,17 @@ impl Game {
                         .name()
                         .to_string()
                 }),
-            landscape: if sample.ocean {
+            landscape: if matches!(
+                sample.biome,
+                world::Biome::Desert
+                    | world::Biome::Swamp
+                    | world::Biome::Savanna
+                    | world::Biome::Jungle
+                    | world::Biome::TropicalCoast
+            ) && !sample.ocean
+            {
+                sample.biome.name().into()
+            } else if sample.ocean {
                 "Ocean".into()
             } else {
                 regions::sample(self.world.seed, p.position.x, p.position.z, &sample)
@@ -454,3 +465,6 @@ pub fn inspect_landscapes(seed: u32) -> JsValue {
     serde_wasm_bindgen::to_value(&exploration::destinations(&World::new(seed)))
         .unwrap_or(JsValue::NULL)
 }
+
+#[cfg(test)]
+mod geography_checks;

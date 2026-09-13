@@ -191,7 +191,7 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
         let local = local_water(v.position);
         let shore = smoothstep(0.02, 0.65, max(abs(v.color.z) - 1.0, 0.0));
-        p.y += local.height * shore;
+        p.y += local.height * shore * (1.0-v.uv.x);
     }
     o.clip = u.view_projection * vec4<f32>(p - u.camera.xyz, 1.0);
     o.world = p;
@@ -241,7 +241,20 @@ fn water_rain_slope(p: vec2<f32>, time: f32, rain: f32, detail: f32) -> vec2<f32
     return slope * rain * detail * 0.037;
 }
 
-fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32, surface_normal: vec3<f32>) -> vec3<f32> {
+fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f32, surface_normal: vec3<f32>, ice:f32) -> vec3<f32> {
+    if ice>0.5 {
+        // Static frosted ice: world-anchored fractures, cloudy depth and a
+        // restrained sky reflection. No animated water ripples or caustics.
+        let view=normalize(u.camera.xyz-world);
+        let crack_field=noise(world.xz*0.16+vec2<f32>(noise(world.xz*0.025)*4.0));
+        let fracture=(1.0-smoothstep(0.007,0.025,abs(crack_field-0.51)))*(1.0-smoothstep(0.2,1.5,footprint));
+        let frost=noise(world.xz*0.48)*0.22+0.60;
+        let body=mix(vec3<f32>(0.27,0.49,0.57),vec3<f32>(0.70,0.83,0.85),frost);
+        let reflection=sky_radiance(reflect(-view,vec3<f32>(0.0,1.0,0.0)));
+        let fresnel=0.07+pow(1.0-clamp(view.y,0.0,1.0),5.0)*0.54;
+        return mix(body*(0.055+daylight()*0.945)-fracture*vec3<f32>(0.10,0.07,0.03),reflection,fresnel);
+    }
+
     let time = u.params.x;
     let p = world.xz;
     let ocean = step(0.5, channel.z);
@@ -636,7 +649,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     }
 
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
-        return vec4<f32>(atmospheric_color(water_color(v.world,distance,v.color,water_footprint,v.normal),v.world,distance),1.0);
+        return vec4<f32>(atmospheric_color(water_color(v.world,distance,v.color,water_footprint,v.normal,v.uv.x),v.world,distance),1.0);
     }
     let pixel = pixel_material(v, material_footprint,grad,distance);
     if pixel.alpha < 0.40 { discard; }

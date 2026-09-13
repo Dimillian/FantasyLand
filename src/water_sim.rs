@@ -237,7 +237,8 @@ impl WaterSim {
         self.eye = eye;
         let s = world.sample(eye.x, eye.z);
         let feet = eye.y - 1.72;
-        self.player_in_water = s.water_height > s.height + 0.04
+        self.player_in_water = world.lake_ice(eye.x, eye.z) < 0.5
+            && s.water_height > s.height + 0.04
             && feet < s.water_height + 0.24
             && feet > s.height - 0.3;
         let next = [
@@ -266,7 +267,11 @@ impl WaterSim {
                     let wx = (next[0] as f32 + x as f32) * WATER_CELL;
                     let wz = (next[1] as f32 + z as f32) * WATER_CELL;
                     let sample = world.sample(wx, wz);
-                    let depth = (sample.water_height - sample.height).max(0.);
+                    let depth = if world.lake_ice(wx, wz) > 0.5 {
+                        0.
+                    } else {
+                        (sample.water_height - sample.height).max(0.)
+                    };
                     let current = if depth > 0.04 {
                         world.water_flow(wx, wz)
                     } else {

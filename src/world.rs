@@ -32,6 +32,10 @@ pub enum Biome {
     Alpine,
     Desert,
     Wetland,
+    Swamp,
+    Savanna,
+    Jungle,
+    TropicalCoast,
 }
 
 impl Biome {
@@ -42,8 +46,12 @@ impl Biome {
             Self::PineForest => "Pine forest",
             Self::Moor => "Highland moor",
             Self::Alpine => "Alpine highlands",
-            Self::Desert => "Drylands",
+            Self::Desert => "Desert & badlands",
             Self::Wetland => "River wetlands",
+            Self::Swamp => "Lowland swamp",
+            Self::Savanna => "Golden savanna",
+            Self::Jungle => "Tropical rainforest",
+            Self::TropicalCoast => "Tropical coast",
         }
     }
 
@@ -56,6 +64,10 @@ impl Biome {
             Self::Alpine => [0.53, 0.54, 0.51],
             Self::Desert => [0.66, 0.55, 0.34],
             Self::Wetland => [0.30, 0.40, 0.29],
+            Self::Swamp => [0.26, 0.33, 0.21],
+            Self::Savanna => [0.62, 0.56, 0.27],
+            Self::Jungle => [0.13, 0.36, 0.22],
+            Self::TropicalCoast => [0.38, 0.56, 0.28],
         }
     }
 }
@@ -125,12 +137,12 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-fn smooth(a: f32, b: f32, v: f32) -> f32 {
+pub(crate) fn smooth(a: f32, b: f32, v: f32) -> f32 {
     let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-fn noise(seed: u32, x: f32, z: f32) -> f32 {
+pub(crate) fn noise(seed: u32, x: f32, z: f32) -> f32 {
     let ix = x.floor() as i32;
     let iz = z.floor() as i32;
     let tx = x - ix as f32;
@@ -259,10 +271,32 @@ impl World {
         }
         let segment = &self.hydrology.segments[hit.segment as usize];
         let length = distance2(segment.a, segment.b).sqrt().max(0.1);
-        let grade = ((segment.level_a - segment.level_b) / length).max(0.);
+        let t = ((x - segment.a[0]) * (segment.b[0] - segment.a[0])
+            + (z - segment.a[1]) * (segment.b[1] - segment.a[1]))
+            / (length * length);
+        let grade = segment.profile(t).1;
         let speed =
             0.40 + smooth(0.008, 0.28, grade) * 3.80 + smooth(80., 2800., segment.flow) * 0.30;
         [hit.tangent[0] * speed, hit.tangent[1] * speed]
+    }
+    /// Stable high-tarn ice. Outlets remain liquid because they are outside the
+    /// retained basin footprint. Shared by shading, walking and the wave grid.
+    pub fn lake_ice(&self, x: f32, z: f32) -> f32 {
+        let Some(lake) = self.lake_at(x, z) else {
+            return 0.;
+        };
+        let t =
+            crate::climate::temperature(self.seed, lake.center[0], lake.center[1], lake.surface);
+        let sample = self.natural_sample(x, z);
+        if lake.surface > 1700.
+            && t < 0.31
+            && (sample.water_height - lake.surface).abs() < 0.025
+            && distance2([x, z], lake.outlet) > 180. * 180.
+        {
+            1.
+        } else {
+            0.
+        }
     }
     pub fn hydrology_stats(&self) -> HydrologyStats {
         self.hydrology.stats.clone()
@@ -307,6 +341,9 @@ impl World {
     }
     pub fn road_stats(&self) -> RoadStats {
         self.roads.stats.clone()
+    }
+    pub fn mountain_trails(&self) -> Vec<Road> {
+        self.roads.mountain_trails(self)
     }
     pub fn road_routes_near(&self, cx: f32, cz: f32, radius: f32) -> Vec<Road> {
         self.roads.near(self, cx, cz, radius)
@@ -360,27 +397,37 @@ impl World {
                 road * road_hit.kind.map_or(0., RoadKind::grading),
             );
         }
-        let continental_heat = noise(self.seed ^ 0x3101, x / 47000.0, z / 47000.0);
-        let temperature = (0.66 + (continental_heat - 0.5) * 0.52 + z / 128000.0 * 0.23
-            - (height - 180.0).max(0.0) * 0.00043)
-            .clamp(0.0, 1.0);
+        let temperature = crate::climate::temperature(self.seed, x, z, height);
         let rain = regional.rainfall;
-        let wet_edge = 1.0 - smooth(river.width * 1.8, river.width + 520.0, river.distance);
-        let moisture = (rain + wet_edge * 0.22 - regional.exposure * 0.08).clamp(0.0, 1.0);
-        let cover = noise(self.seed ^ 0x3103, x / 720.0, z / 720.0);
-        let biome = if height > 1250.0 || (temperature < 0.17 && height > 720.0) {
+        let wet_edge = 1.0 - smooth(river.width * 1.8, river.width + 180.0, river.distance);
+        let moisture = (rain + wet_edge * 0.12).clamp(0., 1.);
+        // Climate regions span kilometres. Clearings and individual stands are
+        // a separate, finer ecological field, not a patchwork of climate labels.
+        let cover = noise(self.seed ^ 0x3103, x / 8500., z / 8500.);
+        let poorly_drained = regional.slope < 0.075
+            && height < 380.
+            && noise(self.seed ^ 0x5357414d, x / 5200., z / 5200.) > 0.52;
+        let biome = if height > 2300. || (temperature < 0.26 && height > 1500.) {
             Biome::Alpine
-        } else if river.distance < river.width + 42.0 && moisture > 0.48 {
+        } else if temperature > 0.70 && coast.distance < 3800. {
+            Biome::TropicalCoast
+        } else if moisture > 0.63 && poorly_drained && temperature > 0.40 {
+            Biome::Swamp
+        } else if river.distance < river.width + 18. && moisture > 0.44 {
             Biome::Wetland
-        } else if temperature > 0.61 && moisture < 0.36 {
+        } else if temperature > 0.60 && moisture < 0.31 {
             Biome::Desert
-        } else if temperature < 0.38 || height > 720.0 {
-            if moisture > 0.34 && cover > 0.30 && height < 1150.0 {
+        } else if temperature > 0.72 && moisture > 0.60 {
+            Biome::Jungle
+        } else if temperature > 0.67 && moisture < 0.54 {
+            Biome::Savanna
+        } else if temperature < 0.40 || height > 1150. {
+            if moisture > 0.35 && height < 2100. && cover > 0.24 {
                 Biome::PineForest
             } else {
                 Biome::Moor
             }
-        } else if moisture > 0.48 && cover > 0.37 {
+        } else if moisture > 0.51 && cover > 0.34 {
             Biome::Forest
         } else {
             Biome::Grassland
@@ -817,9 +864,9 @@ impl World {
         // Explicit network strokes preserve tributaries at continental zoom;
         // point sampling alone would miss channels narrower than one map pixel.
         let minimum_flow = if span > 120000.0 {
-            65.0
+            650.0
         } else if span > 40000.0 {
-            32.0
+            220.0
         } else {
             0.0
         };
@@ -920,7 +967,11 @@ mod tests {
         }
         assert!((expected_rain - discharged_rain).abs() < expected_rain * 0.00001,
             "land rainfall was lost or ocean rainfall was introduced: expected{expected_rain}, discharged{discharged_rain}");
-        assert!(h.stats.confluences > 1000 && h.stats.headwaters > 1000 && h.stats.outlets > 20);
+        assert!(
+            (100..800).contains(&h.stats.confluences)
+                && (150..1000).contains(&h.stats.headwaters)
+                && h.stats.outlets > 20
+        );
     }
     #[test]
     fn refined_channels_join_and_are_downhill() {
@@ -1177,7 +1228,7 @@ mod tests {
                 "seed{} shoreline checks{} wet beds{} maxedge{} max3cmstep{} maxqueryuphill{}",
                 seed, crossings, wet_count, max_edge, max_step, max_uphill
             );
-            assert!(crossings > 5000 && wet_count > 50000);
+            assert!(crossings > 1000 && wet_count > 20000);
             assert!(
                 max_uphill < 0.05,
                 "interpolated surface deviates from downhill graph"
@@ -1350,11 +1401,27 @@ mod water_profile_regression {
         let world = World::new(1337);
         // Real steep reaches with different elevation/geological settings. Only
         // three 192m chunks are built; no unbounded terrain scan in this test.
-        let centers = [
-            [33500.633f32, 31209.996],
-            [42074.156, 15793.199],
-            [-46014.496, 63010.008],
-        ];
+        let mut candidates: Vec<_> = world
+            .hydrology
+            .segments
+            .iter()
+            .filter(|s| s.cascade > 0.3 && s.level_a - s.level_b > 12.)
+            .collect();
+        candidates.sort_by(|a, b| (b.level_a - b.level_b).total_cmp(&(a.level_a - a.level_b)));
+        let mut centers = Vec::new();
+        for s in candidates {
+            let p = [(s.a[0] + s.b[0]) * 0.5, (s.a[1] + s.b[1]) * 0.5];
+            if centers
+                .iter()
+                .all(|q| distance2(*q, p) > CHUNK_SIZE * CHUNK_SIZE)
+            {
+                centers.push(p);
+            }
+            if centers.len() == 6 {
+                break;
+            }
+        }
+        assert!(centers.len() >= 3, "need real steep river fixtures");
         let mut wet_chunks = 0;
         for p in centers {
             let cx = (p[0] / CHUNK_SIZE).floor() as i32;

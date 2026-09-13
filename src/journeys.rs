@@ -151,39 +151,53 @@ fn mountain_lake(world: &World) -> Option<Journey> {
     let mut choices = Vec::new();
     let mut lakes: Vec<_> = world.lakes().iter().filter(|l| l.surface > 450.).collect();
     lakes.sort_by(|a, b| b.surface.total_cmp(&a.surface));
-    for lake in lakes.into_iter().take(5) {
-        let d = distance(lake.center, lake.outlet).max(1.);
-        let out = [
-            (lake.outlet[0] - lake.center[0]) / d,
-            (lake.outlet[1] - lake.center[1]) / d,
-        ];
-        let side = [-out[1], out[0]];
-        for sign in [-1., 1.] {
-            for offset in [100., 220., 400.] {
-                let a = [
-                    lake.outlet[0] + side[0] * offset * sign,
-                    lake.outlet[1] + side[1] * offset * sign,
+    for lake in lakes.into_iter().take(6) {
+        let mut shore = Vec::new();
+        for i in 0..32 {
+            let angle = i as f32 * TAU / 32.;
+            let mut best: Option<(f32, [f32; 2])> = None;
+            for radius in [500., 750., 1000., 1250., 1500., 1800.] {
+                let p = [
+                    lake.center[0] + angle.cos() * radius,
+                    lake.center[1] + angle.sin() * radius,
                 ];
-                let s = world.natural_sample(a[0], a[1]);
-                if s.height > lake.surface + 65. {
+                if !dry(world, p) {
                     continue;
                 }
-                for angle in [-0.65f32, -0.30, 0., 0.30, 0.65] {
-                    let (sn, cs) = angle.sin_cos();
-                    let forward = [out[0] * cs - out[1] * sn, out[0] * sn + out[1] * cs];
-                    let b = [a[0] + forward[0] * 2150., a[1] + forward[1] * 2150.];
-                    let lower = world.natural_sample(b[0], b[1]);
-                    let descent = (s.height - lower.height).clamp(-100., 180.);
-                    if let Some(c) =
-                        candidate(world, a, b, descent * 0.055 + (lake.surface - 450.) * 0.008)
-                    {
-                        choices.push(c);
-                    }
+                let h = world.natural_sample(p[0], p[1]).height;
+                if (h - lake.surface).abs() > 180. {
+                    continue;
+                }
+                let dx = world.natural_sample(p[0] + 12., p[1]).height
+                    - world.natural_sample(p[0] - 12., p[1]).height;
+                let dz = world.natural_sample(p[0], p[1] + 12.).height
+                    - world.natural_sample(p[0], p[1] - 12.).height;
+                let slope = dx.hypot(dz) / 24.;
+                if slope > 0.50 {
+                    continue;
+                }
+                let score = (h - lake.surface).abs() + slope * 200. + radius * 0.02;
+                if best.as_ref().is_none_or(|old| score < old.0) {
+                    best = Some((score, p));
+                }
+            }
+            if let Some((_, p)) = best {
+                shore.push(p);
+            }
+        }
+        for (i, &a) in shore.iter().enumerate() {
+            for &b in &shore[i + 1..] {
+                let d = distance(a, b);
+                if !(1650.0..=2700.0).contains(&d) {
+                    continue;
+                }
+                if let Some(c) = candidate(world, a, b, 15. - (d - 2100.).abs() * 0.02) {
+                    choices.push(c);
                 }
             }
         }
     }
-    choose(world, "From the high lake to its outlet valley", choices)
+    choose(world, "Along the high tarn and mountain shelf", choices)
 }
 fn coast_walk(world: &World) -> Option<Journey> {
     let places = exploration::destinations(world);

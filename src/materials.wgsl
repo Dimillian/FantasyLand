@@ -38,6 +38,8 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> 
         layer = select(0i,1i,green > 0.008);
         if v.color.r > 0.53 && v.color.b < v.color.r*0.79 { layer = 10i; }
         if n.y < 0.64 {layer = 2i;}
+        if v.color.b>0.65 && v.color.r>0.65 {layer=13i;}
+
     } else if v.material < 1.5 { layer = 1i; }
     else if v.material < 2.5 { layer = 2i; }
     else if v.material < 3.5 { layer = 4i; uv *= vec2<f32>(1.6,0.7); dx*=vec2<f32>(1.6,0.7);dy*=vec2<f32>(1.6,0.7); }

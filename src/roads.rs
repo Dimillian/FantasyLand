@@ -113,6 +113,7 @@ const ROUTE_PAD: f32 = 2800.;
 pub struct Network {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    alpine: Vec<AlpineCorridor>,
     buckets: Vec<Vec<usize>>,
     pub stats: Stats,
     cache: RefCell<HashMap<usize, Rc<Road>>>,
@@ -191,6 +192,7 @@ impl Network {
         Self {
             nodes: vec![],
             edges: vec![],
+            alpine: vec![],
             buckets: vec![vec![]; GRAPH_N * GRAPH_N],
             stats: Stats {
                 sites: 0,
@@ -598,33 +600,52 @@ impl Network {
             }
         }
         result.edges = edges;
+        result.alpine = alpine_catalog(world);
+        for (i, a) in result.alpine.iter().enumerate() {
+            let slot = result.edges.len() + i;
+            // Up to three linked 3.4km contour legs, plus search margins.
+            for z in bucket(a.target[1] - 12500.)..=bucket(a.target[1] + 12500.) {
+                for x in bucket(a.target[0] - 12500.)..=bucket(a.target[0] + 12500.) {
+                    result.buckets[z * GRAPH_N + x].push(slot);
+                }
+            }
+        }
         result
     }
     fn route(&self, world: &World, index: usize) -> Rc<Road> {
         if let Some(route) = self.cache.borrow().get(&index) {
             return route.clone();
         }
-        let e = &self.edges[index];
-        let end = if let Some((parent, _)) = e.join {
-            closest_path_point(&self.route(world, parent).points, e.ends[1])
+        let road = if index >= self.edges.len() {
+            let a = &self.alpine[index - self.edges.len()];
+            Rc::new(Road {
+                id: a.id,
+                kind: RoadKind::Trail,
+                points: plan_alpine(world, a),
+            })
         } else {
-            e.ends[1]
+            let e = &self.edges[index];
+            let end = if let Some((parent, _)) = e.join {
+                closest_path_point(&self.route(world, parent).points, e.ends[1])
+            } else {
+                e.ends[1]
+            };
+            Rc::new(Road {
+                id: e.id,
+                kind: e.kind,
+                points: plan_land_route(
+                    world,
+                    &e.corridor,
+                    end,
+                    route_seed(self.nodes[e.a].id, self.nodes[e.b].id, e.kind),
+                    e.kind,
+                    self.nodes[e.a].landmass,
+                ),
+            })
         };
-        let road = Rc::new(Road {
-            id: e.id,
-            kind: e.kind,
-            points: plan_land_route(
-                world,
-                &e.corridor,
-                end,
-                route_seed(self.nodes[e.a].id, self.nodes[e.b].id, e.kind),
-                e.kind,
-                self.nodes[e.a].landmass,
-            ),
-        });
         self.cache.borrow_mut().insert(index, road.clone());
         let mut buckets = self.segments.borrow_mut();
-        let pad = e.kind.outer_width() + 0.05;
+        let pad = road.kind.outer_width() + 0.05;
         for (i, pair) in road.points.windows(2).enumerate() {
             for z in query_cell(pair[0][1].min(pair[1][1]) - pad)
                 ..=query_cell(pair[0][1].max(pair[1][1]) + pad)
@@ -637,6 +658,13 @@ impl Network {
             }
         }
         road
+    }
+    pub fn mountain_trails(&self, world: &World) -> Vec<Road> {
+        (self.edges.len()..self.edges.len() + self.alpine.len())
+            .map(|i| self.route(world, i))
+            .filter(|r| r.points.len() > 1)
+            .map(|r| r.as_ref().clone())
+            .collect()
     }
     pub fn nearest(&self, world: &World, x: f32, z: f32) -> RoadHit {
         let cell = bucket(z) * GRAPH_N + bucket(x);
@@ -706,6 +734,17 @@ impl Network {
         self.candidates(cx, cz, radius)
             .into_iter()
             .filter_map(|id| {
+                if id >= self.edges.len() {
+                    if !RoadKind::Trail.visible(span) {
+                        return None;
+                    }
+                    let r = self.route(world, id);
+                    return r
+                        .points
+                        .windows(2)
+                        .any(|p| segment_hit([cx, cz], p[0], p[1]).distance <= radius)
+                        .then(|| r.as_ref().clone());
+                }
                 let e = &self.edges[id];
                 if !e.kind.visible(span) {
                     return None;
@@ -730,6 +769,135 @@ impl Network {
             .collect()
     }
 }
+// Geographic trails share the road masks, visible ribbons, prop exclusions,
+// local map and lazy caches. No synthetic settlements and no unsafe fallback.
+#[derive(Clone, Debug)]
+struct AlpineCorridor {
+    id: u64,
+    landmass: u32,
+    target: [f32; 2],
+}
+fn alpine_dry(world: &World, p: [f32; 2]) -> Option<f32> {
+    let s = world.natural_sample(p[0], p[1]);
+    (!s.ocean
+        && s.height > s.water_height + 0.75
+        && world.lake_at(p[0], p[1]).is_none()
+        && world.coast_info(p[0], p[1]).distance > 32.)
+        .then_some(s.height)
+}
+fn alpine_catalog(world: &World) -> Vec<AlpineCorridor> {
+    use crate::geography::GeoLandmarkKind;
+    let mut targets: Vec<[f32; 2]> = crate::geography::landmarks(world.seed)
+        .into_iter()
+        .filter(|l| {
+            l.range_id < 3
+                && matches!(
+                    l.kind,
+                    GeoLandmarkKind::RidgeSummit | GeoLandmarkKind::MountainPass
+                )
+        })
+        .map(|l| l.position)
+        .collect();
+    let mut lakes: Vec<_> = world.lakes().iter().filter(|l| l.surface > 1500.).collect();
+    lakes.sort_by(|a, b| b.surface.total_cmp(&a.surface));
+    for lake in lakes.into_iter().take(6) {
+        let mut shore = None;
+        for radius in [100., 240., 480., 850., 1400.] {
+            for i in 0..16 {
+                let a = i as f32 * std::f32::consts::TAU / 16.;
+                let p = [
+                    lake.center[0] + a.sin() * radius,
+                    lake.center[1] + a.cos() * radius,
+                ];
+                if alpine_dry(world, p).is_some_and(|h| (h - lake.surface).abs() < 90.) {
+                    shore = Some(p);
+                    break;
+                }
+            }
+            if shore.is_some() {
+                break;
+            }
+        }
+        if let Some(p) = shore {
+            targets.push(p);
+        }
+    }
+    targets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            if alpine_dry(world, p)? < 750. {
+                return None;
+            }
+            Some(AlpineCorridor {
+                id: (1u64 << 52) | ((i as u64) << 2) | 2,
+                landmass: world.landmass_id(p[0], p[1])?,
+                target: p,
+            })
+        })
+        .collect()
+}
+fn alpine_starts(world: &World, target: [f32; 2], landmass: u32) -> Vec<[f32; 2]> {
+    let Some(top) = alpine_dry(world, target) else {
+        return vec![];
+    };
+    let mut choices = Vec::new();
+    for radius in [1800., 2600., 3400.] {
+        for i in 0..16 {
+            let a = i as f32 * std::f32::consts::TAU / 16.;
+            let p = [target[0] + a.cos() * radius, target[1] + a.sin() * radius];
+            if world.landmass_id(p[0], p[1]) != Some(landmass) {
+                continue;
+            }
+            if let Some(h) = alpine_dry(world, p) {
+                let gain = top - h;
+                if (220.0..=1100.).contains(&gain) && gain / radius < 0.34 {
+                    choices.push((gain.min(750.) - radius * 0.035, p));
+                }
+            }
+        }
+    }
+    choices.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1[0].total_cmp(&b.1[0])));
+    let Some(first) = choices.first().map(|v| v.1) else {
+        return vec![];
+    };
+    let mut starts = vec![first];
+    if let Some((_, p)) = choices
+        .iter()
+        .skip(1)
+        .find(|(_, p)| distance2(first, *p) > 900. * 900.)
+    {
+        starts.push(*p);
+    }
+    starts
+}
+fn plan_alpine(world: &World, a: &AlpineCorridor) -> Vec<[f32; 2]> {
+    let mut end = a.target;
+    let mut result = Vec::new();
+    for _ in 0..3 {
+        let route = alpine_starts(world, end, a.landmass)
+            .into_iter()
+            .find_map(|p| {
+                let route = crate::traversal::route(world, p, end, 0.36)?;
+                (crate::traversal::length(&route) < 8000. && land_path(world, &route, a.landmass))
+                    .then_some(route)
+            });
+        let Some(mut leg) = route else {
+            break;
+        };
+        end = leg[0];
+        if !result.is_empty() {
+            leg.pop();
+        }
+        leg.extend(result);
+        result = leg;
+        if alpine_dry(world, end).is_some_and(|h| h < 650.) {
+            break;
+        }
+    }
+    result
+}
+
 /// Keep corridors on their landmass and outside retained lakes. Narrow rivers
 /// remain bridge candidates in the fine planner.
 fn land_segment(world: &World, a: [f32; 2], b: [f32; 2], landmass: u32) -> bool {
@@ -1262,7 +1430,11 @@ mod road_network_tests {
         let network = &world.roads;
         let mut joins = 0;
         let mut checked = 0;
-        for index in network.candidates(-16500., -12400., 14000.) {
+        for index in network
+            .candidates(-16500., -12400., 14000.)
+            .into_iter()
+            .filter(|i| *i < network.edges.len())
+        {
             let edge = &network.edges[index];
             let route = network.route(&world, index);
             assert_eq!(route.points[0], edge.ends[0]);

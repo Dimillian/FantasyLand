@@ -498,22 +498,25 @@ fn automatic(
             + 0.5;
     let cells = noise(seed ^ 0x77A3, px * 2.3 - 9.0, pz * 2.3 + 14.0);
     let moist = finite(c.moisture, 0.5).clamp(0.0, 1.0);
-    let pressure = (ribbon * 0.67 + broad * 0.25 + moist * 0.20 - 0.08).clamp(0.0, 1.0);
+    let pressure = (ribbon * 0.65 + broad * 0.23 + moist * 0.40 - 0.22).clamp(0.0, 1.0);
     let cloud = smooth(0.13, 0.83, pressure);
     let precipitation =
-        smooth(0.53, 0.87, pressure) * smooth(0.30, 0.74, cells) * (0.24 + moist * 0.76);
+        smooth(0.57, 0.89, pressure) * smooth(0.30, 0.74, cells) * (0.08 + moist * 0.92);
     let warmth = finite(c.temperature, 0.5).clamp(0.0, 1.0);
     let diurnal = ((hour - 7.0) * std::f32::consts::PI / 12.0).sin() * 3.0;
     let temperature = warmth * 36.0 - 12.0 + diurnal + (broad - 0.5) * 5.0
         - pressure * 3.0
         - (y - finite(c.elevation, 0.0)).max(0.0) * 0.0065;
     let frozen = 1.0 - smooth(-1.2, 2.2, temperature);
-    let snow = precipitation * frozen;
+    let snow = (precipitation * frozen * (1. + smooth(1200., 2800., c.elevation) * 0.85)).min(1.);
     let rain = precipitation * (1.0 - frozen);
     let severity = smooth(0.54, 0.89, cells) * precipitation * (0.50 + warmth * 0.50);
     let gust_field = (seconds * 0.021 + x as f64 * 0.000071 + z as f64 * 0.000037).sin() as f32;
-    let gust = (0.12 + cloud * 0.16 + severity * 0.65 + gust_field * 0.08).clamp(0.0, 1.0);
-    let wind = 2.2 + cloud * 5.8 + severity * 17.0;
+    // Winter gales are frontal/orographic, not warm convective storms.
+    let winter = frozen * smooth(1200., 2800., c.elevation) * smooth(0.50, 0.83, pressure);
+    let gust =
+        (0.12 + cloud * 0.16 + severity * 0.65 + winter * 0.58 + gust_field * 0.08).clamp(0.0, 1.0);
+    let wind = 2.2 + cloud * 5.8 + severity * 17.0 + winter * 15.;
     let angle = -0.43 + (broad - 0.5) * 0.55 + gust_field * 0.12;
     let fog = (cloud * 0.055
         + precipitation * 0.43

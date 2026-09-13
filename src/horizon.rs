@@ -64,7 +64,14 @@ pub fn patch_parts(world: &World, cx: i32, cz: i32) -> [MeshData; 2] {
                             color
                         },
                         material: if ocean || freshwater { 8.0 } else { 7.0 },
-                        uv: [0., 0.],
+                        uv: [
+                            if freshwater {
+                                world.lake_ice(position.x, position.z)
+                            } else {
+                                0.
+                            },
+                            0.,
+                        ],
                         texture: -1.,
                     });
                 }
@@ -206,7 +213,22 @@ fn canopy_trees(world: &World, cx: i32, cz: i32) -> Vec<CanopyTree> {
                             3
                         }
                     }
-                    Biome::Wetland => {
+                    Biome::Jungle => {
+                        if species < 0.23 {
+                            5
+                        } else {
+                            0
+                        }
+                    }
+                    Biome::TropicalCoast => {
+                        if species < 0.77 {
+                            5
+                        } else {
+                            0
+                        }
+                    }
+                    Biome::Savanna => 6,
+                    Biome::Swamp | Biome::Wetland => {
                         if species < 0.61 {
                             2
                         } else if species < 0.87 {
@@ -224,7 +246,13 @@ fn canopy_trees(world: &World, cx: i32, cz: i32) -> Vec<CanopyTree> {
                     }
                     _ => continue,
                 };
-                if region.pale > 0.5 && species < 0.70 {
+                if region.pale > 0.5
+                    && species < 0.70
+                    && !matches!(
+                        sample.biome,
+                        Biome::Jungle | Biome::TropicalCoast | Biome::Savanna
+                    )
+                {
                     kind = 1;
                 }
                 if region.ancient > 0.62
@@ -233,10 +261,16 @@ fn canopy_trees(world: &World, cx: i32, cz: i32) -> Vec<CanopyTree> {
                 {
                     kind = 0;
                 }
-                let scale = region.tree_scale
+                let scale = (if sample.biome == Biome::Jungle {
+                    1.85
+                } else {
+                    1.0
+                }) * region.tree_scale
                     * (1.0 + density * 0.32)
                     * (0.84 + canopy_random(seed, 7) * 0.48);
                 let h = (match kind {
+                    5 => 11.0,
+                    6 => 12.0,
                     0 => 12.0,
                     1 => 17.0,
                     2 => 13.0,
@@ -245,6 +279,8 @@ fn canopy_trees(world: &World, cx: i32, cz: i32) -> Vec<CanopyTree> {
                 } * scale)
                     .clamp(7.0, 51.0);
                 let r = h * match kind {
+                    5 => 0.37,
+                    6 => 0.59,
                     0 => 0.57,
                     1 => 0.25,
                     2 => 0.66,
@@ -364,7 +400,8 @@ fn canopy_tree(mesh: &mut MeshData, surface: &CanopySurface, t: CanopyTree) {
     let origin = Vec3::new(t.x, ground, t.z);
     let yaw = canopy_random(t.seed, 9) * std::f32::consts::TAU;
     let lean = Vec3::new(yaw.cos(), 0.0, yaw.sin()) * t.height * t.lean;
-    let stem_top = origin + Vec3::Y * (t.height * 0.70) + lean * 0.7;
+    let stem_top =
+        origin + Vec3::Y * (t.height * if t.kind == 5 { 0.94 } else { 0.70 }) + lean * 0.7;
     // Crossed solid trunk faces, each lower corner embedded in its own actual
     // rendered triangle. A level base would float on the downhill side.
     for axis in [Vec3::X, Vec3::Z] {
@@ -377,7 +414,18 @@ fn canopy_tree(mesh: &mut MeshData, surface: &CanopySurface, t: CanopyTree) {
         canopy_triangle(mesh, [a, b, c], t.bark);
         canopy_triangle(mesh, [a, c, d], t.bark);
     }
-    if t.kind >= 3 {
+    if t.kind == 5 {
+        let top = origin + Vec3::Y * (t.height * 0.94) + lean * 0.7;
+        for i in 0..6 {
+            let a = yaw + i as f32 * std::f32::consts::TAU / 6.;
+            let dir = Vec3::new(a.sin(), 0., a.cos());
+            let across = Vec3::new(a.cos(), 0., -a.sin());
+            let middle = top + dir * t.radius * 0.50 + Vec3::Y * t.height * 0.02;
+            let end = top + dir * t.radius - Vec3::Y * t.height * 0.09;
+            canopy_triangle(mesh, [top, middle - across * t.radius * 0.15, end], t.green);
+            canopy_triangle(mesh, [top, end, middle + across * t.radius * 0.15], t.green);
+        }
+    } else if t.kind == 3 || t.kind == 4 {
         // Two uneven, overlapping tapered crowns retain a fir/pine silhouette;
         // they are tree-sized crowns, not terrain-sized forest pyramids.
         for (tier, (bottom, top, radius)) in [(0.25, 0.80, 1.0), (0.57, 1.0, 0.66)]
@@ -413,10 +461,20 @@ fn canopy_tree(mesh: &mut MeshData, surface: &CanopySurface, t: CanopyTree) {
     } else {
         // A six-sided irregular crown gives broadleaf, slender birch and
         // drooping willow distinct outlines without flat billboard walls.
-        let center = origin + Vec3::Y * (t.height * 0.66) + lean * 0.66;
+        let center =
+            origin + Vec3::Y * (t.height * if t.kind == 6 { 0.86 } else { 0.66 }) + lean * 0.66;
         let top = origin + Vec3::Y * t.height + lean;
-        let bottom =
-            origin + Vec3::Y * (t.height * if t.kind == 2 { 0.27 } else { 0.40 }) + lean * 0.4;
+        let bottom = origin
+            + Vec3::Y
+                * (t.height
+                    * if t.kind == 6 {
+                        0.77
+                    } else if t.kind == 2 {
+                        0.27
+                    } else {
+                        0.40
+                    })
+            + lean * 0.4;
         let ring: [Vec3; 6] = std::array::from_fn(|i| {
             let angle = yaw + i as f32 * std::f32::consts::TAU / 6.0;
             let irregular = 0.81 + canopy_random(t.seed, 60 + i as u32) * 0.32;
@@ -550,7 +608,7 @@ mod canopy_tests {
         'scan: for cz in (-108..=108).step_by(3) {
             for cx in (-108..=108).step_by(3) {
                 let mut density = 0.;
-                let mut granite = 0;
+                let mut alpine = 0;
                 let mut water = 0;
                 let mut rockiness = 0.;
                 for iz in 0..4 {
@@ -560,7 +618,7 @@ mod canopy_tests {
                         let s = world.natural_sample(x, z);
                         let r = crate::regions::sample(world.seed, x, z, &s);
                         density += ecology::tree_density(world.seed, x, z, &s);
-                        granite += usize::from(r.geology == crate::regions::Geology::Granite);
+                        alpine += usize::from(s.biome == crate::world::Biome::Alpine);
                         water += usize::from(s.ocean);
                         rockiness += r.rockiness;
                     }
@@ -572,8 +630,7 @@ mod canopy_tests {
                 }
                 if exposed.len() < 3
                     && water == 0
-                    && granite >= 12
-                    && rockiness > 0.60
+                    && (alpine >= 8 || rockiness > 0.52)
                     && density < 0.050
                 {
                     exposed.push((cx, cz));

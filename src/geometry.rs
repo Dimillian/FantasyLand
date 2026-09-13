@@ -289,14 +289,78 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
         let x = triangle.iter().map(|v| v.position[0]).sum::<f32>() / 3.0;
         let z = triangle.iter().map(|v| v.position[2]).sum::<f32>() / 3.0;
         let flow = world.water_flow(x, z);
+        let ice = water_triangle_ice(world, triangle);
         for v in triangle {
             // Blue stores signed depth (+sea, -freshwater); XY stores flow.
             v.color[0] = flow[0];
             v.color[1] = flow[1];
+            v.uv[0] = ice;
         }
     }
     append_drop_sheets(world, &mut mesh, lod);
     mesh
+}
+/// Classify whole flat triangles, so outlet ramps never create invisible ice
+/// floors. This exact classifier is shared with the finest walking surface.
+fn water_triangle_ice(world: &World, triangle: &[Vertex]) -> f32 {
+    let y = triangle[0].position[1];
+    if triangle.iter().any(|v| (v.position[1] - y).abs() > 0.025) {
+        return 0.;
+    }
+    let x = triangle.iter().map(|v| v.position[0]).sum::<f32>() / 3.;
+    let z = triangle.iter().map(|v| v.position[2]).sum::<f32>() / 3.;
+    world.lake_ice(x, z)
+}
+pub fn ice_surface_height(world: &World, x: f32, z: f32) -> Option<f32> {
+    let lake = world.lake_at(x, z)?;
+    if lake.surface < 1700.
+        || crate::climate::temperature(world.seed, lake.center[0], lake.center[1], lake.surface)
+            >= 0.31
+    {
+        return None;
+    }
+    let ix = (x / 6.).floor() as i32;
+    let iz = (z / 6.).floor() as i32;
+    let ox = ix as f32 * 6.;
+    let oz = iz as f32 * 6.;
+    let corners = [[ox, oz], [ox, oz + 6.], [ox + 6., oz + 6.], [ox + 6., oz]].map(|p| {
+        let s = world.sample(p[0], p[1]);
+        GroundVertex {
+            position: [p[0], s.height, p[1]],
+            normal: [0., 1., 0.],
+            color: [0.; 3],
+            water: s.water_height,
+        }
+    });
+    let valid: Vec<_> = corners.iter().filter(|p| p.water > -999.).collect();
+    let water = valid.iter().map(|p| p.water).sum::<f32>() / valid.len().max(1) as f32;
+    let mut mesh = MeshData::default();
+    let indices = if hash(world.seed, ix, iz) & 1 == 0 {
+        [[0, 1, 3], [1, 2, 3]]
+    } else {
+        [[0, 1, 2], [0, 2, 3]]
+    };
+    for ids in indices {
+        water_triangle(&mut mesh, ids.map(|i| corners[i]), water);
+    }
+    for tri in mesh.vertices.chunks_exact(3) {
+        if water_triangle_ice(world, tri) < 0.5 {
+            continue;
+        }
+        let a = tri[0].position;
+        let b = tri[1].position;
+        let c = tri[2].position;
+        let determinant = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
+        if determinant.abs() < 0.0001 {
+            continue;
+        }
+        let u = ((x - a[0]) * (c[2] - a[2]) - (z - a[2]) * (c[0] - a[0])) / determinant;
+        let v = ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0])) / determinant;
+        if u >= -0.001 && v >= -0.001 && u + v <= 1.001 {
+            return Some(a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]));
+        }
+    }
+    None
 }
 /// Local whitewater lives strictly inside already-clipped, steep freshwater
 /// triangles. This decorates actual profile drops; it never invents a vertical
@@ -317,7 +381,7 @@ fn append_drop_sheets(world: &World, mesh: &mut MeshData, lod: u32) {
             mesh.vertices[i * 3 + 1],
             mesh.vertices[i * 3 + 2],
         ];
-        if source.iter().any(|v| v.color[2] >= -1.) {
+        if source.iter().any(|v| v.color[2] >= -1. || v.uv[0] > 0.5) {
             continue;
         }
         let center: [f32; 3] =
@@ -769,6 +833,9 @@ pub fn terrain_surface_height_lod(world: &World, x: f32, z: f32, lod: u32) -> f3
 /// as the visible mesh, including bank approaches and each road class's deck width.
 pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
     let mut height = terrain_surface_height(world, x, z);
+    if let Some(ice) = ice_surface_height(world, x, z) {
+        height = height.max(ice + 0.025);
+    }
     for road in world.road_routes_near(x, z, 6.0) {
         for segment in road.points.windows(2) {
             let a = segment[0];
@@ -910,7 +977,7 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         PropKind::Boulder
     } else if detail > 0.976 - region.rockiness * 0.16 {
         PropKind::Boulder
-    } else if sample.biome == Biome::Wetland && detail < 0.28 {
+    } else if matches!(sample.biome, Biome::Wetland | Biome::Swamp) && detail < 0.28 {
         PropKind::Reed
     } else if detail < 0.045 + density * (1.0 - density) * 0.25
         && !matches!(sample.biome, Biome::Alpine | Biome::Desert)
@@ -1257,6 +1324,14 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
 }
 
 fn anchor_prop(world: &World, mesh: &mut MeshData, first: usize, p: Prop, lod: u32) {
+    let snow = if p.biome == Biome::Alpine {
+        crate::climate::snow_cover(
+            crate::climate::temperature(world.seed, p.position[0], p.position[2], p.position[1]),
+            0.,
+        )
+    } else {
+        0.
+    };
     let drape = matches!(p.kind, PropKind::Boulder | PropKind::Shrub | PropKind::Reed);
     if matches!(p.kind, PropKind::FallenLog) {
         return;
@@ -1324,6 +1399,17 @@ fn anchor_prop(world: &World, mesh: &mut MeshData, first: usize, p: Prop, lod: u
         if length > 0.00001 {
             for vertex in triangle {
                 vertex.normal = n.map(|v| v / length);
+            }
+        }
+    }
+    if snow > 0.01 {
+        for v in &mut mesh.vertices[first..] {
+            if v.material > 1.5 && v.material < 2.5 {
+                let cover = snow * ((v.normal[1] - 0.3) / 0.5).clamp(0., 1.);
+                v.color = mix(v.color, [0.80, 0.86, 0.89], cover);
+                if cover > 0.75 {
+                    v.texture = 13.;
+                }
             }
         }
     }
@@ -1751,6 +1837,10 @@ fn ground_cover_lod(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u
                 }
                 Biome::PineForest => mix([0.25, 0.36, 0.23], [0.39, 0.48, 0.23], open),
                 Biome::Wetland => [0.37, 0.49, 0.23],
+                Biome::Swamp => [0.26, 0.37, 0.20],
+                Biome::Jungle => [0.18, 0.44, 0.23],
+                Biome::TropicalCoast => [0.33, 0.53, 0.23],
+                Biome::Savanna => [0.65, 0.57, 0.26],
                 Biome::Moor => [0.46, 0.46, 0.25],
                 Biome::Alpine => [0.49, 0.50, 0.34],
                 Biome::Desert => [0.70, 0.55, 0.29],
@@ -1769,7 +1859,7 @@ fn ground_cover_lod(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u
                     scale,
                     seed,
                     color,
-                    sample.biome == Biome::Wetland,
+                    matches!(sample.biome, Biome::Wetland | Biome::Swamp),
                 );
             }
             drape_cover_lod(world, mesh, first_vertex, ox, oz, &grid, y + 0.018, lod);
@@ -3894,6 +3984,10 @@ fn stem_at(model: &TreeModel, y: f32) -> [f32; 3] {
     model.trunk.last().unwrap().0
 }
 fn tree_model(p: Prop) -> TreeModel {
+    let palm =
+        p.kind == PropKind::Willow && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast);
+    let jungle = p.biome == Biome::Jungle && p.kind == PropKind::Broadleaf;
+    let acacia = p.biome == Biome::Savanna && p.kind == PropKind::Broadleaf;
     let age = tree_age(p);
     // One species can grow round oak-like crowns or taller beech-like forms.
     // The same deterministic scaffold drives both near cards and far proxies.
@@ -3941,7 +4035,11 @@ fn tree_model(p: Prop) -> TreeModel {
     } else {
         mix([0.29, 0.235, 0.16], [0.53, 0.55, 0.46], pale * 0.8)
     };
-    let stem_top = if matches!(
+    let stem_top = if palm {
+        0.95
+    } else if jungle || acacia {
+        0.74
+    } else if matches!(
         p.kind,
         PropKind::Pine | PropKind::Fir | PropKind::Birch | PropKind::DeadTree
     ) {
@@ -3985,6 +4083,39 @@ fn tree_model(p: Prop) -> TreeModel {
         _ => mix([0.25, 0.39, 0.16], [0.42, 0.49, 0.21], random(p.seed, 17)),
     };
     let green = mix(green, [0.58, 0.64, 0.47], pale * 0.75);
+    if palm {
+        // One bent trunk and eight radiating feather fronds. Reuse the fern
+        // atlas and the same branch scaffold for every near/far detail level.
+        let top = stem_at(&model, h * 0.95);
+        for i in 0..8 {
+            let a = yaw + i as f32 * TAU / 8.;
+            let length = h * (0.30 + random(p.seed, 710 + i) * 0.08);
+            let end = [
+                top[0] + a.sin() * length,
+                top[1] - h * 0.10,
+                top[2] + a.cos() * length,
+            ];
+            model.limbs.push(TreeLimb {
+                start: top,
+                end,
+                r0: radius * 0.11,
+                r1: 0.015,
+            });
+            model.crowns.push(TreeCrown {
+                center: [
+                    top[0] + a.sin() * length * 0.53,
+                    top[1] - h * 0.02,
+                    top[2] + a.cos() * length * 0.53,
+                ],
+                radii: [length * 0.16, h * 0.045, length * 0.62],
+                yaw: a,
+                seed: hash(p.seed, i as i32, 719),
+                color: mul([0.22, 0.43, 0.24], 0.86 + random(p.seed, 730 + i) * 0.23),
+                pointed: false,
+            });
+        }
+        return model;
+    }
     if matches!(p.kind, PropKind::Pine | PropKind::Fir) {
         let fir = p.kind == PropKind::Fir;
         let levels = if age == TreeAge::Young {
@@ -4080,7 +4211,9 @@ fn tree_model(p: Prop) -> TreeModel {
             let willow = p.kind == PropKind::Willow;
             let dead = p.kind == PropKind::DeadTree;
             let a = yaw + n as f32 * 2.39996 + (random(p.seed, 620 + n) - 0.5) * 0.85;
-            let f = if birch || dead {
+            let f = if jungle || acacia {
+                0.48 + n as f32 * 0.04
+            } else if birch || dead {
                 0.35 + n as f32 * 0.095
             } else {
                 0.22 + n as f32 * 0.056
@@ -4142,7 +4275,11 @@ fn tree_model(p: Prop) -> TreeModel {
                     r1: radius * 0.055,
                 });
                 if !dead {
-                    let crown_size = if birch {
+                    let crown_size = if acacia {
+                        [0.30, 0.095, 0.24]
+                    } else if jungle {
+                        [0.20, 0.15, 0.18]
+                    } else if birch {
                         [0.105, 0.235, 0.095]
                     } else if willow {
                         [0.16, 0.28, 0.14]
@@ -4454,6 +4591,24 @@ fn visit_crown_cards(
     mut emit: impl FnMut(CrownCard),
 ) {
     let center: [f32; 3] = std::array::from_fn(|i| p.position[i] + c.center[i]);
+    if p.kind == PropKind::Willow && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast) {
+        for i in 0..if reduced { 1 } else { 2 } {
+            let tilt = if i == 0 { -0.14 } else { 0.08 };
+            emit(CrownCard {
+                center,
+                side: [c.yaw.cos() * c.radii[0], 0., -c.yaw.sin() * c.radii[0]],
+                rise: [
+                    c.yaw.sin() * c.radii[2],
+                    c.radii[2] * tilt,
+                    c.yaw.cos() * c.radii[2],
+                ],
+                color: c.color,
+                texture: 8.,
+                pendant: false,
+            });
+        }
+        return;
+    }
     let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
     let willow = p.kind == PropKind::Willow;
     let leader = conifer && c.seed == p.seed ^ 613;
@@ -4547,7 +4702,15 @@ fn visit_crown_cards(
             side,
             rise,
             color: mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
-            texture: if conifer { 6. } else { 5. },
+            texture: if p.kind == PropKind::Willow
+                && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast)
+            {
+                8.
+            } else if conifer {
+                6.
+            } else {
+                5.
+            },
             pendant: willow && i < count - 1,
         });
     }
@@ -5323,6 +5486,9 @@ mod regional_geometry_tests {
 // Distant forms keep the growth skeleton but merge nearby crown lobes into two
 // or three large readable masses, rather than repeating every near-tree branch.
 fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
+    if p.kind == PropKind::Willow && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast) {
+        return model.crowns.iter().step_by(2).copied().collect();
+    }
     if model.crowns.is_empty() {
         return Vec::new();
     }

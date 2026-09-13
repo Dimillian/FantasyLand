@@ -334,7 +334,7 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
     let mesa_d = derivative(0.27, 0.48, crest) * 0.57 + derivative(0.67, 0.78, crest) * 0.43;
     let mut profiles = [
         105. + broad * 140. + hill * 110. + ridge2 * 45.,
-        260. + broad * 150. + ridge2 * 1620. + hill * 105.,
+        260. + broad * 150. + ridge2 * 650. + hill * 105.,
         140. + broad * 130. + mesa * 560. + hill * 55.,
         120. + broad * 110. + crest * 220. + hill * 55.,
         250. + broad * 170. + mesa * 710. + hill * 110.,
@@ -345,8 +345,8 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
             bg[1] * 140. + hg[1] * 110. + ridge_g[1] * 45.,
         ],
         [
-            bg[0] * 150. + hg[0] * 105. + ridge_g[0] * 1620.,
-            bg[1] * 150. + hg[1] * 105. + ridge_g[1] * 1620.,
+            bg[0] * 150. + hg[0] * 105. + ridge_g[0] * 650.,
+            bg[1] * 150. + hg[1] * 105. + ridge_g[1] * 650.,
         ],
         [
             bg[0] * 130. + hg[0] * 55. + mesa_d * 560. * (cg[0] - cg[1] * 0.11),
@@ -365,10 +365,10 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
     // supplies subordinate ridges/plateaus; basins suppress that local uplift.
     // The product rule keeps slope identical to the height actually returned.
     let geography = crate::geography::sample(seed, x, z);
-    let relief = 0.48 + geography.mountain * 0.28 - geography.basin * 0.22;
+    let relief = 0.28 + geography.mountain * 0.48 - geography.basin * 0.12;
     let relief_gradient = [
-        geography.mountain_gradient[0] * 0.28 - geography.basin_gradient[0] * 0.22,
-        geography.mountain_gradient[1] * 0.28 - geography.basin_gradient[1] * 0.22,
+        geography.mountain_gradient[0] * 0.48 - geography.basin_gradient[0] * 0.12,
+        geography.mountain_gradient[1] * 0.48 - geography.basin_gradient[1] * 0.12,
     ];
     for k in 0..5 {
         let old = profiles[k] - 85.;
@@ -455,11 +455,8 @@ pub fn base(seed: u32, x: f32, z: f32) -> Base {
     // shelter respond to the same relief that shapes the visible ridgelines.
     // Rain and shelter respond to hills/ridges, not to a two-metre ledge face.
     let lift = (climate_gradient[0] * 0.91 - climate_gradient[1] * 0.41).clamp(-0.35, 0.35);
-    let regional_rain = field(seed ^ 0x7315, x, z, 38000.).0;
-    let rainfall = (0.45 + regional_rain * 0.40 + lift * 0.72 - weights[2] * 0.16
-        + geography.windward * 0.18
-        - geography.rain_shadow * 0.28)
-        .clamp(0.10, 0.98);
+    let rainfall =
+        crate::climate::rainfall(seed, x, z, geography.windward, geography.rain_shadow, lift);
     let exposure =
         (0.12 + smooth(300., 1300., height) * 0.60 + ridge2 * weights[1] * 0.24 + lift.abs() * 0.5)
             .clamp(0., 1.);
@@ -642,30 +639,59 @@ mod tests {
     }
     #[test]
     fn prevailing_wind_makes_windward_slopes_wetter_than_nearby_lee_slopes() {
-        let mut windward = (0f32, 0usize);
-        let mut lee = (0f32, 0usize);
-        for z in (-90000..90000).step_by(1200) {
-            for x in (-90000..90000).step_by(1200) {
-                let x = x as f32;
-                let z = z as f32;
-                let b = base(1337, x, z);
-                if b.weights[1] < 0.9 {
+        // Rain follows mountain-scale uplift, not a small granite rib face.
+        // Derive the slope independently from actual terrain across one km,
+        // then compare opposite sides of the same range in three worlds.
+        let lift = |seed, p: [f32; 2]| {
+            (base(seed, p[0] + 455., p[1] - 205.).height
+                - base(seed, p[0] - 455., p[1] + 205.).height)
+                / 1000.
+        };
+        for seed in [1337, 42, 2026] {
+            let (mut pairs, mut wetter, mut difference) = (0, 0, 0.);
+            for ridge in crate::geography::landmarks(seed)
+                .into_iter()
+                .filter(|p| p.kind == crate::geography::GeoLandmarkKind::RidgeSummit)
+            {
+                let mut cross = [-ridge.axis[1], ridge.axis[0]];
+                let alignment = cross[0] * 0.91 - cross[1] * 0.41;
+                if alignment.abs() < 0.30 {
                     continue;
                 }
-                let up = base(1337, x + 45.5, z - 20.5).height;
-                let down = base(1337, x - 45.5, z + 20.5).height;
-                let lift = (up - down) / 100.;
-                if lift > 0.15 {
-                    windward.0 += b.rainfall;
-                    windward.1 += 1;
+                if alignment < 0. {
+                    cross = cross.map(|v| -v);
                 }
-                if lift < -0.15 {
-                    lee.0 += b.rainfall;
-                    lee.1 += 1;
+                for factor in [1., 1.5, 2., 2.5] {
+                    let d = ridge.radius * factor;
+                    let a = [
+                        ridge.position[0] - cross[0] * d,
+                        ridge.position[1] - cross[1] * d,
+                    ];
+                    let b = [
+                        ridge.position[0] + cross[0] * d,
+                        ridge.position[1] + cross[1] * d,
+                    ];
+                    if lift(seed, a) <= 0.05 || lift(seed, b) >= -0.05 {
+                        continue;
+                    }
+                    let delta = base(seed, a[0], a[1]).rainfall - base(seed, b[0], b[1]).rainfall;
+                    pairs += 1;
+                    wetter += usize::from(delta > 0.);
+                    difference += delta;
                 }
             }
+            assert!(
+                pairs >= 12,
+                "too few mountain pairs for seed{seed}: {pairs}"
+            );
+            assert!(
+                wetter * 5 >= pairs * 4,
+                "windward rain reversed for seed{seed}"
+            );
+            assert!(
+                difference / pairs as f32 > 0.12,
+                "weak rain shadow for seed{seed}"
+            );
         }
-        assert!(windward.1 > 50 && lee.1 > 50);
-        assert!(windward.0 / windward.1 as f32 > lee.0 / lee.1 as f32 + 0.12);
     }
 }

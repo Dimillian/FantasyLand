@@ -116,14 +116,14 @@ struct Range {
 }
 fn ranges(seed: u32) -> [Range; 8] {
     let layouts = [
-        (-48000., -21000., 0.88, 89000., 15500., 1510.),
-        (46000., 33000., -0.32, 82000., 17000., 1670.),
-        (-54000., 65000., -0.64, 55000., 13300., 1430.),
-        (-158000., 42000., 1.35, 19000., 6500., 980.),
-        (-18000., -155000., 0.18, 22000., 7200., 1040.),
-        (154000., -86000., 1.18, 21000., 6800., 1130.),
-        (149000., 131000., -0.5, 20500., 6900., 990.),
-        (-38000., 159000., 0.15, 23500., 7300., 1190.),
+        (-48000., -21000., 0.88, 76000., 10000., 3700.),
+        (46000., 33000., -0.32, 65000., 10500., 3900.),
+        (-54000., 65000., -0.64, 46000., 8500., 3400.),
+        (-158000., 42000., 1.35, 19000., 5200., 2100.),
+        (-18000., -155000., 0.18, 22000., 5800., 2200.),
+        (154000., -86000., 1.18, 21000., 5400., 2450.),
+        (149000., 131000., -0.5, 20500., 5600., 2150.),
+        (-38000., 159000., 0.15, 23500., 5900., 2300.),
     ];
     std::array::from_fn(|i| {
         let (x, z, a, l, w, h) = layouts[i];
@@ -169,6 +169,16 @@ fn spine(r: Range, u: D) -> D {
                 .scale(r.bend * 0.23),
         )
 }
+// Individual summits and saddles break the long divide into a chain of massifs.
+// Analytic derivatives preserve ecology/physics slope agreement.
+fn summit_profile(r: Range, u: D) -> D {
+    u.scale(1. / 4100.)
+        .offset(r.phase)
+        .sin()
+        .scale(0.15)
+        .add(u.scale(1. / 1750.).offset(r.phase * 1.7).sin().scale(0.07))
+        .offset(0.80)
+}
 fn world_point(r: Range, u: f32, v: f32) -> [f32; 2] {
     let v = v + spine(r, D::constant(u)).v;
     [
@@ -210,9 +220,9 @@ pub fn landmarks(seed: u32) -> Vec<GeoLandmark> {
                 out.push(GeoLandmark {
                     id: hash(seed ^ 0x7824, i as i32, j as i32),
                     kind: GeoLandmarkKind::TarnBasin,
-                    position: world_point(r, side * r.length * 0.12, side * r.width * 0.16),
+                    position: world_point(r, side * r.length * 0.12, side * r.width * 0.12),
                     axis: r.axis,
-                    radius: (r.width * 0.11).max(1250.),
+                    radius: (r.width * 0.15).max(1600.),
                     range_id: i as u32,
                 });
             }
@@ -258,7 +268,7 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
             let cross = v.add(spine(r, u).scale(-1.));
             let envelope = u.scale(1. / r.length).bell();
             let foot = cross.scale(1. / r.width).bell().mul(envelope);
-            let crest = cross.scale(1. / (r.width * 0.29)).bell().mul(envelope);
+            let crest = cross.scale(1. / (r.width * 0.38)).bell().mul(envelope);
             let mut pass = D::constant(1.);
             for &p in &r.passes {
                 pass = pass.mul(
@@ -281,12 +291,16 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                 }
             }
             let mut local = crest
+                .mul(summit_profile(r, u))
                 .mul(pass)
                 .scale(r.height)
-                .add(foot.scale(r.height * 0.22));
+                .add(foot.scale(r.height * 0.16));
             // Six offshoots taper away from the main divide. Their curved axes
             // are expressed relative to the parent spine, so they stay attached.
-            for (j, along) in [-0.60, 0.0, 0.60].into_iter().enumerate() {
+            for (j, along) in [-0.64, -0.40, -0.16, 0.12, 0.38, 0.64]
+                .into_iter()
+                .enumerate()
+            {
                 for side in [-1., 1.] {
                     let lateral = cross.scale(side / r.width);
                     let reach = lateral.offset(-0.43).scale(1. / 0.55).bell();
@@ -294,11 +308,11 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                         .offset(-along * r.length)
                         .add(cross.scale(-side * (0.35 + j as f32 * 0.08)));
                     let rib = offset
-                        .scale(1. / (r.width * 0.19))
+                        .scale(1. / (r.width * 0.28))
                         .bell()
                         .mul(reach)
                         .mul(envelope);
-                    local = local.add(rib.scale(r.height * 0.22));
+                    local = local.add(rib.scale(r.height * 0.16));
                 }
             }
             // Glacial-style cirques interrupt an upper shoulder with a small
@@ -307,8 +321,8 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
             // spill lip, and only compatible basins become retained flat lakes.
             for side in [-1., 1.] {
                 let cu = side * r.length * 0.12;
-                let cv = side * r.width * 0.16;
-                let radius = (r.width * 0.11).max(1250.);
+                let cv = side * r.width * 0.12;
+                let radius = (r.width * 0.15).max(1600.);
                 let du = u.offset(-cu).scale(1. / radius);
                 let dv = cross.offset(-cv).scale(1. / radius);
                 if du.v.abs() > 1. || dv.v.abs() > 1. {
@@ -316,7 +330,7 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                 }
                 let radial = du.mul(du).add(dv.mul(dv));
                 let shelf = radial.step(0.28, 1.).complement();
-                let hollow = radial.step(0., 0.42).complement().scale(64.);
+                let hollow = radial.step(0., 0.42).complement().scale(100.);
                 let env = D::constant(cu / r.length).bell().v;
                 let mut pass = 1.;
                 for &p in &r.passes {
@@ -324,8 +338,10 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                 }
                 let target = r.height
                     * env
-                    * (D::constant(cv / (r.width * 0.29)).bell().v * pass
-                        + D::constant(cv / r.width).bell().v * 0.22);
+                    * (D::constant(cv / (r.width * 0.38)).bell().v
+                        * pass
+                        * summit_profile(r, D::constant(cu)).v
+                        + D::constant(cv / r.width).bell().v * 0.16);
                 local = local
                     .mul(shelf.complement())
                     .add(D::constant(target).add(hollow.scale(-1.)).mul(shelf));

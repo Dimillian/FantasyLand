@@ -26,7 +26,17 @@ pub fn destinations(world: &World) -> Vec<Destination> {
         LandscapeKind::Alpine,
     ];
     let mut chosen: [Option<(f32, Destination)>; 7] = std::array::from_fn(|_| None);
-    let mut forests: [Option<(f32, Destination)>; 5] = std::array::from_fn(|_| None);
+    let biome_kinds = [
+        crate::world::Biome::Desert,
+        crate::world::Biome::Swamp,
+        crate::world::Biome::Savanna,
+        crate::world::Biome::Jungle,
+        crate::world::Biome::TropicalCoast,
+        crate::world::Biome::Alpine,
+        crate::world::Biome::Grassland,
+    ];
+    let mut biomes: [Option<(f32, Destination)>; 7] = std::array::from_fn(|_| None);
+    let mut forests: [Option<(f32, Destination)>; 8] = std::array::from_fn(|_| None);
     for iz in -62..=62 {
         for ix in -62..=62 {
             let x = ix as f32 * 2900.0 + 731.0;
@@ -37,7 +47,41 @@ pub fn destinations(world: &World) -> Vec<Destination> {
             }
             let r = regions::sample(world.seed, x, z, &s);
             let trees = ecology::tree_density(world.seed, x, z, &s);
-            if trees > 0.72 && r.slope < 0.4 {
+            if let Some(i) = biome_kinds.iter().position(|b| *b == s.biome) {
+                let score = match s.biome {
+                    crate::world::Biome::Jungle => trees * 8. - r.slope * 4.,
+                    crate::world::Biome::TropicalCoast => {
+                        trees * 9.
+                            - (world.coast_info(x, z).distance - 300.).abs() / 700.
+                            - r.slope * 5.
+                    }
+                    crate::world::Biome::Savanna => trees * 15. + s.height / 450. - r.slope * 5.,
+                    crate::world::Biome::Alpine => s.height / 1400. - r.slope * 7.,
+                    _ => r.rockiness * 2. + s.height / 400. - r.slope * 5.,
+                };
+                if biomes[i].as_ref().is_none_or(|old| score > old.0)
+                    && !crate::geometry::blocks_player(world, x, z)
+                    && crate::geometry::walk_height(world, x, z) > s.water_height + 0.4
+                {
+                    biomes[i] = Some((
+                        score,
+                        Destination {
+                            name: s.biome.name(),
+                            x,
+                            z,
+                            yaw: 1.4,
+                            pitch: 0.06,
+                        },
+                    ));
+                }
+            }
+            let density_threshold = match s.biome {
+                crate::world::Biome::TropicalCoast => 0.35,
+                crate::world::Biome::Savanna => 0.07,
+                crate::world::Biome::Swamp => 0.50,
+                _ => 0.72,
+            };
+            if trees > density_threshold && r.slope < 0.4 {
                 let forest = ecology::forest_in(world.seed, x, z, &s, &r);
                 let i = forest.kind as usize;
                 let score = trees * 4. - r.slope * 3. + forest.regeneration * 0.4;
@@ -100,6 +144,75 @@ pub fn destinations(world: &World) -> Vec<Destination> {
             .flatten()
             .map(|(_, p)| forest_view(world, p)),
     );
+    result.extend(
+        biomes
+            .into_iter()
+            .flatten()
+            .map(|(_, p)| scenic_view(world, p)),
+    );
+    // A shore arrival beside actual retained ice, never a teleport into water.
+    for lake in world
+        .lakes()
+        .iter()
+        .filter(|l| world.lake_ice(l.center[0], l.center[1]) > 0.5)
+        .take(1)
+    {
+        'shore: for radius in [150., 300., 550., 850., 1300.] {
+            for i in 0..24 {
+                let a = i as f32 * std::f32::consts::TAU / 24.;
+                let x = lake.center[0] + a.sin() * radius;
+                let z = lake.center[1] + a.cos() * radius;
+                let s = world.sample(x, z);
+                if !s.ocean
+                    && s.height > s.water_height + 0.5
+                    && (s.height - lake.surface).abs() < 60.
+                    && !crate::geometry::blocks_player(world, x, z)
+                {
+                    result.push(Destination {
+                        name: "Frozen mountain tarn",
+                        x,
+                        z,
+                        yaw: (lake.center[0] - x).atan2(z - lake.center[1]),
+                        pitch: -0.02,
+                    });
+                    break 'shore;
+                }
+            }
+        }
+    }
+    // Expose real climbing routes, rather than dropping explorers at an
+    // unrelated scenic summit. Arrivals face uphill along the generated path.
+    let mut ascents = world.mountain_trails();
+    ascents.sort_by(|a, b| {
+        let height = |r: &crate::world::Road| {
+            let p = r.points.last().unwrap();
+            world.natural_sample(p[0], p[1]).height
+        };
+        height(b).total_cmp(&height(a))
+    });
+    let names = [
+        "Mountain ascent · I",
+        "Mountain ascent · II",
+        "Mountain ascent · III",
+    ];
+    for (road, name) in ascents.iter().take(3).zip(names) {
+        for pair in road.points.windows(2).take(8) {
+            let [x, z] = pair[0];
+            let water = world.natural_sample(x, z).water_height;
+            if crate::geometry::walk_height(world, x, z) > water + 0.4
+                && !crate::geometry::blocks_player(world, x, z)
+            {
+                result.push(Destination {
+                    name,
+                    x,
+                    z,
+                    yaw: (pair[1][0] - x).atan2(z - pair[1][1]),
+                    pitch: 0.04,
+                });
+                break;
+            }
+        }
+    }
     result
 }
 
@@ -141,7 +254,7 @@ pub fn scenic_view(world: &World, destination: Destination) -> Destination {
                 continue;
             }
             let region = regions::sample(world.seed, x, z, &s);
-            if region.kind.name() != destination.name {
+            if region.kind.name() != destination.name && s.biome.name() != destination.name {
                 continue;
             }
             let local_grade = (world.height(x + 4., z) - world.height(x - 4., z))
@@ -226,7 +339,18 @@ mod tests {
     fn tour_arrivals_are_on_rendered_dry_ground_and_clear_of_trunks() {
         let world = World::new(1337);
         let points = destinations(&world);
-        assert_eq!(points.len(), 12);
+        assert!(points.len() >= 20, "only {} destinations", points.len());
+        for label in [
+            "Lowland swamp",
+            "Golden savanna",
+            "Tropical rainforest",
+            "Tropical coast",
+            "Desert & badlands",
+            "Frozen mountain tarn",
+            "Mountain ascent · I",
+        ] {
+            assert!(points.iter().any(|p| p.name == label), "missing {label}");
+        }
         for p in points {
             let water = world.natural_sample(p.x, p.z).water_height;
             assert!(

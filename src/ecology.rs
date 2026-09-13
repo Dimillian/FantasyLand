@@ -15,6 +15,9 @@ pub enum ForestKind {
     TallPines,
     CathedralFirs,
     Wetwood,
+    Rainforest,
+    PalmGrove,
+    SavannaWood,
 }
 impl ForestKind {
     pub fn name(self) -> &'static str {
@@ -24,6 +27,9 @@ impl ForestKind {
             Self::TallPines => "Tall pine & heath forest",
             Self::CathedralFirs => "Cathedral fir forest",
             Self::Wetwood => "Willow & alder wetwood",
+            Self::Rainforest => "Emergent tropical rainforest",
+            Self::PalmGrove => "Coastal palm grove",
+            Self::SavannaWood => "Umbrella acacia savanna",
         }
     }
 }
@@ -42,6 +48,21 @@ fn forest_thicket(seed: u32, x: f32, z: f32) -> f32 {
     smooth(0.30, 0.66, field(seed ^ 0x46544849, x / 31., z / 31.))
 }
 pub fn forest_in(seed: u32, x: f32, z: f32, s: &Sample, region: &Landscape) -> ForestStand {
+    let regeneration = smooth(0.44, 0.70, field(seed ^ 0x46594f55, x / 43., z / 43.));
+    let tropical = match s.biome {
+        Biome::Jungle => Some((ForestKind::Rainforest, [0.74, 0., 0., 0., 0.23, 0.03], 1.85)),
+        Biome::TropicalCoast => Some((ForestKind::PalmGrove, [0.20, 0., 0., 0., 0.77, 0.03], 1.0)),
+        Biome::Savanna => Some((ForestKind::SavannaWood, [0.94, 0., 0., 0., 0., 0.06], 0.9)),
+        _ => None,
+    };
+    if let Some((kind, species, stature)) = tropical {
+        return ForestStand {
+            kind,
+            species,
+            stature,
+            regeneration,
+        };
+    }
     let warp = field(seed ^ 0x46575250, x / 1700., z / 1700.) * 240.;
     let stand = field(seed ^ 0x464f5245, (x + warp) / 780., (z - warp) / 780.);
     let cool = if s.biome == Biome::PineForest {
@@ -49,7 +70,7 @@ pub fn forest_in(seed: u32, x: f32, z: f32, s: &Sample, region: &Landscape) -> F
     } else {
         smooth(0.61, 0.30, s.temperature) * 0.65
     };
-    let wet = if s.biome == Biome::Wetland {
+    let wet = if matches!(s.biome, Biome::Wetland | Biome::Swamp) {
         1.
     } else {
         smooth(0.68, 0.9, region.wetness) * 0.8
@@ -171,7 +192,11 @@ pub(crate) fn tree_density_in(
     let canopy = (woodland + ancient * 0.18).min(1.0) * (1.0 - clearings * (1.0 - ancient * 0.24));
     let capacity = match terrain.biome {
         Biome::Forest | Biome::PineForest => 0.98,
-        Biome::Grassland => 0.90,
+        Biome::Grassland => 0.24,
+        Biome::Savanna => 0.12,
+        Biome::Jungle => 0.98,
+        Biome::TropicalCoast => 0.52,
+        Biome::Swamp => 0.68,
         Biome::Wetland => 0.74,
         Biome::Moor => 0.20,
         _ => 0.0,
@@ -236,6 +261,10 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         Biome::Grassland | Biome::Forest => 0.37 + open * 0.36,
         Biome::PineForest => 0.30 + open * 0.30,
         Biome::Wetland => 0.69,
+        Biome::Swamp => 0.42,
+        Biome::Jungle => 0.72,
+        Biome::TropicalCoast => 0.52,
+        Biome::Savanna => 0.79,
         Biome::Moor => 0.58,
         Biome::Alpine => 0.14,
         Biome::Desert => 0.055,
@@ -277,6 +306,22 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         0.0
     };
     let mut reeds = bank * (0.35 + wet_bank * 0.44) * smooth(0.25, 0.64, clump);
+    if terrain.biome == Biome::Jungle {
+        ferns += fern_patch * 0.55;
+        shrubs += interior * thicket * 0.22;
+        flowers *= 0.3;
+    }
+    if terrain.biome == Biome::Swamp {
+        reeds += smooth(0.35, 0.72, clump) * 0.38;
+        shrubs *= 0.7;
+        flowers *= 0.08;
+        seedheads *= 0.25;
+    }
+    if terrain.biome == Biome::Savanna {
+        seedheads += 0.25;
+        ferns = 0.;
+        flowers *= 0.2;
+    }
     let normalize = (0.97
         / (flowers + ferns + heather + seedheads + shrubs + litter + reeds).max(0.97))
     .min(1.0);
@@ -299,6 +344,10 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
         Biome::Grassland | Biome::Forest => mix([0.24, 0.38, 0.16], [0.40, 0.53, 0.20], open),
         Biome::PineForest => mix([0.25, 0.35, 0.22], [0.39, 0.47, 0.26], open),
         Biome::Wetland => [0.34, 0.48, 0.23],
+        Biome::Swamp => [0.26, 0.37, 0.20],
+        Biome::Jungle => [0.16, 0.40, 0.23],
+        Biome::TropicalCoast => [0.33, 0.53, 0.22],
+        Biome::Savanna => [0.64, 0.57, 0.26],
         Biome::Moor => [0.46, 0.44, 0.25],
         Biome::Alpine => [0.47, 0.48, 0.32],
         Biome::Desert => [0.65, 0.53, 0.29],
@@ -345,6 +394,10 @@ pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
         Biome::PineForest => [0.38, 0.46, 0.28],
         Biome::Moor => [0.46, 0.44, 0.31],
         Biome::Wetland => [0.36, 0.46, 0.26],
+        Biome::Swamp => [0.29, 0.26, 0.18],
+        Biome::Jungle => [0.22, 0.37, 0.18],
+        Biome::TropicalCoast => [0.41, 0.53, 0.25],
+        Biome::Savanna => [0.60, 0.53, 0.25],
         Biome::Alpine => [0.53, 0.55, 0.46],
         Biome::Desert => [0.71, 0.57, 0.36],
     };
@@ -377,7 +430,18 @@ pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
         let mud = mix([0.26, 0.29, 0.20], gravel, smooth(0.35, 0.72, patch));
         ground = mix(ground, mud, margin * 0.85);
     }
-    ground
+    if terrain.biome == Biome::Swamp {
+        ground = mix(ground, [0.25, 0.225, 0.16], 0.58 + patch * 0.24);
+    }
+    if terrain.biome == Biome::Savanna {
+        ground = mix(ground, [0.61, 0.53, 0.28], 0.56);
+    }
+    if terrain.biome == Biome::Desert {
+        ground = mix(ground, [0.73, 0.57, 0.34], 0.65);
+    }
+    let snow = crate::climate::snow_cover(terrain.temperature, region.slope)
+        * smooth(1400., 2000., terrain.height);
+    mix(ground, [0.82, 0.87, 0.90], snow)
 }
 
 #[cfg(test)]
