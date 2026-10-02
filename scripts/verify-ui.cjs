@@ -5,7 +5,10 @@ const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html
 const adaptiveSource = fs.readFileSync(require('path').join(__dirname, '../dist/adaptive-resolution.js'), 'utf8').replace('export class', 'class');
 const portraitSource = fs.readFileSync(require('path').join(__dirname, '../dist/portrait.js'), 'utf8').replace('export function', 'function');
 const soundStub = `class Soundscape { constructor(saved={}){this.volumes={master:.75,ambience:.8,footsteps:.45,wildlife:.75,...saved};this.voices=new Set();this.thunder={pending:[]};} cancelThunder(){} setVolume(k,v){this.volumes[k]=v;} setActive(){} unlock(){} update(){} }`;
-const source = soundStub + '\n' + portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '').replace(/import \{ Soundscape \}[^\n]+\n/, '');
+const storageSource=fs.readFileSync(require('path').join(__dirname,'../dist/world-store.mjs'),'utf8').replace(/export /g,'');
+const cacheSource=fs.readFileSync(require('path').join(__dirname,'../dist/atlas-cache.mjs'),'utf8').replace(/export /g,'');
+const snapshotFor=(seed, p={})=>({schema:1,world:{seed,generator_version:1,recipe_revision:1},clock:1080,doors:[],player:{x:0,z:0,yaw:0,pitch:0,health:100,mana:100,stamina:100,walked:0,...Object.fromEntries(Object.entries(p).filter(([k])=>['x','z','yaw','pitch','health','mana','stamina','walked'].includes(k)))}});
+const source = storageSource + '\n' + cacheSource + '\n' + soundStub + '\n' + portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/^import .*from '\.\/(?:world-store|atlas-cache)\.mjs';\n/gm,'').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '').replace(/import \{ Soundscape \}[^\n]+\n/, '');
 class Element {
   constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; this.children=[]; this._text=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
@@ -39,7 +42,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_layer_data(){return new Uint8Array(320*320*4);},map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_lighting_mode(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={save_snapshot:()=>snapshotFor(1337,{x:100,z:200,stamina:75}),world_identity:()=>snapshotFor(1337).world,end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_layer_data(){return new Uint8Array(320*320*4);},map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_lighting_mode(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -53,12 +56,14 @@ function filterHarness(snapshot, destinations = [], href = 'https://test.invalid
   filterDocument.getElementById = id => filterIds[id];
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
-  const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
+  const engineSeed=Number(new URL(href).searchParams.get('seed')??snapshot.seed??1337);
+  const filterStore = { 'fantasyland.preferences.v1': JSON.stringify(snapshot) };
+  if(Number.isFinite(snapshot.x)&&Number.isFinite(snapshot.z))filterStore[`fantasyland.world.g1:r1:s${snapshot.seed}`]=JSON.stringify({schema:1,snapshot:snapshotFor(snapshot.seed,{x:snapshot.x,z:snapshot.z}),waypoint:snapshot.waypoint||null,atlas:snapshot.atlas||null});
   const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [], aaCalls = [], lightingCalls = [];
   let destinationCalls = 0;
-  const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
+  const playerState = {x:0,z:0,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
-  const engine = {end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},
+  const engine = {world_identity:()=>snapshotFor(engineSeed).world,save_snapshot:()=>snapshotFor(engineSeed,playerState),restore_snapshot(s){engine.teleport(s.player.x,s.player.z);Object.assign(playerState,s.player);},end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},
     visit_interior:kind=>{rendererEvents.push(['interior',kind]);playerState.x=321;playerState.z=654;return 'The Copper Lantern';},
     // Keep these separate: existing renderer boot-order assertions stay strict.
     set_weather_mode:value=>{weatherCalls.push(['mode',value]);},
@@ -87,7 +92,17 @@ function filterHarness(snapshot, destinations = [], href = 'https://test.invalid
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
   const bootSource = source.replace(/await import\('\.\/pkg\/fantasy_land\.js(?:\?[^']*)?'\)/, 'fakeModule');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,lightingCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,lightingCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>{const prefs=JSON.parse(filterStore['fantasyland.preferences.v1']);const save=JSON.parse(filterStore[`fantasyland.world.g1:r1:s${engineSeed}`]||'null');return {...prefs,...(save?{...save.snapshot.player,waypoint:save.waypoint,atlas:save.atlas}:{} )};}};
+}
+
+async function verifyWorldImport() {
+  const h=filterHarness({seed:42,x:12,z:34});await h.run('boot()');h.run('initialReady=true;');
+  const imported={schema:1,snapshot:snapshotFor(42,{x:700,z:900,health:43}),waypoint:null,atlas:null};
+  await h.ids['import-world'].listeners.change[0]({target:{files:[{size:1000,text:async()=>JSON.stringify(imported)}],value:'test'}});
+  assert.equal(h.run('importingSave'),true);
+  h.run('saveProgress()');
+  assert.equal(h.saved().x,700);assert.equal(h.saved().health,43);
+  console.log('PASS: same-seed import survives navigation autosave and retains imported player state.');
 }
 
 async function verifyAudioSettings() {
@@ -122,7 +137,7 @@ async function verifyFilterSettings() {
   assert.deepEqual(first.resolutionCalls,[1]);
   assert.equal(first.ids['render-dimensions'].textContent,'Actual 800 × 500');
   assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','filter','groundCover','shadows','lighting','resize'],'Preferences must apply after world quality and before resize.');
-  assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
+  assert.deepEqual(first.teleports,[[637,222]],'Existing versioned position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
   assert.deepEqual(first.calls.at(-1),[2,1]);
@@ -197,7 +212,7 @@ async function verifyFilterSettings() {
   assert.equal(comparison.run('modal'),'bag','Opening a menu cancels automated walking first.');
   assert.equal(comparison.saved().x,637); assert.equal(comparison.saved().z,222,'Cancel must save the restored position.');
   assert.equal(comparison.ids['motion-status'].textContent,'Recording interrupted.','Stale async completion must not advertise an 8-second clip.');
-  console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; v4 position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
+  console.log('PASS: Bloom defaults; renderer initialization; filter selection and amount API calls; versioned position/waypoint/atlas preservation; reload persistence; Clean disabled state; zero strength; maximum clamp.');
 }
 
 async function verifyResolutionSettings() {
@@ -243,7 +258,7 @@ async function verifyResolutionSettings() {
   assert.equal(custom.ids['look-status'].textContent,'Recommended look');
   const baselineReload=filterHarness(baseline); await baselineReload.run('boot()');
   assert.equal(baselineReload.resolutionCalls.at(-1),1); assert.equal(baselineReload.ids['look-status'].textContent,'Recommended look');
-  console.log('PASS: resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
+  console.log('PASS: resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; versioned persistence.');
 }
 
 async function verifyLightingSettings() {
@@ -350,7 +365,7 @@ async function verifyGroundCoverSettings() {
   const shadowOff=filterHarness(selected.saved()); await shadowOff.run('boot()');
   assert.equal(shadowOff.ids['sun-shadows'].value,'off');
   assert.ok(shadowOff.rendererEvents.some(e=>e[0]==='shadows' && e[1]===false));
-  console.log('PASS: accessible ground-cover slider; old-save default; immediate GPU input calls; boot order; 0/Off and reload persistence; multiplier labels; finite validation/clamping; independence of quality; all existing v4 progress and preferences preserved.');
+  console.log('PASS: accessible ground-cover slider; old-save default; immediate GPU input calls; boot order; 0/Off and reload persistence; multiplier labels; finite validation/clamping; independence of quality; all existing versioned progress and preferences preserved.');
 }
 
 async function verifyWeatherSettings() {
@@ -415,7 +430,7 @@ async function verifyWeatherSettings() {
   assert.doesNotMatch(h.ids['weather-hud'].textContent+h.ids['weather-current'].textContent+h.ids['weather-air'].textContent+h.ids['weather-ground'].textContent,/NaN|Infinity|undefined/);
   assert.match(h.ids['weather-air'].textContent,/cloud 100% · rain 0% · snow —/);
   h.run('state.weather=undefined;updateHUD(300);'); // Early or incomplete engine state must not break the HUD.
-  console.log('PASS: weather API boot/defaults; all nine modes; live speed/pause/reflection/enclosure calls; separate renderer events; finite bounds; v4 progress and visual preferences; reload including false toggles; live weather HUD and reflection diagnostics.');
+  console.log('PASS: weather API boot/defaults; all nine modes; live speed/pause/reflection/enclosure calls; separate renderer events; finite bounds; versioned progress and visual preferences; reload including false toggles; live weather HUD and reflection diagnostics.');
 }
 
 async function verifyLandscapeDestinations() {
@@ -495,7 +510,7 @@ async function verifySkyAndWalkControls() {
 }
 
 async function main(){
-  assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),undefined); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
+  assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),null); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
   ids.world.fire('click',{clientX:10,clientY:20});
   assert.equal(calls,1);assert.equal(run('started'),true);assert.equal(run('lockPending'),true);
@@ -550,6 +565,7 @@ async function main(){
   console.log('PASS: E conversation focus, factual topic response, Escape resumes life, and door interaction stays in the world.');
 
   verifyAtlasRoutes();
+  await verifyWorldImport();
   await verifyInteriorTours();
   await verifyFilterSettings();
   await verifyResolutionSettings();
@@ -591,7 +607,7 @@ fakeGame.next_stream_job=()=>streamJobs.shift() || [];
 fakeGame.accept_stream_result=(ticket,bytes)=>{accepted.push(ticket);return true;};
 run('game=fakeGame; startStreamingWorker();');
 assert.deepEqual(asyncChanges,[],'local streaming continues until the worker is ready');
-testWorker.onmessage({data:{type:'ready'}});assert.deepEqual(asyncChanges,[true]);run('pumpStreaming();');
+testWorker.onmessage({data:{type:'ready',identity:{seed:1337,generator_version:1,recipe_revision:1}}});assert.deepEqual(asyncChanges,[true]);run('pumpStreaming();');
 assert.equal(testWorker.messages.filter(m=>m.type==='generate').length,2);
 run('pumpStreaming();');
 assert.equal(testWorker.messages.filter(m=>m.type==='generate').length,2,'at most two in-flight packets');
@@ -605,7 +621,7 @@ console.log('Worker lifecycle passed: bounded jobs, deferred uploads, recoverabl
 
 // A tab can be hidden longer than the timeout while the worker finishes.
 asyncChanges=[];streamJobs=[[4,0,0,0,0,1],[5,0,1,0,0,1]];
-run('startStreamingWorker();');testWorker.onmessage({data:{type:'ready'}});run('pumpStreaming();');
+run('startStreamingWorker();');testWorker.onmessage({data:{type:'ready',identity:{seed:1337,generator_version:1,recipe_revision:1}}});run('pumpStreaming();');
 let resumeNow=200000;
 context.performance.now=()=>resumeNow;
 fakeGame.accept_stream_result=(ticket,bytes)=>{accepted.push(ticket);resumeNow+=3;return true;};
@@ -630,11 +646,11 @@ const ownClaim=run('renderClaim');
 coordination.onmessage({data:{type:'claim',id:'second-view',stamp:ownClaim+100}});
 assert.equal(run('otherViewActive'),true);
 assert.equal(ids.world.attributes['data-render-active'],'false');
-const staleSave=stored['wayfarer.exploration.v4'];
+const staleSave=stored['fantasyland.world.g1:r1:s1337'];
 run('adaptive.active=true; adaptive.stableSince=-60000; saveProgress(); renderFrame(1000);');
 assert.equal(run('adaptive.active'),false,'Paused view must actually freeze the governor through renderFrame.');
 assert.equal(run('lastFrame'),0);
-assert.equal(stored['wayfarer.exploration.v4'],staleSave,'paused previews cannot overwrite progress');
+assert.equal(stored['fantasyland.world.g1:r1:s1337'],staleSave,'paused previews cannot overwrite progress');
 run('claimRenderer();');assert.equal(run('otherViewActive'),false);
 const messageCount=coordination.messages.length;
 run('claimRenderer();');assert.equal(coordination.messages.length,messageCount,'normal input does not continually reset frame timing');

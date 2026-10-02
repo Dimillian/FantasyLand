@@ -63,26 +63,33 @@ fn vs_cover(input:CoverIn,@builtin(vertex_index) vertex:u32)->VertexOut {
         vec4<f32>(normal,-f32(packed>>24u)/255.0),color,6.0+weight*0.4,plant.surface.xy,plant.surface.z));
 }
 
-// Opaque ribbons: dense coverage without transparent card padding or per-blade
-// normal/reflection textures. Original flowers, fern cards and litter overlay it.
+// Four opaque leaves fan out from each tuft. The same twelve vertices as the
+// old crossed ribbons give twice as many, narrower silhouettes with no alpha
+// cards, extra instances, textures or draw calls. Accent plants remain separate.
 struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
 @vertex fn vs_meadow(input:MeadowIn,@builtin(vertex_index) vertex:u32)->VertexOut {
-    let ribbon=vertex/6u; let v=vertex%6u;
-    let points=array<vec2<f32>,6>(vec2<f32>(-1.0,0.0),vec2<f32>(1.0,0.0),vec2<f32>(0.35,0.60),
-        vec2<f32>(-1.0,0.0),vec2<f32>(0.35,0.60),vec2<f32>(0.0,1.0));
+    let blade=vertex/3u; let v=vertex%3u;
+    let points=array<vec2<f32>,3>(vec2<f32>(-1.0,0.0),vec2<f32>(1.0,0.0),vec2<f32>(0.0,1.0));
     let q=points[v];
     let rotation=unpack2x16snorm(input.data.y);
-    let axis=select(rotation,vec2<f32>(-rotation.y,rotation.x),ribbon==1u);
+    // Fixed rotations avoid per-vertex trigonometry; the entire tuft has its
+    // own seeded heading, and each leaf has a different length and lean.
+    let fans=array<vec2<f32>,4>(vec2<f32>(1.0,0.0),vec2<f32>(0.36,0.93),
+        vec2<f32>(-0.81,0.59),vec2<f32>(-0.59,-0.81));
+    let fan=fans[blade];
+    let axis=vec2<f32>(rotation.x*fan.x-rotation.y*fan.y,rotation.y*fan.x+rotation.x*fan.y);
     let widths=unpack2x16float(input.data.z);
-    let blade_height=input.root.w*select(1.0,0.83,ribbon==1u);
-    let bend=vec2<f32>(axis.y,-axis.x)*blade_height*0.30*q.y*q.y;
-    let local=input.root.xy+axis*q.x*widths.x+bend;
+    let leaf_random=f32((input.data.w>>(blade*6u))&63u)/63.0;
+    let blade_height=input.root.w*(0.68+leaf_random*0.32);
+    let spread=min(0.065,input.root.w*0.25)*widths.y;
+    let bend=axis*blade_height*(0.30+leaf_random*0.36)*q.y;
+    let local=input.root.xy+axis*spread+vec2<f32>(-axis.y,axis.x)*q.x*widths.x*0.62+bend;
     let world_xz=local+cover_tile.origin.xy;
     let ground=cover_surface(world_xz-cover_tile.origin.xy);
     let packed=input.data.x;
     let tint=vec3<f32>(f32(packed&255u),f32((packed>>8u)&255u),f32((packed>>16u)&255u))/255.0;
     let variation=0.90+f32(input.data.w&255u)/255.0*0.20;
-    let pigment=tint*variation*mix(0.68,1.13,q.y);
+    let pigment=tint*variation*mix(0.78,1.16,q.y);
     let n=normalize(vec3<f32>(-axis.y*0.26-ground.y,0.95,axis.x*0.26-ground.z));
     let root_clip=u.view_projection*vec4<f32>(world_xz.x-u.camera.x,ground.x-u.camera.y,world_xz.y-u.camera.z,1.0);
     let pixel_height=blade_height*u.settings.w*0.688191/max(root_clip.w,0.2);
@@ -128,9 +135,9 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     return vec4<f32>(atmospheric_color(color,v.world,distance),1.0);
 }
 
-// Nearby ribbons retain their exact wind, terrain shear and player deformation
+// Nearby tufts retain their exact wind, terrain shear and player deformation
 // in depth. Larger structures provide ambient contact beyond 20 m; the color
-// pass retains every ribbon, with its existing dark basal pigment.
+// pass retains every leaf, with its dark basal pigment.
 @fragment fn fs_meadow_depth(v:VertexOut) {
     let relative=v.world.xz-u.camera.xz;
     if dot(relative,relative)>20.0*20.0 {discard;}

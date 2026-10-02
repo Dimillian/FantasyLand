@@ -37,7 +37,9 @@ export class Game {
     render_resolution(): Uint32Array;
     resize(width: number, height: number): void;
     restore_clock(clock: number): void;
+    restore_snapshot(value: any): void;
     return_to_spawn(): void;
+    save_snapshot(): any;
     set_antialiasing(mode: number): void;
     set_async_streaming(enabled: boolean): void;
     set_enclosure(enabled: boolean): void;
@@ -65,6 +67,7 @@ export class Game {
     visit_interior(kind: string): string;
     visit_settlement(id: number): void;
     walking_journeys(): any;
+    world_identity(): any;
     world_size(): number;
 }
 
@@ -77,7 +80,10 @@ export class StreamGenerator {
      * IDs remain u32 throughout the JS bridge (f32 would lose high ID bits).
      */
     generate_gi(origin_x: number, origin_y: number, origin_z: number, door_ids: Uint32Array, door_angles: Float32Array): Uint8Array;
+    map_features(x: number, z: number, span: number): any;
+    map_layer_data(x: number, z: number, span: number, res: number, layer: number): Uint8Array;
     constructor(seed: number);
+    world_identity(): any;
 }
 
 export function inspect_landscapes(seed: number): any;
@@ -118,7 +124,9 @@ export interface InitOutput {
     readonly game_render_resolution: (a: number) => [number, number];
     readonly game_resize: (a: number, b: number, c: number) => void;
     readonly game_restore_clock: (a: number, b: number) => void;
+    readonly game_restore_snapshot: (a: number, b: any) => [number, number];
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_save_snapshot: (a: number) => any;
     readonly game_set_antialiasing: (a: number, b: number) => void;
     readonly game_set_async_streaming: (a: number, b: number) => void;
     readonly game_set_enclosure: (a: number, b: number) => void;
@@ -143,6 +151,7 @@ export interface InitOutput {
     readonly game_visit_interior: (a: number, b: number, c: number) => [number, number];
     readonly game_visit_settlement: (a: number, b: number) => void;
     readonly game_walking_journeys: (a: number) => any;
+    readonly game_world_identity: (a: number) => any;
     readonly game_world_size: (a: number) => number;
     readonly inspect_landscapes: (a: number) => any;
     readonly inspect_map: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -150,11 +159,14 @@ export interface InitOutput {
     readonly inspect_world: (a: number, b: number, c: number) => any;
     readonly streamgenerator_generate: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly streamgenerator_generate_gi: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+    readonly streamgenerator_map_features: (a: number, b: number, c: number, d: number) => any;
+    readonly streamgenerator_map_layer_data: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly streamgenerator_new: (a: number) => number;
+    readonly streamgenerator_world_identity: (a: number) => any;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__60: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__66: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

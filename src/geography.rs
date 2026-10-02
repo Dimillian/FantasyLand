@@ -72,6 +72,12 @@ impl D {
             ],
         }
     }
+    fn reciprocal(self) -> Self {
+        Self {
+            v: 1. / self.v,
+            g: self.g.map(|g| -g / (self.v * self.v)),
+        }
+    }
     fn sin(self) -> Self {
         let (s, c) = self.v.sin_cos();
         Self {
@@ -113,36 +119,39 @@ struct Range {
     bend: f32,
     period: f32,
     passes: [f32; 2],
+    spurs: [[f32; 4]; 8],
 }
-fn ranges(seed: u32) -> [Range; 8] {
-    let layouts = [
-        (-48000., -21000., 0.88, 76000., 10000., 3700.),
-        (46000., 33000., -0.32, 65000., 10500., 3900.),
-        (-54000., 65000., -0.64, 46000., 8500., 3400.),
-        (-158000., 42000., 1.35, 19000., 5200., 2100.),
-        (-18000., -155000., 0.18, 22000., 5800., 2200.),
-        (154000., -86000., 1.18, 21000., 5400., 2450.),
-        (149000., 131000., -0.5, 20500., 5600., 2150.),
-        (-38000., 159000., 0.15, 23500., 5900., 2300.),
-    ];
+fn ranges(seed: u32) -> [Range; 11] {
+    let layouts = crate::worldgen::mountains::RANGES;
     std::array::from_fn(|i| {
-        let (mut x, mut z, a, l, w, h) = layouts[i];
-        if i >= 3 {
-            [x, z] = crate::world::coast::island_center(seed, i - 3);
+        let recipe = layouts[i];
+        let [mut x, mut z] = recipe.center;
+        let (a, l, w, h) = (recipe.angle, recipe.length, recipe.width, recipe.height);
+        if let Some(island) = recipe.island {
+            [x, z] = crate::world::coast::island_center(seed, island);
         }
         let i = i as i32;
         let random = |salt| rand01(hash(seed ^ 0x7812, i, salt));
-        let angle = a + (random(0) - 0.5) * 0.25;
+        let angle = a + (random(0) - 0.5) * 0.70;
         let (s, c) = angle.sin_cos();
         Range {
             center: [x + (random(1) - 0.5) * 7500., z + (random(2) - 0.5) * 7500.],
             axis: [c, s],
             length: l * (0.93 + random(3) * 0.14),
-            width: w,
+            width: w * (0.88 + random(8) * 0.24),
             height: h * (0.92 + random(4) * 0.16),
             phase: random(5) * 6.2831855,
-            bend: w * 0.25,
-            period: l * 0.31,
+            bend: w * (0.60 + random(9) * 0.35),
+            period: l * (0.21 + random(10) * 0.14),
+            spurs: std::array::from_fn(|j| {
+                let k = j as i32 * 5 + 40;
+                [
+                    (j as f32 / 7. - 0.5) * 1.35 + (random(k) - 0.5) * 0.16,
+                    if j % 2 == 0 { 1. } else { -1. },
+                    0.18 + random(k + 1) * 0.85,
+                    0.12 + random(k + 2) * 0.15,
+                ]
+            }),
             passes: [
                 (-0.32 + (random(6) - 0.5) * 0.13) * l,
                 (0.32 + (random(7) - 0.5) * 0.13) * l,
@@ -150,8 +159,8 @@ fn ranges(seed: u32) -> [Range; 8] {
         }
     })
 }
-thread_local! {static RANGES:RefCell<Option<(u32,[Range;8])>>=const {RefCell::new(None)};}
-fn with_ranges<T>(seed: u32, f: impl FnOnce(&[Range; 8]) -> T) -> T {
+thread_local! {static RANGES:RefCell<Option<(u32,[Range;11])>>=const {RefCell::new(None)};}
+fn with_ranges<T>(seed: u32, f: impl FnOnce(&[Range; 11]) -> T) -> T {
     RANGES.with(|c| {
         let mut c = c.borrow_mut();
         if c.as_ref().is_none_or(|(s, _)| *s != seed) {
@@ -175,12 +184,18 @@ fn spine(r: Range, u: D) -> D {
 // Individual summits and saddles break the long divide into a chain of massifs.
 // Analytic derivatives preserve ecology/physics slope agreement.
 fn summit_profile(r: Range, u: D) -> D {
-    u.scale(1. / 4100.)
+    // Distinct peak groups separated by shoulders, with unequal spacing.
+    u.scale(1. / (r.length * 0.105))
         .offset(r.phase)
         .sin()
-        .scale(0.15)
-        .add(u.scale(1. / 1750.).offset(r.phase * 1.7).sin().scale(0.07))
-        .offset(0.80)
+        .scale(0.27)
+        .add(
+            u.scale(1. / (r.length * 0.047))
+                .offset(r.phase * 1.7)
+                .sin()
+                .scale(0.12),
+        )
+        .offset(0.72)
 }
 fn world_point(r: Range, u: f32, v: f32) -> [f32; 2] {
     let v = v + spine(r, D::constant(u)).v;
@@ -270,15 +285,23 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
             }
             let cross = v.add(spine(r, u).scale(-1.));
             let envelope = u.scale(1. / r.length).bell();
-            let foot = cross.scale(1. / r.width).bell().mul(envelope);
-            let crest = cross.scale(1. / (r.width * 0.38)).bell().mul(envelope);
+            // Variable shoulders prevent parallel, constant-width stripes.
+            let breadth = u
+                .scale(1. / (r.length * 0.17))
+                .offset(r.phase * 0.6)
+                .sin()
+                .scale(0.25)
+                .offset(1.);
+            let normalized_cross = cross.scale(1. / r.width).mul(breadth.reciprocal());
+            let foot = normalized_cross.bell().mul(envelope);
+            let crest = normalized_cross.scale(1. / 0.48).bell().mul(envelope);
             let mut pass = D::constant(1.);
             for &p in &r.passes {
                 pass = pass.mul(
                     u.offset(-p)
                         .scale(1. / (r.width * 0.28))
                         .bell()
-                        .scale(-0.73)
+                        .scale(-0.90)
                         .offset(1.),
                 );
                 for side in [-1., 1.] {
@@ -298,25 +321,25 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                 .mul(pass)
                 .scale(r.height)
                 .add(foot.scale(r.height * 0.16));
-            // Six offshoots taper away from the main divide. Their curved axes
-            // are expressed relative to the parent spine, so they stay attached.
-            for (j, along) in [-0.64, -0.40, -0.16, 0.12, 0.38, 0.64]
-                .into_iter()
-                .enumerate()
-            {
-                for side in [-1., 1.] {
-                    let lateral = cross.scale(side / r.width);
-                    let reach = lateral.offset(-0.43).scale(1. / 0.55).bell();
-                    let offset = u
-                        .offset(-along * r.length)
-                        .add(cross.scale(-side * (0.35 + j as f32 * 0.08)));
-                    let rib = offset
-                        .scale(1. / (r.width * 0.28))
-                        .bell()
-                        .mul(reach)
-                        .mul(envelope);
-                    local = local.add(rib.scale(r.height * 0.16));
-                }
+            // Seeded, asymmetric branching ridges: no repeated comb spacing.
+            for &[along, side, turn, strength] in &r.spurs {
+                let lateral = cross.scale(side / r.width);
+                let reach = lateral.offset(-0.55).scale(1. / 0.82).bell();
+                let curve = lateral
+                    .scale(2.2)
+                    .offset(r.phase)
+                    .sin()
+                    .scale(r.width * 0.08);
+                let offset = u
+                    .offset(-along * r.length)
+                    .add(cross.scale(-side * turn))
+                    .add(curve);
+                let rib = offset
+                    .scale(1. / (r.width * 0.34))
+                    .bell()
+                    .mul(reach)
+                    .mul(envelope);
+                local = local.add(rib.scale(r.height * strength));
             }
             // Connected U-shaped valleys descend from each pass into the
             // foothills. Their curved centerlines and tapered mouths share the
@@ -359,11 +382,11 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                 let env = D::constant(cu / r.length).bell().v;
                 let mut pass = 1.;
                 for &p in &r.passes {
-                    pass *= 1. - D::constant((cu - p) / (r.width * 0.28)).bell().v * 0.73;
+                    pass *= 1. - D::constant((cu - p) / (r.width * 0.28)).bell().v * 0.90;
                 }
                 let target = r.height
                     * env
-                    * (D::constant(cv / (r.width * 0.38)).bell().v
+                    * (D::constant(cv / (r.width * 0.48)).bell().v
                         * pass
                         * summit_profile(r, D::constant(cu)).v
                         + D::constant(cv / r.width).bell().v * 0.16);
@@ -454,8 +477,8 @@ mod tests {
                 .iter()
                 .filter(|p| p.kind == GeoLandmarkKind::ShelteredBasin)
                 .collect();
-            assert_eq!(passes.len(), 16);
-            assert_eq!(basins.len(), 32);
+            assert_eq!(passes.len(), crate::worldgen::mountains::RANGES.len() * 2);
+            assert_eq!(basins.len(), crate::worldgen::mountains::RANGES.len() * 4);
             assert!(
                 basins
                     .iter()

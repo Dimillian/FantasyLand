@@ -1,7 +1,17 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import init, { Game, inspect_world, inspect_map, inspect_routes, inspect_landscapes } from '../dist/pkg/fantasy_land.js';
+import { descriptor } from '../dist/world-store.mjs';
+import init, { StreamGenerator, Game, inspect_world, inspect_map, inspect_routes, inspect_landscapes } from '../dist/pkg/fantasy_land.js';
 await init({ module_or_path: await fs.readFile(new URL('../dist/pkg/fantasy_land_bg.wasm', import.meta.url)) });
+for(const seed of [0,4294967295]) {
+  const generator=new StreamGenerator(seed);
+  assert.deepEqual(generator.world_identity(),descriptor(seed),'Rust/browser identity agrees across the seed range');
+  const before=generator.map_layer_data(0,0,384000,32,1);
+  generator.map_features(10000,20000,100000);
+  assert.deepEqual(generator.map_layer_data(0,0,384000,32,1),before,'Atlas pixels do not depend on query order');
+  generator.free();
+}
+for(const name of ['world_identity','save_snapshot','restore_snapshot'])assert.equal(typeof Game.prototype[name],'function');
 const a = inspect_world(1337, 0, 0);
 const b = inspect_world(1337, 0, 0);
 assert.deepEqual(a, b, 'the compiled WASM reproduces its seed');

@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8"><title>World persistence verification</title>
+<style>body{background:#172220;color:#eddfb0;font:16px monospace;margin:40px}pre{white-space:pre-wrap}</style>
+<h1>World persistence verification</h1><pre id="result">Running isolated browser checks…</pre>
+<script type="module">
+import {AtlasCache} from './atlas-cache.mjs';
+import {WorldStore,descriptor} from './world-store.mjs';
+const assert=(v,m)=>{if(!v)throw new Error(m);};
+const out=document.querySelector('#result');
+try{
+  const q={x:0,z:0,span:6000,layer:0,res:32};
+  const cache=new AtlasCache('test-'+Date.now(),{databaseName:'fantasyland.atlas.tests',memoryBytes:9000,diskBytes:14000});
+  const pixels=new Uint8Array(32*32*4).fill(77);
+  await cache.persist(cache.put(q,pixels,{sites:[{name:'Test'}]}));
+  // A subsequent transaction waits for the preceding write to commit.
+  cache.entries.clear();cache.bytes=0;
+  let began=performance.now();const disk=await cache.get(q);const diskMs=performance.now()-began;
+  assert(disk?.source==='disk'&&disk.pixels[0]===77,'Persistent atlas read failed');
+  began=performance.now();const memory=await cache.get(q);const memoryMs=performance.now()-began;
+  assert(memory?.source==='memory','Memory cache missed');
+  assert(await cache.get({...q,layer:1})===null,'Layers must invalidate');
+  for(let x=1;x<7;x++)await cache.persist(cache.put({...q,x},pixels,{sites:[]}));
+  assert(cache.bytes<=9000,'RAM budget exceeded');
+  const db=await cache.database();const records=await new Promise(resolve=>{const r=db.transaction('metadata').objectStore('metadata').getAll();r.onsuccess=()=>resolve(r.result);});
+  assert(records.reduce((n,r)=>n+r.size,0)<=14000,'Disk budget exceeded');
+  const prefix='fantasyland.test.'+Date.now()+'.';
+  const storage={getItem:k=>localStorage.getItem(prefix+k),setItem:(k,v)=>localStorage.setItem(prefix+k,v)};
+  const store=new WorldStore(storage);
+  const save={schema:1,snapshot:{schema:1,world:descriptor(0),clock:8000,doors:[{id:5,angle:.4,target:1,hold:20}],player:{x:12,z:34,yaw:.5,pitch:.2,health:73,mana:82,stamina:90,walked:500}},atlas:{x:0,z:0,span:6000},waypoint:null};
+  store.write(save);
+  assert(JSON.stringify(new WorldStore(storage).load(descriptor(0)))===JSON.stringify(save),'Save reload differs');
+  const saved=JSON.stringify(save);save.snapshot.world.generator_version=999;
+  let rejected=false;try{store.write(save);}catch{rejected=true;}
+  assert(rejected&&JSON.stringify(store.load(descriptor(0)))===saved,'Invalid save replaced valid world');
+  out.textContent=`PASS — browser localStorage save/reload and invalid-version protection\nPASS — IndexedDB atlas reload, layer separation, RAM/disk budgets\nMemory atlas lookup: ${memoryMs.toFixed(2)} ms\nPersistent atlas lookup: ${diskMs.toFixed(2)} ms\nNo GPU renderer used in these storage checks.`;
+}catch(e){out.textContent='FAIL — '+e.stack;}
+</script>

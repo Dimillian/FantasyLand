@@ -1,11 +1,13 @@
+import {footstep} from './footstep-synthesis.mjs';
 // Original procedural sound palette. No recordings, downloads or external assets.
 export const RATE=22050;
 export function rng(seed=1){let s=seed>>>0;return ()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>0)/4294967296;};}
 const tau=Math.PI*2;
 export function synth(kind,seconds,seed=1){
+  if(kind.startsWith('step-'))return footstep(kind.slice(5),seconds,rng(seed),RATE);
   const r=rng(seed),n=Math.round(seconds*RATE),a=new Float32Array(n);let low=0,mid=0,slow=0,phase=0;
-  const bird=kind.startsWith('bird'),step=kind.startsWith('step-');
-  const material=kind.slice(5), pitch=.86+r()*.28;
+  const bird=kind.startsWith('bird');
+  const pitch=.86+r()*.28;
   for(let i=0;i<n;i++){
     const t=i/RATE,u=t/seconds,white=r()*2-1;
     low+=.014*(white-low);mid+=.19*(white-mid);slow+=.0018*(white-slow);
@@ -32,21 +34,6 @@ export function synth(kind,seconds,seed=1){
       const env=(1-Math.exp(-t*(cloud?8:24)))*Math.exp(-t*.55);
       v=crack*(cloud?.12:1.1)+(body+pressure)*env;
     }
-    if(step){
-      const impact=Math.sin(tau*(110*pitch*t-75*t*t))*.17*Math.exp(-t*46);
-      const grit=(white-mid)*.20*Math.exp(-t*15)*Math.pow(.5+.5*Math.sin(t*340),2);
-      v=impact*(['grass','leaves','sand','snow'].includes(material)?.45:.75);
-      if(material==='grass')v+=mid*.65*Math.exp(-t*17)+(white-mid)*.18*Math.exp(-(((t-.085)/.055)**2));
-      if(material==='leaves')v+=grit*2+mid*.4*Math.exp(-t*12);
-      if(material==='mud')v+=low*3*Math.exp(-t*16)+Math.sin(tau*(210*t-360*t*t))*.16*Math.exp(-t*16)+mid*.24*Math.exp(-(((t-.15)/.065)**2));
-      if(material==='gravel')v+=grit*2.3+(r()<.035?white*.33:0)*Math.exp(-t*14);
-      if(material==='stone')v+=mid*.8*Math.exp(-t*70)+Math.sin(tau*780*pitch*t)*.045*Math.exp(-t*37);
-      if(material==='wood')v+=Math.sin(tau*185*pitch*t)*.17*Math.exp(-t*29)+Math.sin(tau*370*pitch*t)*.07*Math.exp(-t*35);
-      if(material==='sand')v=impact*.25+mid*.75*Math.exp(-t*15)+grit*.6;
-      if(material==='snow')v=impact*.35+(mid-low)*.95*Math.exp(-t*14)*(.6+.4*Math.sin(t*260));
-      if(material==='water')v=mid*.9*Math.exp(-t*12)+Math.sin(tau*(400*t+700*t*t))*.055*Math.exp(-t*17);
-      v*=Math.min(t*1800,1);
-    }
     if(bird){
       const tropical=kind==='bird-tropical',meadow=kind==='bird-meadow';
       const pulse=t%(tropical?.24:.31),note=Math.floor(t/(tropical?.24:.31));
@@ -61,7 +48,7 @@ export function synth(kind,seconds,seed=1){
     if(kind==='crow'){const env=Math.sin(Math.PI*u)**2*Math.pow(.5+.5*Math.sin(t*24),.4);phase+=tau*(560-220*u)*pitch/RATE;v=(Math.sin(phase)+Math.sin(phase*2)*.45+Math.sin(phase*3)*.20+white*.25)*env*.13;}
     if(kind==='creak'){phase+=tau*(130+Math.sin(t*7)*55)/RATE;v=(Math.sin(phase)+Math.sin(phase*2)*.4)*Math.sin(Math.PI*u)**2*.04;}
     // Gentle onset/tail for all one-shots. Loop seams are treated separately.
-    if(step||bird||['thunder','thunder-cloud','owl','frog','crow','creak'].includes(kind))v*=Math.min(t/.006,1,(seconds-t)/.06);
+    if(bird||['thunder','thunder-cloud','owl','frog','crow','creak'].includes(kind))v*=Math.min(t/.006,1,(seconds-t)/.06);
     a[i]=Math.tanh(v*1.35)*.80;
   }
   return a;

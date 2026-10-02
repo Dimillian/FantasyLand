@@ -20,7 +20,57 @@ struct Fixture {
     weather: u32,
 }
 fn fixture(world: &World, id: &str) -> Fixture {
+    // Choose current ecological ground, rather than a showcase coordinate that
+    // can become water or another biome when the geography recipe changes.
+    if id == "short-grass" || id == "lush-grass" {
+        for z in (-90000i32..90000).step_by(2400) {
+            for x in (-90000i32..90000).step_by(2400) {
+                let s = world.sample(x as f32, z as f32);
+                let biome = if id == "short-grass" {
+                    fantasy_land::world::Biome::PineForest
+                } else {
+                    fantasy_land::world::Biome::Grassland
+                };
+                if s.ocean || s.biome != biome || s.road > 0. || s.water_height > s.height - 2. {
+                    continue;
+                }
+                let r = fantasy_land::regions::sample(world.seed, x as f32, z as f32, &s);
+                if r.slope > 0.08 {
+                    continue;
+                }
+                let t = fantasy_land::cover::tile_data(world, x.div_euclid(48), z.div_euclid(48));
+                let good = t
+                    .meadow
+                    .iter()
+                    .filter(|c| {
+                        if id == "short-grass" {
+                            c.data[2] & 255 < 36
+                        } else {
+                            c.data[2] >> 8 > 220
+                        }
+                    })
+                    .count();
+                if good < 800 {
+                    continue;
+                }
+                return Fixture {
+                    id: id.into(),
+                    eye: [
+                        x as f32,
+                        geometry::walk_height(world, x as f32, z as f32) + 1.72,
+                        z as f32,
+                    ],
+                    yaw: 1.4,
+                    pitch: -0.4,
+                    hour: 15.,
+                    weather: 1,
+                };
+            }
+        }
+        panic!("no ecological fixture found for {id}");
+    }
     let (x, z, yaw, pitch, hour, weather) = match id {
+        "forest-floor" => (-10879., 58547., 1.4, -0.40, 15., 1),
         "forest" => (-10879., 58547., 1.4, 0.08, 7.5, 1),
         "meadow" => (87851., 55519., 1.1780972, -0.035, 9.5, 1),
         "rocks" => (23512.3, 63468.41, -1.9067289, 0.27, 16., 1),
@@ -100,6 +150,9 @@ pub fn run(seed: u32, dir: &str, configure: impl Fn(&mut Renderer, u32)) {
     };
     let scenes: Vec<_> = [
         "forest",
+        "forest-floor",
+        "short-grass",
+        "lush-grass",
         "capital",
         "inn-day",
         "inn-night",

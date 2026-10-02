@@ -1,4 +1,4 @@
-import {Soundscape} from './soundscape.mjs?v=thunder-sync-1';
+import {Soundscape} from './soundscape.mjs?v=footstep-foley-3';
 import {mixFor} from './soundscape-model.mjs';
 const $=id=>document.getElementById(id),sound=new Soundscape({master:.65}),s={x:0,y:0,z:0,yaw:0,walked:0,speed:4,grounded:true,dayTime:8,biome:'Forest',forest:'Oak woodland',weather:{},audio:{}};
 let enabled=false,walking=false,last=performance.now(),analyser=null,signal=null,strike=0,maxPeak=0;

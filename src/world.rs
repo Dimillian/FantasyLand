@@ -88,6 +88,7 @@ pub struct Sample {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Site {
+    pub stable_id: crate::worldgen::LocationId,
     pub id: u32,
     pub name: String,
     pub x: f32,
@@ -97,6 +98,7 @@ pub struct Site {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Landmark {
+    pub stable_id: crate::worldgen::LocationId,
     pub id: u32,
     pub name: String,
     pub x: f32,
@@ -192,6 +194,12 @@ fn inland_height(seed: u32, x: f32, z: f32) -> f32 {
 }
 
 impl World {
+    pub fn from_descriptor(
+        descriptor: crate::worldgen::WorldDescriptor,
+    ) -> Result<Self, &'static str> {
+        descriptor.validate()?;
+        Ok(Self::new(descriptor.seed))
+    }
     pub fn new(seed: u32) -> Self {
         let mut world = Self {
             seed,
@@ -527,6 +535,7 @@ impl World {
             "bury", "crest", "field", "march", "wood", "hearth", "gate", "well", "cross", "reach",
         ];
         Site {
+            stable_id: crate::worldgen::LocationId::cell("settlement", i, j, 0),
             id,
             name: format!(
                 "{}{}",
@@ -647,6 +656,7 @@ impl World {
                 }
                 let k = ((id >> 8) as usize) % KINDS.len();
                 result.push(Landmark {
+                    stable_id: crate::worldgen::LocationId::cell("cultural", i, j, 0),
                     id,
                     name: format!(
                         "{} {}",

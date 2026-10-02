@@ -44,9 +44,15 @@ assert.equal(frames.pending.length,1);assert.equal(frames.update(flash,1).length
 console.log('PASS biome, weather, indoor mixes; movement cadence; delayed/unique/teleport-safe thunder');
 
 // Graph lifecycle / voice budget against the actual player class.
-class Param{value=0;cancelScheduledValues(){}setTargetAtTime(v){this.value=v;}}
-class Node{constructor(){for(const k of ['gain','pan','frequency','Q','threshold','knee','ratio','attack','release','playbackRate'])this[k]=new Param();}connect(){return this;}disconnect(){this.disconnected=true;}start(){this.started=true;}stop(){this.onended?.();}}
-class Context{currentTime=0;sampleRate=48000;state='suspended';destination=new Node();createGain(){return new Node();}createDynamicsCompressor(){return new Node();}createBiquadFilter(){return new Node();}createConvolver(){return new Node();}createBufferSource(){return new Node();}createStereoPanner(){return new Node();}createBuffer(ch,n,rate){const channels=Array.from({length:ch},()=>new Float32Array(n));return {length:n,numberOfChannels:ch,duration:n/rate,getChannelData:i=>channels[i]};}async resume(){this.state='running';}async suspend(){this.state='suspended';}}
+class Param{
+ value=0;events=[];held=0;
+ cancelScheduledValues(t){this.events=this.events.filter(e=>e.time<t);}
+ cancelAndHoldAtTime(t){this.held++;this.events=[];}
+ setValueAtTime(v,t){this.value=v;this.events.push({value:v,time:t});}
+ setTargetAtTime(v,t){this.value=v;this.events.push({value:v,time:t});}
+}
+class Node{constructor(){for(const k of ['gain','pan','frequency','Q','threshold','knee','ratio','attack','release','playbackRate'])this[k]=new Param();}connect(){return this;}disconnect(){this.disconnected=true;}start(t){this.started=true;this.startTime=t;}stop(t){this.stopTime=t;this.onended?.();}}
+class Context{constructor(options){this.options=options;}currentTime=0;sampleRate=48000;state='suspended';destination=new Node();createGain(){return new Node();}createDynamicsCompressor(){return new Node();}createBiquadFilter(){return new Node();}createConvolver(){return new Node();}createBufferSource(){return new Node();}createStereoPanner(){return new Node();}createBuffer(ch,n,rate){const channels=Array.from({length:ch},()=>new Float32Array(n));return {length:n,numberOfChannels:ch,duration:n/rate,getChannelData:i=>channels[i]};}async resume(){this.state='running';}async suspend(){this.state='suspended';}}
 globalThis.AudioContext=Context;
 const muted=new Soundscape({master:0});muted.unlock();assert.equal(muted.ctx,null);
 const audio=new Soundscape({master:.42,footsteps:.33});audio.load=async()=>{audio.ready=true;};
@@ -79,3 +85,45 @@ for(const [id,m] of Object.entries(manifest.sounds)){
  if(m.loop){const n=(b.length-44)/2,read=i=>b.readInt16LE(44+i*2)/32768;let energy=0;for(let i=1;i<n;i++)energy+=(read(i)-read(i-1))**2;assert(Math.abs(read(n-1)-read(0))<Math.sqrt(energy/n)*5+.002,`${id}: loop seam`);}
 }
 console.log(`PASS ${Object.keys(manifest.sounds).length} PCM assets, levels, headers and loop continuity`);
+
+// Playback headroom and continuous fades, independent of the render frame.
+assert.equal(audio.ctx.options.latencyHint,'balanced');
+audio.play('test','footsteps',.4);
+const stepVoice=[...audio.voices].at(-1);
+assert(stepVoice.source.startTime>=audio.ctx.currentTime+.02);
+audio.setActive(false);
+assert(stepVoice.source.stopTime>audio.ctx.currentTime);
+assert.equal(stepVoice.gain.gain.value,0);
+audio.setActive(true);
+// Long walks continually vary gusts and stereo position. Future ramp queues
+// remain bounded, and unchanged targets (e.g. the indoor filter) are not added.
+const loop={source:new Node(),gain:new Node(),pan:new Node()};audio.loops.set('air',loop);
+const beforeHolds=audio.outdoorFilter.frequency.held;
+for(let i=0;i<12000;i++){
+ audio.ctx.currentTime=10+i*.1;
+ audio.update({...state,weather:{...state.weather,gust:Math.sin(i*.017)*.5+.5}},{moving:false});
+ assert(loop.gain.gain.events.length<=1);
+ assert(loop.pan.pan.events.length<=1);
+}
+assert.equal(audio.outdoorFilter.frequency.held,beforeHolds+1);
+// Older WebKit's fallback retains the current value before replacing a ramp.
+const fallback=new Param();fallback.cancelAndHoldAtTime=undefined;
+audio.buses.footsteps.gain=fallback;fallback.value=.3;
+audio.setVolume('footsteps',.5);
+assert.equal(fallback.events[0].value,.3);assert.equal(fallback.events.at(-1).value,.5);
+console.log('PASS scheduled playback lead, faded interruption, 20-minute automation soak and WebKit fallback');
+
+// Catch the previous broadband-static / single-sample-pop footstep palette.
+// This inspects the actual distributed PCM, not just synthesizer parameters.
+for(const [id,m] of Object.entries(manifest.sounds)){
+ if(!id.startsWith('step-'))continue;
+ const b=readFileSync(new URL('../dist/audio/'+m.file,import.meta.url));
+ let energy=0,difference=0,maxJump=0,last=0;
+ assert.equal(b.readInt16LE(44),0,`${id}: onset click`);
+ assert.equal(b.readInt16LE(b.length-2),0,`${id}: tail click`);
+ for(let i=44;i<b.length;i+=2){const v=b.readInt16LE(i)/32768;energy+=v*v;
+  if(i>44){difference+=(v-last)**2;maxJump=Math.max(maxJump,Math.abs(v-last));}last=v;}
+ assert(difference/energy<.35,`${id}: excessive uncorrelated high-frequency noise`);
+ assert(maxJump<.12,`${id}: sample impulse / pop`);
+}
+console.log('PASS all 36 shipped footstep variants: smooth boundaries, bounded sample jumps and filtered texture');

@@ -256,6 +256,22 @@ impl StreamGenerator {
             gi_cache: std::cell::RefCell::new(crate::gi::ProxyCache::default()),
         }
     }
+    pub fn world_identity(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&crate::worldgen::WorldDescriptor::current(self.world.seed))
+            .unwrap()
+    }
+    pub fn map_layer_data(&self, x: f32, z: f32, span: f32, res: u32, layer: u32) -> Vec<u8> {
+        self.world.map_layer_rgba(
+            x,
+            z,
+            span.clamp(128., crate::world::WORLD_SIZE * 4.),
+            res.clamp(32, 512),
+            layer,
+        )
+    }
+    pub fn map_features(&self, x: f32, z: f32, span: f32) -> JsValue {
+        serde_wasm_bindgen::to_value(&crate::atlas::features(&self.world, x, z, span)).unwrap()
+    }
     pub fn generate(&self, kind: u32, x: i32, z: i32, lod: u32, detail: u8) -> Vec<u8> {
         encode(generate(
             &self.world,

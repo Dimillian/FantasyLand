@@ -1,11 +1,13 @@
-import { Soundscape } from './soundscape.mjs?v=thunder-sync-1';
-import { paintPortrait } from './portrait.js?v=thunder-sync-1';
+import { descriptor, worldKey, validSeed, validateSave, WorldStore } from './world-store.mjs';
+import { AtlasCache } from './atlas-cache.mjs';
+import { Soundscape } from './soundscape.mjs?v=footstep-foley-3';
+import { paintPortrait } from './portrait.js?v=worldgen-identity-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
 const $ = (id) => document.getElementById(id);
 const canvas = $('world');
-const STORAGE_KEY = 'wayfarer.exploration.v4';
+const STORAGE_KEY = 'fantasyland.preferences.v1';
 const PREVIOUS_STORAGE_KEY = 'wayfarer.exploration.v3';
 const DEFAULT_SEED = 1337;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -14,7 +16,7 @@ const niceName = (s = '') => String(s).replace(/[_-]/g, ' ').replace(/\b\w/g, (c
 const wrapAngle = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
 let saved = {};
 try {
-  const current = localStorage.getItem(STORAGE_KEY);
+  const current = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('wayfarer.exploration.v4');
   if (current) saved = JSON.parse(current);
   else {
     // Terrain/hydrology changed in v4. Keep preferences, never old coordinates.
@@ -24,7 +26,18 @@ try {
 } catch (_) { /* Storage is optional. */ }
 const soundscape = new Soundscape(saved.audio);
 const urlSeed = new URL(location.href).searchParams.get('seed');
-const seed = clamp(Math.floor(Number(urlSeed || saved.seed) || DEFAULT_SEED), 1, 4294967295);
+const seed = validSeed(urlSeed, validSeed(saved.seed, DEFAULT_SEED));
+const worldIdentity = descriptor(seed);
+const worldStore = new WorldStore(localStorage);
+let playedSave = null, saveLoadError = null, importingSave = false;
+try { playedSave = worldStore.load(worldIdentity); } catch (error) { saveLoadError = error; }
+// Unversioned prototype saves stay untouched. Only preferences migrate; old
+// coordinates cannot be applied to the new mountain geography.
+saved = {...saved, x:undefined, z:undefined, worldClock:undefined, waypoint:null, atlas:null,
+  ...(playedSave ? {seed, waypoint:playedSave.waypoint, atlas:playedSave.atlas} : {})};
+const atlasCache = new AtlasCache(worldKey(worldIdentity)+':atlas2');
+let atlasBegan = 0;
+let atlasRequest = 0, atlasPending = null, atlasBusy = false;
 let otherViewActive = false, renderChannel = null, renderOwner = '', renderClaim = 0, renderSeen = 0;
 const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let giOutstanding = false;
@@ -69,6 +82,7 @@ const savedAtlas = saved.seed === seed && saved.atlas && Number.isFinite(saved.a
 const map = { initialized: !!savedAtlas, x: savedAtlas?.x || 0, z: savedAtlas?.z || 0, span: savedAtlas?.span || 6000, selected: null, image: null, imageBounds: null, features: { sites: [], landmarks: [], roads: [], routes: null }, visibleFeatures: [], dragging: null, dirty: true };
 const mapCanvas = $('map-canvas');
 const mapContext = mapCanvas.getContext('2d');
+$('atlas-layer').value=String([0,1,2].includes(Number(saved.atlasLayer))?Number(saved.atlasLayer):0);
 document.body.classList.add('intro-open');
 $('intro-seed').textContent = seed;
 $('seed-input').value = seed;
@@ -105,11 +119,20 @@ function toast(message, duration = 3500) {
 
 function saveProgress() {
   updateLookSummary();
-  if (benchmark || motionCapture || otherViewActive) return;
-  if (!game || !initialReady) return;
+  if (benchmark || motionCapture || otherViewActive || importingSave) return;
+  if (!game || !initialReady || saveLoadError) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, audio:soundscape.volumes, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, lightingMode, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
-  } catch (_) { /* Private browsing can disable storage; the world still works. */ }
+    const snapshot=game.save_snapshot();
+    const save={schema:1,updated:Date.now(),snapshot,waypoint,atlas:map.initialized?{x:map.x,z:map.z,span:map.span}:null};
+    worldStore.write(save); playedSave=save;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({atlasLayer:Number($('atlas-layer').value),audio:soundscape.volumes,seed,quality,sensitivity,filterMode,filterStrength,renderResolution,antialiasing,adaptiveResolution,groundCoverDensity,meadowCarpet,sunShadows,lightingMode,weatherMode,weatherSpeed,weatherPaused,reflections,enclosure}));
+    $('save-status').textContent=`World ${seed} · saved locally`;
+    return save;
+  } catch (error) {
+    $('save-status').textContent='Save unavailable · export a backup';
+    console.warn('World could not be saved',error);
+    return null;
+  }
 }
 
 function selectedLandscapeDestination() {
@@ -465,37 +488,43 @@ function normalizeFeature(feature, kind) {
   return { ...feature, x: Number(feature.x), z: Number(feature.z), name: feature.name || niceName(feature.kind || kind), kind: feature.kind || kind };
 }
 
-function scheduleMapData(delay = 100) {
-  clearTimeout(mapTimer);
-  map.dirty = true;
-  $('map-updating').classList.remove('hidden');
-  mapTimer = setTimeout(() => {
-    if (modal !== 'map' || !game) return;
+function applyAtlas(record, q, request) {
+  if(request!==atlasRequest || modal!=='map')return;
+  const image=document.createElement('canvas'); image.width=q.res;image.height=q.res;
+  image.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(record.pixels),q.res,q.res),0,0);
+  map.image=image;map.imageBounds={x:q.x,z:q.z,span:q.span};
+  const f=record.features || {};
+  map.features={sites:(f.sites||[]).map(v=>normalizeFeature(v,'settlement')),landmarks:(f.landmarks||[]).map(v=>normalizeFeature(v,'landmark')),roads:f.roads||[],routes:Array.isArray(f.routes)?f.routes:null,buildings:f.buildings||[],streets:f.streets||[],geography:f.geography||[]};
+  mapCanvas.setAttribute('data-cache-source',record.source||'generated');
+  mapCanvas.setAttribute('data-update-ms',(performance.now()-atlasBegan).toFixed(1));
+  map.dirty=true;$('map-updating').classList.add('hidden');
+}
+function pumpAtlas() {
+  if(atlasBusy || !atlasPending || modal!=='map')return;
+  if(streamWorker && !streamReady)return;
+  const pending=atlasPending;atlasPending=null;
+  if(streamWorker && streamReady){atlasBusy=true;streamWorker.postMessage({type:'atlas',...pending});}
+  else {
     try {
-      const res = map.span > 25000 ? 384 : 320;
-      // The engine returns RGBA for a north-up square of the requested span.
-      const pixels = game.map_layer_data(map.x, map.z, map.span, res, Number($('atlas-layer').value));
-      const image = document.createElement('canvas');
-      image.width = res; image.height = res;
-      image.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), res, res), 0, 0);
-      map.image = image;
-      map.imageBounds = { x: map.x, z: map.z, span: map.span };
-      const features = game.features(map.x, map.z, map.span) || {};
-      map.features = {
-        sites: (features.sites || []).map((f) => normalizeFeature(f, 'settlement')),
-        landmarks: (features.landmarks || []).map((f) => normalizeFeature(f, 'landmark')),
-        roads: features.roads || [],
-        routes: Array.isArray(features.routes) ? features.routes : null,
-        buildings: features.buildings || [], streets: features.streets || [],
-        geography: features.geography || [],
-      };
-      map.dirty = true;
-    } catch (error) {
-      console.error('Map generation failed', error);
-      toast('The atlas could not be drawn. Close and reopen it to retry.');
-    }
-    $('map-updating').classList.add('hidden');
-  }, delay);
+      const q=pending.q;
+      const record=atlasCache.put(q,game.map_layer_data(q.x,q.z,q.span,q.res,q.layer),game.features(q.x,q.z,q.span));
+      applyAtlas(record,q,pending.request);
+    } catch(error){console.error(error);$('map-updating').classList.add('hidden');toast('Atlas generation failed. Reopen to retry.');}
+  }
+}
+function scheduleMapData(delay = 100) {
+  clearTimeout(mapTimer);map.dirty=true;atlasPending=null;
+  const request=++atlasRequest;
+  $('map-updating').classList.remove('hidden');
+  mapTimer=setTimeout(async()=>{
+    if(modal!=='map'||!game)return;
+    atlasBegan=performance.now();
+    const q={x:map.x,z:map.z,span:map.span,res:map.span>25000?384:320,layer:Number($('atlas-layer').value)};
+    const record=await atlasCache.get(q);
+    if(request!==atlasRequest||modal!=='map')return;
+    if(record){applyAtlas(record,q,request);return;}
+    atlasPending={q,request};pumpAtlas();
+  },delay);
 }
 
 // All widths are CSS pixels: zoom changes geography, not road thickness.
@@ -736,7 +765,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nLighting ${['Classic','Ambient depth','','Detailed shadows','','','','Full indirect'][lightingMode] ?? 'Custom'}${lightingMode === 7 ? (streamReady ? ` · probes ${Math.round((state.giReadyFraction ?? 0)*100)}% ready` : ' · ambient fallback while generator is unavailable') : ''}\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nAudio ${soundscape.status} · ${soundscape.voices.size} voices · ${soundscape.thunder.pending.length} thunder queued\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nLighting ${['Classic','Ambient depth','','Detailed shadows','','','','Full indirect'][lightingMode] ?? 'Custom'}${lightingMode === 7 ? (streamReady ? ` · probes ${Math.round((state.giReadyFraction ?? 0)*100)}% ready` : ' · ambient fallback while generator is unavailable') : ''}\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nAudio ${soundscape.status} · ${state.audio?.floor || 'unknown'} footsteps · ${soundscape.voices.size} voices · ${soundscape.thunder.pending.length} thunder queued\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -795,20 +824,26 @@ function stopStreamingWorker(error) {
   streamWorker?.terminate(); streamWorker=null;streamReady=false;
   streamOutstanding=0;giOutstanding=false;streamResults=[];streamDeadline=0;
   game?.set_async_streaming(false);
+  atlasBusy=false;
+  if(modal==='map')scheduleMapData(0);
   if(error) console.warn('Background generation unavailable; using bounded local streaming.',String(error));
 }
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=thunder-sync-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=worldgen-identity-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
-      if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
+      if(data.type==='ready') {
+        if(!data.identity || worldKey(data.identity)!==worldKey(worldIdentity)){stopStreamingWorker('Worker world version mismatch');return;}
+        game.set_async_streaming(true);streamReady=true;streamDeadline=0;pumpAtlas();
+      }
+      else if(data.type==='atlas') {atlasBusy=false;const record=atlasCache.put(data.q,data.pixels,data.features);applyAtlas(record,data.q,data.request);pumpAtlas();}
       else if(data.type==='mesh' || data.type==='gi') {streamResults.push(data);}
       else if(data.type==='error') stopStreamingWorker(data.message);
     };
     streamWorker.onerror=(event)=>{event.preventDefault();stopStreamingWorker(event.message);};
-    streamWorker.postMessage({type:'init',seed});
+    streamWorker.postMessage({type:'init',seed,identity:worldIdentity});
   } catch(error) {stopStreamingWorker(error);}
 }
 function pumpStreaming() {
@@ -895,11 +930,16 @@ function showFatal(error) {
   $('loading-label').classList.add('hidden');
   $('start-button').classList.add('hidden');
   $('load-error').classList.remove('hidden');
+  if(saveLoadError){
+    $('recover-save').classList.remove('hidden');$('export-rejected-save').classList.remove('hidden');
+    $('load-error-message').textContent=`This world's save could not be loaded. It has not been overwritten.\n${String(error?.message||error)}\nRestore the previous snapshot, or export the original to keep it safe.`;return;
+  }
   $('load-error-message').textContent = `The wilderness could not be opened.\n${String(error?.message || error)}\n\nThis prototype needs a browser with WebGPU enabled. Try an up-to-date Chrome or Edge browser.`;
 }
 
 async function boot() {
   try {
+    if (saveLoadError) throw saveLoadError;
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
     initRenderCoordination();
     $('loading-label').textContent = 'Preparing the world engine…';
@@ -908,11 +948,12 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=thunder-sync-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=thunder-sync-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=worldgen-identity-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=worldgen-identity-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
+    if(worldKey(game.world_identity())!==worldKey(worldIdentity))throw new Error("Engine version mismatch. Reload to update the engine.");
     startStreamingWorker();
     worldSize = Number(game.world_size());
     game.set_quality(quality);
@@ -924,13 +965,12 @@ async function boot() {
     game.set_lighting_mode(lightingMode);
     applyWeatherPreferences();
     resize();
-    if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
-    if(saved.seed===seed && Number.isFinite(saved.worldClock))game.restore_clock(saved.worldClock);
+    if(playedSave)game.restore_snapshot(playedSave.snapshot);
     const destinations=game.settlement_destinations();
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'thunder-sync-1' };
+    window.fantasyDebug = { game, atlasCache, worldIdentity, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'worldgen-identity-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -950,6 +990,13 @@ function startExploring(event) {
 $('start-button').addEventListener('click', startExploring);
 $('focus-hint').addEventListener('click', captureMouse);
 $('retry-button').addEventListener('click', () => location.reload());
+$('recover-save').addEventListener('click',()=>{
+  try{worldStore.recover(worldIdentity);importingSave=true;location.reload();}catch(error){$('load-error-message').textContent=String(error.message||error);}
+});
+$('export-rejected-save').addEventListener('click',()=>{
+  const raw=worldStore.preserved(worldIdentity);if(!raw)return;
+  const url=URL.createObjectURL(new Blob([raw],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`fantasyland-preserved-${seed}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
 for (const type of ['map', 'bag', 'character', 'skills', 'settings']) {
   $(type + '-button').setAttribute('aria-expanded', 'false');
   $(type + '-button').addEventListener('click', () => {
@@ -1065,9 +1112,26 @@ for (const [id, hour] of [['sky-dawn', 6.4], ['sky-day', 12], ['sky-dusk', 17.7]
     $('time-setting-label').textContent = formatTime(hour);
   });
 }
+$('export-world').addEventListener('click',()=>{
+  // Export works even when browser storage is full.
+  saveProgress();
+  const data={schema:1,updated:Date.now(),snapshot:game.save_snapshot(),waypoint,atlas:map.initialized?{x:map.x,z:map.z,span:map.span}:null};
+  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  const link=document.createElement('a');link.href=url;link.download=`fantasyland-${worldKey(worldIdentity)}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+$('import-world').addEventListener('change',async event=>{
+  try {
+    const file=event.target.files?.[0];if(!file)return;
+    if(file.size>4*1024*1024)throw new Error('Save file exceeds 4 MB.');
+    const data=validateSave(JSON.parse(await file.text()));
+    saveProgress();worldStore.write(data);importingSave=true;
+    const url=new URL(location.href);url.searchParams.set('seed',data.snapshot.world.seed);location.href=url.href;
+  }catch(error){toast(String(error.message||error),7000);}finally{event.target.value='';}
+});
 $('seed-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const nextSeed = clamp(Math.floor(Number($('seed-input').value) || DEFAULT_SEED), 1, 4294967295);
+  saveProgress();
+  const nextSeed = validSeed($('seed-input').value, DEFAULT_SEED);
   const url = new URL(location.href); url.searchParams.set('seed', nextSeed);
   location.href = url.href;
 });

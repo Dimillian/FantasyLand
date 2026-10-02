@@ -1,5 +1,15 @@
 import {mixFor,StepClock,ThunderQueue,clamp} from './soundscape-model.mjs?v=thunder-sync-1';
 const BASE=new URL('./audio/',import.meta.url);
+// Replace pending ramps while preserving the current audible value. Repeated
+// environment updates must not build a long queue of AudioParam automation.
+const targets=new WeakMap();
+function smooth(param,value,time,seconds){
+  if(targets.get(param)===value)return;
+  targets.set(param,value);
+  if(typeof param.cancelAndHoldAtTime==='function')param.cancelAndHoldAtTime(time);
+  else {const current=param.value;param.cancelScheduledValues(time);param.setValueAtTime(current,time);}
+  param.setTargetAtTime(value,time,seconds);
+}
 const DEFAULTS={master:.75,ambience:.80,footsteps:.45,wildlife:.75};
 export class Soundscape {
   constructor(saved={}){
@@ -8,13 +18,14 @@ export class Soundscape {
     this.steps=new StepClock();this.thunder=new ThunderQueue();this.nextBird=0;this.variant=0;this.lastVariants={};this.latest={};this.lastUpdate=-1;this.activeEpoch=0;
   }
   setVolume(bus,value){if(bus in this.volumes)this.volumes[bus]=clamp(value);this.applyVolumes();}
-  applyVolumes(){if(!this.ctx)return;const t=this.ctx.currentTime;for(const [name,gain] of Object.entries(this.buses||{}))gain.gain.setTargetAtTime(this.volumes[name]??1,t,.06);}
+  applyVolumes(){if(!this.ctx)return;const t=this.ctx.currentTime;for(const [name,gain] of Object.entries(this.buses||{}))smooth(gain.gain,this.volumes[name]??1,t,.06);}
   // Called on the original click/key gesture; no autoplay or permission prompt.
   unlock(){
     if(this.failed||this.volumes.master<=0)return;
     try{
       if(!this.ctx){const Context=globalThis.AudioContext||globalThis.webkitAudioContext;if(!Context){this.failed=true;return;}
-        this.ctx=new Context({latencyHint:'interactive'});this.buildGraph();this.load().catch(e=>{console.warn('Soundscape unavailable',e);this.failed=true;this.setActive(false);});
+        // Prefer output stability alongside GPU streaming over minimum latency.
+        this.ctx=new Context({latencyHint:'balanced'});this.buildGraph();this.load().catch(e=>{console.warn('Soundscape unavailable',e);this.failed=true;this.setActive(false);});
       }
       if(this.active&&this.ctx.state!=='running')this.ctx.resume().catch(()=>{});
     }catch(e){this.failed=true;console.warn('Soundscape unavailable',e);}
@@ -44,10 +55,12 @@ export class Soundscape {
   }
   setActive(active){
     active=!!active&&!this.failed;if(this.active===active)return;this.active=active;const epoch=++this.activeEpoch;
-    this.steps.reset();this.thunder.reset();this.nextBird=0;
-    if(!this.ctx)return;const c=this.ctx,t=c.currentTime;this.gate.gain.setTargetAtTime(active?1:0,t,.08);
+    this.steps.reset();this.thunder.reset();this.nextBird=0;this.lastUpdate=-1;
+    if(!this.ctx)return;const c=this.ctx,t=c.currentTime;smooth(this.gate.gain,active?1:0,t,.08);
     if(active){c.resume().catch(()=>{});}else{
-      for(const v of [...this.voices]){try{v.source.stop();}catch{}}
+      // Do not cut a footstep waveform mid-sample on blur/mute. Audio-thread
+      // fades finish before the delayed context suspension, even if RAF stalls.
+      for(const v of [...this.voices]){smooth(v.gain.gain,0,t,.006);try{v.source.stop(t+.035);}catch{}}
       setTimeout(()=>{if(!this.active&&epoch===this.activeEpoch)c.suspend().catch(()=>{});},260);
     }
   }
@@ -60,15 +73,17 @@ export class Soundscape {
     node.connect(filter);filter.connect(g);g.connect(p);p.connect(this.buses[bus]);
     let send=null;if(reverb>0){send=c.createGain();send.gain.value=reverb*this.volumes[bus];p.connect(send);send.connect(this.room);}
     const voice={source:node,gain:g,pan:p,position:source,tag,fading:false};this.voices.add(voice);
-    node.onended=()=>{this.voices.delete(voice);node.disconnect();filter.disconnect();g.disconnect();p.disconnect();send?.disconnect();};node.start();
+    node.onended=()=>{this.voices.delete(voice);node.disconnect();filter.disconnect();g.disconnect();p.disconnect();send?.disconnect();};
+    // A small scheduling lead lets the audio thread receive the source before
+    // its deadline when chunk uploads/GC briefly occupy the rendering thread.
+    node.start(c.currentTime+.025);
   }
   cancelThunder(clearQueue=true){
     if(clearQueue)this.thunder.clear();
     if(!this.ctx)return;
     const t=this.ctx.currentTime;
     for(const v of this.voices)if(v.tag==='thunder'&&!v.fading){
-      v.fading=true;v.gain.gain.cancelScheduledValues(t);
-      v.gain.gain.setTargetAtTime(0,t,.045);
+      v.fading=true;smooth(v.gain.gain,0,t,.045);
       try{v.source.stop(t+.25);}catch{}
     }
   }
@@ -85,7 +100,7 @@ export class Soundscape {
     // the scene under a dozen long rumbles.
     for(const strike of strikes){
       const rolls=[...this.voices].filter(v=>v.tag==='thunder'&&!v.fading);
-      if(rolls.length>=3){const oldest=rolls[0];oldest.fading=true;oldest.gain.gain.setTargetAtTime(0,this.ctx.currentTime,.06);oldest.source.stop(this.ctx.currentTime+.3);}
+      if(rolls.length>=3){const oldest=rolls[0];oldest.fading=true;smooth(oldest.gain.gain,0,this.ctx.currentTime,.06);oldest.source.stop(this.ctx.currentTime+.3);}
       this.play(this.pick(strike.cloud?'thunder-cloud':'thunder'),'ambience',strike.cloud?.85:1.05,
         {tag:'thunder',source:strike.source,pan:this.panAt(strike.source,s),rate:.94+Math.random()*.12,lowpass:strike.cloud?2400:6500});
     }
@@ -94,15 +109,15 @@ export class Soundscape {
     this.latest=s;if(!this.ready||!this.active||this.ctx.state!=='running')return;
     const c=this.ctx,t=c.currentTime;if(t-this.lastUpdate<.055)return;this.lastUpdate=t;
     const mix=mixFor(s),a=s.audio||{},w=s.weather||{};
-    this.outdoorFilter.frequency.setTargetAtTime(mix.indoor>0?1700:16000,t,.5);
-    this.roomSend.gain.setTargetAtTime(mix.indoor*.22,t,.4);
+    smooth(this.outdoorFilter.frequency,mix.indoor>0?1700:16000,t,.5);
+    smooth(this.roomSend.gain,mix.indoor*.22,t,.4);
     const gust=(.80+clamp(w.gust)*.35)*(.82+.12*Math.sin(t*.73+(s.x||0)*.009)+.06*Math.sin(t*1.81+(s.z||0)*.008));
     for(const [id,l] of this.loops){let v=mix.loops[id]||0;if(['air','leaves','needles','snow-wind'].includes(id))v*=gust;
-      l.gain.gain.setTargetAtTime(v*(dialogue?.55:1),t,.65);
+      smooth(l.gain.gain,v*(dialogue?.55:1),t,.65);
       const position=id==='fire'?a.fire:['stream','surf'].includes(id)?a.water:null;
-      l.pan.pan.setTargetAtTime(position?this.panAt(position,s):id==='leaves'?-.3:id==='needles'?.3:0,t,.4);
+      smooth(l.pan.pan,position?this.panAt(position,s):id==='leaves'?-.3:id==='needles'?.3:0,t,.4);
     }
-    for(const v of this.voices)if(v.position)v.pan.pan.setTargetAtTime(this.panAt(v.position,s),t,.10);
+    for(const v of this.voices)if(v.position)smooth(v.pan.pan,this.panAt(v.position,s),t,.10);
     const step=this.steps.update(s,moving&&!dialogue);
     if(step){const material=['grass','leaves','mud','gravel','stone','wood','sand','snow','water'].includes(a.floor)?a.floor:'grass';
       this.play(this.pick(`step-${material}`,4),'footsteps',step.landing?.55:.40,{pan:step.pan,rate:.92+Math.random()*.16,reverb:mix.indoor});}

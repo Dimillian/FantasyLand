@@ -30,6 +30,7 @@ mod rays;
 pub mod regional_tour;
 pub mod regions;
 pub mod renderer;
+pub mod savegame;
 pub mod settlement_mesh;
 pub mod settlements;
 mod shadow;
@@ -42,6 +43,7 @@ pub mod waterfalls;
 pub mod weather;
 pub mod wind;
 pub mod world;
+pub mod worldgen;
 
 use player::Player;
 use renderer::Renderer;
@@ -126,6 +128,46 @@ impl Game {
             life: citizens::Life::new(),
             audio_probe: Default::default(),
         })
+    }
+    pub fn world_identity(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&worldgen::WorldDescriptor::current(self.world.seed)).unwrap()
+    }
+    pub fn save_snapshot(&self) -> JsValue {
+        serde_wasm_bindgen::to_value(&savegame::Snapshot::capture(
+            &self.world,
+            &self.player,
+            self.life.clock,
+        ))
+        .unwrap()
+    }
+    pub fn restore_snapshot(&mut self, value: JsValue) -> Result<(), JsValue> {
+        let snapshot: savegame::Snapshot =
+            serde_wasm_bindgen::from_value(value).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        snapshot
+            .validate(worldgen::WorldDescriptor::current(self.world.seed))
+            .map_err(JsValue::from_str)?;
+        let mut doors = self.world.doors.borrow_mut();
+        doors.clear();
+        for d in snapshot.doors {
+            doors.insert(
+                d.id,
+                settlement_mesh::Door {
+                    angle: d.angle,
+                    target: d.target,
+                    hold: d.hold,
+                },
+            );
+        }
+        drop(doors);
+        let p = snapshot.player;
+        self.teleport(p.x, p.z);
+        self.face(p.yaw, p.pitch);
+        self.player.health = p.health;
+        self.player.mana = p.mana;
+        self.player.stamina = p.stamina;
+        self.player.walked = p.walked;
+        self.restore_clock(snapshot.clock);
+        Ok(())
     }
     pub fn set_lighting_mode(&mut self, mask: u32) {
         self.renderer.set_lighting_mode(mask);
@@ -446,7 +488,7 @@ impl Game {
     }
     pub fn restore_clock(&mut self, clock: f64) {
         if clock.is_finite() && clock >= 0. {
-            self.life.clock = clock.min(1e10);
+            self.life.clock = clock.min(1e12);
             self.hour = (clock / 120. % 24.) as f32;
             self.life.invalidate();
         }
@@ -581,101 +623,8 @@ impl Game {
         )
     }
     pub fn features(&self, cx: f32, cz: f32, span: f32) -> JsValue {
-        #[derive(Serialize)]
-        struct Features {
-            geography: Vec<atlas::Label>,
-            sites: Vec<world::Site>,
-            landmarks: Vec<world::Landmark>,
-            roads: Vec<Vec<[f32; 2]>>,
-            routes: Vec<world::Road>,
-            buildings: Vec<settlements::Building>,
-            streets: Vec<settlements::Street>,
-        }
-        // Showing all regional sites at continent scale adds noise and expensive geometry.
-        let radius = span * 0.72;
-        let mut sites = self.world.sites_near(cx, cz, radius);
-        if span > 16000.0 {
-            let stride = (span / 10000.0).ceil() as u32;
-            sites.retain(|s| s.kind == "city" || s.id % stride == 0);
-        }
-        let mut landmarks = if span < 14000.0 {
-            self.world.landmarks_near(cx, cz, radius)
-        } else {
-            Vec::new()
-        };
-        if span < 14000. {
-            landmarks.extend(
-                natural::landmarks_near(&self.world, cx, cz, radius)
-                    .into_iter()
-                    .map(|n| world::Landmark {
-                        id: n.id,
-                        name: n.name,
-                        x: n.x,
-                        z: n.z,
-                        kind: n.kind.name().into(),
-                    }),
-            );
-        }
-        if span < 100000. {
-            for p in geography::landmarks(self.world.seed) {
-                if p.kind != geography::GeoLandmarkKind::MountainPass
-                    || (p.position[0] - cx).hypot(p.position[1] - cz) > radius
-                {
-                    continue;
-                }
-                let s = self.world.natural_sample(p.position[0], p.position[1]);
-                if s.ocean || s.height < s.water_height + 0.5 {
-                    continue;
-                }
-                let names = [
-                    "Greywind",
-                    "Aster",
-                    "Cloudrest",
-                    "Raven",
-                    "Ashen",
-                    "Vey",
-                    "Highwater",
-                    "Cinder",
-                ];
-                landmarks.push(world::Landmark {
-                    id: p.id,
-                    name: format!("{} Pass", names[(p.id as usize) % names.len()]),
-                    x: p.position[0],
-                    z: p.position[1],
-                    kind: "mountain_pass".into(),
-                });
-            }
-        }
-        let routes = self.world.road_map_routes(cx, cz, span);
-        let roads = routes.iter().map(|route| route.points.clone()).collect();
-        serde_wasm_bindgen::to_value(&Features {
-            geography: atlas::labels(&self.world, cx, cz, span),
-            sites,
-            landmarks,
-            roads,
-            routes,
-            buildings: if span < 5000. {
-                self.world
-                    .settlements
-                    .layouts_near(&self.world, cx, cz, radius)
-                    .iter()
-                    .flat_map(|l| l.buildings.clone())
-                    .collect()
-            } else {
-                vec![]
-            },
-            streets: if span < 5000. {
-                self.world
-                    .settlements
-                    .layouts_near(&self.world, cx, cz, radius)
-                    .iter()
-                    .flat_map(|l| l.streets.clone())
-                    .collect()
-            } else {
-                vec![]
-            },
-        })
-        .unwrap_or(JsValue::NULL)
+        serde_wasm_bindgen::to_value(&atlas::features(&self.world, cx, cz, span))
+            .unwrap_or(JsValue::NULL)
     }
     pub fn landscape_destinations(&self) -> JsValue {
         serde_wasm_bindgen::to_value(&exploration::destinations(&self.world))

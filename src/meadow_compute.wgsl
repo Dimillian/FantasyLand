@@ -36,12 +36,17 @@ fn expand(@builtin(global_invocation_id) id:vec3<u32>) {
     let grid=cell.w&65535u;
     let local=(vec2<f32>(f32(grid%32u),f32(grid/32u))*8.0
         +vec2<f32>(f32(sub%8u),f32(sub/8u))+0.5
-        +vec2<f32>(random(seed+1u)-0.5,random(seed+2u)-0.5)*0.64)*0.1875;
+        +vec2<f32>(random(seed+1u)-0.5,random(seed+2u)-0.5)*0.94)*0.1875;
     let world=local+tile.origin.xy;
     let delta=world-frame.eye.xz;
     let distance=length(delta);
     if distance>=frame.settings.y {return;}
-    let coverage=f32((cell.z>>8u)&255u)/255.0*frame.settings.x;
+    let ecological_height=f32(cell.z&255u)/255.0;
+    let short_sward=1.0-smoothstep(0.14,0.29,ecological_height);
+    // Fill out the short sward without raising lush-meadow density or its
+    // allocation ceiling. Ecological holes and the user's density still apply.
+    let ecological_coverage=f32((cell.z>>8u)&255u)/255.0;
+    let coverage=mix(ecological_coverage,sqrt(ecological_coverage),short_sward)*frame.settings.x;
     // A stratified permutation spreads ecological thinning within each cell;
     // no random rejection of entire metre-wide squares in lush meadows.
     let rank=(f32((sub*21u+(cell.x&63u))&63u)+0.5)/64.0;
@@ -55,7 +60,10 @@ fn expand(@builtin(global_invocation_id) id:vec3<u32>) {
     let fade=select(near_fade,select(middle_fade,1.0,mid),quarter)
         *(1.0-smoothstep(38.0,frame.settings.y,distance));
     if fade<0.015 {return;}
-    let base_height=f32(cell.z&255u)/255.0*(0.85+random(seed+5u)*0.30);
+    // Short woodland swards need a readable silhouette, not broad 7 cm spikes.
+    // Preserve the established taller meadow scale and all ecological exclusions.
+    let short_lift=0.24*short_sward;
+    let base_height=(ecological_height+short_lift)*(0.78+random(seed+5u)*0.44);
     let root=surface(world-tile.origin.xy)-0.012;
     let clip=frame.projection*vec4<f32>(world.x-frame.eye.x,root+base_height*0.5-frame.eye.y,world.y-frame.eye.z,1.0);
     let metres_per_pixel=max(clip.w,0.2)/max(frame.settings.z,1.0);

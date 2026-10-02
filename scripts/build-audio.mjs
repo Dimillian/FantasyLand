@@ -1,7 +1,7 @@
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {synth,seamless,wav,RATE} from './audio-synthesis.mjs';
 const dir=new URL('../dist/audio/',import.meta.url);mkdirSync(dir,{recursive:true});
-const manifest={version:2,sampleRate:RATE,sounds:{}};
+const manifest={version:3,sampleRate:RATE,sounds:{}};
 const loops=['air','leaves','needles','rain','roof','stream','surf','fire','insects','snow-wind'];
 const add=(id,kind,length,seed,loop=false)=>{let data=synth(kind,length,seed);if(loop)data=seamless(data);const bytes=wav(data);writeFileSync(new URL(`${id}.wav`,dir),bytes);let peak=0,energy=0;for(const s of data){peak=Math.max(peak,Math.abs(s));energy+=s*s;}manifest.sounds[id]={file:`${id}.wav`,loop,seconds:data.length/RATE,peak,rms:Math.sqrt(energy/data.length),bytes:bytes.length};};
 loops.forEach((kind,i)=>add(kind,kind,8.25+i*.37,91+i*53,true));

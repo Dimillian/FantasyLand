@@ -5,6 +5,7 @@ use crate::{
     regions,
     world::{hash, rand01, World},
 };
+use crate::{natural, settlements, world};
 use serde::Serialize;
 #[derive(Clone, Debug, Serialize)]
 pub struct Label {
@@ -155,5 +156,110 @@ mod tests {
         assert_eq!(normal.len(), 48 * 48 * 4);
         assert_ne!(normal, relief);
         assert_ne!(relief, rock);
+    }
+}
+
+#[derive(Serialize)]
+pub struct Features {
+    geography: Vec<Label>,
+    sites: Vec<world::Site>,
+    landmarks: Vec<world::Landmark>,
+    roads: Vec<Vec<[f32; 2]>>,
+    routes: Vec<world::Road>,
+    buildings: Vec<settlements::Building>,
+    streets: Vec<settlements::Street>,
+}
+
+pub fn features(world: &World, cx: f32, cz: f32, span: f32) -> Features {
+    // Showing all regional sites at continent scale adds noise and expensive geometry.
+    let radius = span * 0.72;
+    let mut sites = world.sites_near(cx, cz, radius);
+    if span > 16000.0 {
+        let stride = (span / 10000.0).ceil() as u32;
+        sites.retain(|s| s.kind == "city" || s.id % stride == 0);
+    }
+    let mut landmarks = if span < 14000.0 {
+        world.landmarks_near(cx, cz, radius)
+    } else {
+        Vec::new()
+    };
+    if span < 14000. {
+        landmarks.extend(
+            natural::landmarks_near(world, cx, cz, radius)
+                .into_iter()
+                .map(|n| world::Landmark {
+                    stable_id: n.stable_id(),
+                    id: n.id,
+                    name: n.name,
+                    x: n.x,
+                    z: n.z,
+                    kind: n.kind.name().into(),
+                }),
+        );
+    }
+    if span < 100000. {
+        for p in geography::landmarks(world.seed) {
+            if p.kind != geography::GeoLandmarkKind::MountainPass
+                || (p.position[0] - cx).hypot(p.position[1] - cz) > radius
+            {
+                continue;
+            }
+            let s = world.natural_sample(p.position[0], p.position[1]);
+            if s.ocean || s.height < s.water_height + 0.5 {
+                continue;
+            }
+            let names = [
+                "Greywind",
+                "Aster",
+                "Cloudrest",
+                "Raven",
+                "Ashen",
+                "Vey",
+                "Highwater",
+                "Cinder",
+            ];
+            landmarks.push(world::Landmark {
+                stable_id: crate::worldgen::LocationId::cell(
+                    "mountain_pass",
+                    p.range_id as i32,
+                    0,
+                    p.id,
+                ),
+                id: p.id,
+                name: format!("{} Pass", names[(p.id as usize) % names.len()]),
+                x: p.position[0],
+                z: p.position[1],
+                kind: "mountain_pass".into(),
+            });
+        }
+    }
+    let routes = world.road_map_routes(cx, cz, span);
+    let roads = routes.iter().map(|route| route.points.clone()).collect();
+    Features {
+        geography: labels(world, cx, cz, span),
+        sites,
+        landmarks,
+        roads,
+        routes,
+        buildings: if span < 5000. {
+            world
+                .settlements
+                .layouts_near(world, cx, cz, radius)
+                .iter()
+                .flat_map(|l| l.buildings.clone())
+                .collect()
+        } else {
+            vec![]
+        },
+        streets: if span < 5000. {
+            world
+                .settlements
+                .layouts_near(world, cx, cz, radius)
+                .iter()
+                .flat_map(|l| l.streets.clone())
+                .collect()
+        } else {
+            vec![]
+        },
     }
 }

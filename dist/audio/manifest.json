@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "sampleRate": 22050,
   "sounds": {
     "air": {
@@ -86,288 +86,288 @@
       "file": "step-grass-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.26060885190963745,
-      "rms": 0.06250657618283632,
+      "peak": 0.1401795595884323,
+      "rms": 0.015032559827513673,
       "bytes": 14156
     },
     "step-grass-1": {
       "file": "step-grass-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3393613398075104,
-      "rms": 0.06281677414261545,
+      "peak": 0.17137247323989868,
+      "rms": 0.0176295257880548,
       "bytes": 14156
     },
     "step-grass-2": {
       "file": "step-grass-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3261828124523163,
-      "rms": 0.06210384715471826,
+      "peak": 0.17422688007354736,
+      "rms": 0.01654288327830028,
       "bytes": 14156
     },
     "step-grass-3": {
       "file": "step-grass-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3392374813556671,
-      "rms": 0.06382519040743728,
+      "peak": 0.1063087210059166,
+      "rms": 0.014816100944297682,
       "bytes": 14156
     },
     "step-leaves-0": {
       "file": "step-leaves-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3392869234085083,
-      "rms": 0.04996467612323838,
+      "peak": 0.2310626208782196,
+      "rms": 0.029511061412597767,
       "bytes": 14156
     },
     "step-leaves-1": {
       "file": "step-leaves-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3227176368236542,
-      "rms": 0.0490665507271571,
+      "peak": 0.19848234951496124,
+      "rms": 0.02871454279109104,
       "bytes": 14156
     },
     "step-leaves-2": {
       "file": "step-leaves-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.35627251863479614,
-      "rms": 0.047608498070910596,
+      "peak": 0.1727803349494934,
+      "rms": 0.02663090029476343,
       "bytes": 14156
     },
     "step-leaves-3": {
       "file": "step-leaves-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3470401167869568,
-      "rms": 0.049924248659652296,
+      "peak": 0.22268743813037872,
+      "rms": 0.027536575116414518,
       "bytes": 14156
     },
     "step-mud-0": {
       "file": "step-mud-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.43019843101501465,
-      "rms": 0.07062221011670226,
+      "peak": 0.10973455756902695,
+      "rms": 0.01595369323471901,
       "bytes": 14156
     },
     "step-mud-1": {
       "file": "step-mud-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3310042917728424,
-      "rms": 0.06324167723887482,
+      "peak": 0.13962948322296143,
+      "rms": 0.017694221061213617,
       "bytes": 14156
     },
     "step-mud-2": {
       "file": "step-mud-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.34793177247047424,
-      "rms": 0.06490947744879988,
+      "peak": 0.14774248003959656,
+      "rms": 0.01872165792113322,
       "bytes": 14156
     },
     "step-mud-3": {
       "file": "step-mud-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.2937769591808319,
-      "rms": 0.062451941474746135,
+      "peak": 0.14345428347587585,
+      "rms": 0.01674025887409663,
       "bytes": 14156
     },
     "step-gravel-0": {
       "file": "step-gravel-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.44302883744239807,
-      "rms": 0.04436294075985922,
+      "peak": 0.23333612084388733,
+      "rms": 0.02569867848563994,
       "bytes": 14156
     },
     "step-gravel-1": {
       "file": "step-gravel-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4069080352783203,
-      "rms": 0.044222158437403895,
+      "peak": 0.19314806163311005,
+      "rms": 0.026731239036123938,
       "bytes": 14156
     },
     "step-gravel-2": {
       "file": "step-gravel-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.47648873925209045,
-      "rms": 0.0449565840057054,
+      "peak": 0.16137444972991943,
+      "rms": 0.02331767356009561,
       "bytes": 14156
     },
     "step-gravel-3": {
       "file": "step-gravel-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4390639066696167,
-      "rms": 0.04533428195821553,
+      "peak": 0.2152971625328064,
+      "rms": 0.02547231264686744,
       "bytes": 14156
     },
     "step-stone-0": {
       "file": "step-stone-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.26539987325668335,
-      "rms": 0.020953596078354293,
+      "peak": 0.1557196080684662,
+      "rms": 0.01197876015596933,
       "bytes": 14156
     },
     "step-stone-1": {
       "file": "step-stone-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.35487738251686096,
-      "rms": 0.025583312303115627,
+      "peak": 0.1897318959236145,
+      "rms": 0.014458836437803274,
       "bytes": 14156
     },
     "step-stone-2": {
       "file": "step-stone-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.2943093478679657,
-      "rms": 0.024320412890010367,
+      "peak": 0.18873155117034912,
+      "rms": 0.014095172940667837,
       "bytes": 14156
     },
     "step-stone-3": {
       "file": "step-stone-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3050162196159363,
-      "rms": 0.024804311084905002,
+      "peak": 0.13330331444740295,
+      "rms": 0.011591143728241724,
       "bytes": 14156
     },
     "step-wood-0": {
       "file": "step-wood-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.22161078453063965,
-      "rms": 0.03041742644348284,
+      "peak": 0.15089362859725952,
+      "rms": 0.01517386271546221,
       "bytes": 14156
     },
     "step-wood-1": {
       "file": "step-wood-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.22147519886493683,
-      "rms": 0.03041465516454712,
+      "peak": 0.11640693992376328,
+      "rms": 0.012048720560988485,
       "bytes": 14156
     },
     "step-wood-2": {
       "file": "step-wood-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.22182656824588776,
-      "rms": 0.03042012886684854,
+      "peak": 0.10310721397399902,
+      "rms": 0.00976003444941279,
       "bytes": 14156
     },
     "step-wood-3": {
       "file": "step-wood-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.22166334092617035,
-      "rms": 0.030417913930891567,
+      "peak": 0.099008709192276,
+      "rms": 0.010575601802089005,
       "bytes": 14156
     },
     "step-sand-0": {
       "file": "step-sand-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.38381674885749817,
-      "rms": 0.05068730971923281,
+      "peak": 0.17464382946491241,
+      "rms": 0.022167668817506158,
       "bytes": 14156
     },
     "step-sand-1": {
       "file": "step-sand-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3683772385120392,
-      "rms": 0.04990549721224842,
+      "peak": 0.11302608251571655,
+      "rms": 0.017915516224166872,
       "bytes": 14156
     },
     "step-sand-2": {
       "file": "step-sand-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3536420464515686,
-      "rms": 0.04854941595964786,
+      "peak": 0.1313028782606125,
+      "rms": 0.014711883368015313,
       "bytes": 14156
     },
     "step-sand-3": {
       "file": "step-sand-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3477589786052704,
-      "rms": 0.051489333892217076,
+      "peak": 0.1417255401611328,
+      "rms": 0.01728580295382426,
       "bytes": 14156
     },
     "step-snow-0": {
       "file": "step-snow-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.35887452960014343,
-      "rms": 0.0375507898860134,
+      "peak": 0.2116215080022812,
+      "rms": 0.028972591950580752,
       "bytes": 14156
     },
     "step-snow-1": {
       "file": "step-snow-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3880012631416321,
-      "rms": 0.038826289630702976,
+      "peak": 0.15036730468273163,
+      "rms": 0.024509068185034847,
       "bytes": 14156
     },
     "step-snow-2": {
       "file": "step-snow-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3183566629886627,
-      "rms": 0.03692302762675811,
+      "peak": 0.15363964438438416,
+      "rms": 0.02037580053307601,
       "bytes": 14156
     },
     "step-snow-3": {
       "file": "step-snow-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.3525363802909851,
-      "rms": 0.03903915630297632,
+      "peak": 0.18661710619926453,
+      "rms": 0.02528596398305364,
       "bytes": 14156
     },
     "step-water-0": {
       "file": "step-water-0.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4302515387535095,
-      "rms": 0.06108485177885893,
+      "peak": 0.14594833552837372,
+      "rms": 0.020863488864766386,
       "bytes": 14156
     },
     "step-water-1": {
       "file": "step-water-1.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4134688675403595,
-      "rms": 0.06218336233431717,
+      "peak": 0.17435087263584137,
+      "rms": 0.02284787862146953,
       "bytes": 14156
     },
     "step-water-2": {
       "file": "step-water-2.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4373147189617157,
-      "rms": 0.059971568090346615,
+      "peak": 0.1749829351902008,
+      "rms": 0.02042327305086295,
       "bytes": 14156
     },
     "step-water-3": {
       "file": "step-water-3.wav",
       "loop": false,
       "seconds": 0.32,
-      "peak": 0.4665651321411133,
-      "rms": 0.06399010365845569,
+      "peak": 0.12233170121908188,
+      "rms": 0.018515701671745093,
       "bytes": 14156
     },
     "bird-forest-0": {
