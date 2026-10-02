@@ -264,6 +264,10 @@ impl WeatherSystem {
     pub fn state(&self) -> WeatherState {
         self.state
     }
+    pub fn lightning_event(&self) -> [f32; 4] {
+        lightning_event(self.seed, self.seconds)
+    }
+
     pub fn seconds(&self) -> f64 {
         self.seconds
     }
@@ -538,19 +542,29 @@ fn automatic(
     }
 }
 
+/// Event identity and age shared by the flash envelope and GPU leader growth.
+/// One fixed window keeps geometry stable throughout both return strokes.
+pub fn lightning_event(seed: u32, seconds: f64) -> [f32; 4] {
+    let id = (seconds / 8.0).floor() as i32;
+    let strike = 1.3 + rand01(hash(seed ^ 0x52F1, id, 7)) * 5.0;
+    [
+        id as f32,
+        (seconds - id as f64 * 8.0) as f32 - strike,
+        rand01(hash(seed ^ 0xB017, id, 41)),
+        rand01(hash(seed ^ 0xC10D, id, 19)) * 1024.0,
+    ]
+}
+
 fn lightning(seed: u32, seconds: f64, severity: f32) -> f32 {
     if severity < 0.28 {
         return 0.0;
     }
-    let interval = 8.0; // Keep lightning_radiance event IDs in world.wgsl in sync.
-    let id = (seconds / interval).floor() as i32;
-    let r = rand01(hash(seed ^ 0xA51E, id, 23));
+    let event = lightning_event(seed, seconds);
+    let r = rand01(hash(seed ^ 0xA51E, event[0] as i32, 23));
     if r > 0.12 + severity * 0.86 {
         return 0.0;
     }
-    let phase = (seconds - id as f64 * interval) as f32;
-    let strike = 1.3 + rand01(hash(seed ^ 0x52F1, id, 7)) * 5.0;
-    let t = phase - strike;
+    let t = event[1];
     let first = smooth(0.0, 0.025, t) * (1.0 - smooth(0.10, 0.28, t));
     let after = smooth(0.30, 0.34, t) * (1.0 - smooth(0.41, 0.64, t)) * 0.65;
     (first + after).clamp(0.0, 1.0) * severity
@@ -719,6 +733,31 @@ mod tests {
         assert!(flashes > 0);
         assert_eq!(WeatherMode::from_index(900), WeatherMode::Auto);
     }
+    #[test]
+    fn lightning_identity_age_and_kinds_are_stable_through_a_stroke() {
+        let mut kinds = [false; 3];
+        for id in 0..80 {
+            let event = lightning_event(1337, id as f64 * 8.0);
+            let onset = id as f64 * 8.0 - event[1] as f64;
+            let a = lightning_event(1337, onset + 0.04);
+            let b = lightning_event(1337, onset + 0.36);
+            assert_eq!(a[0], b[0]);
+            assert_eq!(a[2], b[2]);
+            assert_eq!(a[3], b[3]);
+            assert!((a[1] - 0.04).abs() < 0.00001 && (b[1] - 0.36).abs() < 0.00001);
+            let kind = if a[2] < 0.32 {
+                0
+            } else if a[2] < 0.62 {
+                1
+            } else {
+                2
+            };
+            kinds[kind] = true;
+        }
+        assert!(kinds.into_iter().all(|k| k));
+        assert_ne!(lightning_event(1337, 3.0)[3], lightning_event(67, 3.0)[3]);
+    }
+
     #[test]
     fn severe_weather_has_gusts_and_lightning_has_dark_intervals() {
         let c = climate();

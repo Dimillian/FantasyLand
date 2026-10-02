@@ -32,7 +32,7 @@ fn weather_grade(hdr: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     var graded = mix(vec3<f32>(luma), hdr, saturation);
     // Steel-blue rain, pearl snow, warm fair-weather highlights. Preserve dark
     // detail: this is a color transform, not an opaque grey/dark overlay.
-    let cool = vec3<f32>(0.89,0.98,1.08);
+    let cool = mix(vec3<f32>(0.89,0.98,1.08),vec3<f32>(0.94,0.83,1.20),smoothstep(0.70,1.0,w.y));
     let pearl = vec3<f32>(0.97,1.03,1.10);
     let tint = mix(mix(vec3<f32>(1.035,1.01,0.975),cool,overcast),pearl,winter);
     graded *= tint * (1.0 - squall*0.06 + winter*0.06);

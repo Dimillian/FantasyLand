@@ -299,3 +299,82 @@ pub fn weather_studies(seed: u32, dir: &str) {
     }
     fs::write(format!("{dir}/weather.json"),serde_json::to_string_pretty(&serde_json::json!({"fixture":f,"reports":reports,"note":"Native completed GPU frames, not browser FPS. Sequential fronts retain wetness/snow history."})).unwrap()).unwrap();
 }
+
+/// Capture leaders, return strokes and all three seeded discharge types.
+pub fn lightning_studies(seed: u32, dir: &str) {
+    let world = World::new(seed);
+    let f = fixture(&world, "meadow");
+    let eye = Vec3::from_array(f.eye);
+    let mut r = pollster::block_on(Renderer::headless(1280, 720)).unwrap();
+    r.set_quality(1);
+    r.set_render_resolution(720);
+    r.set_antialiasing(1);
+    r.set_ground_cover_density(4.0);
+    r.set_lighting_mode(7);
+    r.set_filter(1, 1.0);
+    r.set_weather_mode(5);
+    for _ in 0..800 {
+        r.update_weather(&world, eye, 11.0, 0.05);
+        r.advance_time(0.05);
+    }
+    r.update_chunks(&world, eye, true);
+    while r.pending_count() > 0 {
+        r.update_chunks(&world, eye, false);
+    }
+    let mut life = Life::new();
+    life.clock = 11.0 * 120.0;
+    life.update(&world, f.eye, 0.1);
+    r.update_people(&world, &life, eye, f.yaw);
+    for _ in 0..24 {
+        r.render(eye, f.yaw, 0.18, 11.0).unwrap();
+        r.device.poll(wgpu::PollType::Wait).unwrap();
+    }
+    png(&format!("{dir}/tempest.png"), &r.capture_rgba().unwrap());
+    let mut seen = [false; 3];
+    let names = ["cloud-flash", "cloud-crawler", "ground-bolt"];
+    let mut records = Vec::new();
+    for _ in 0..(360 * 120) {
+        r.update_weather(&world, eye, 11.0, 1.0 / 120.0);
+        r.advance_time(1.0 / 120.0);
+        let event = fantasy_land::weather::lightning_event(seed, r.weather_state().seconds as f64);
+        let kind = if event[2] < 0.32 {
+            0
+        } else if event[2] < 0.62 {
+            1
+        } else {
+            2
+        };
+        if seen[kind] || event[1] < 0.005 || event[1] > 0.02 || r.weather_state().lightning < 0.01 {
+            continue;
+        }
+        seen[kind] = true;
+        for (step, age) in [0.015, 0.045, 0.10, 0.36, 0.50].into_iter().enumerate() {
+            while fantasy_land::weather::lightning_event(seed, r.weather_state().seconds as f64)[1]
+                < age
+            {
+                r.update_weather(&world, eye, 11.0, 1.0 / 240.0);
+                r.advance_time(1.0 / 240.0);
+            }
+            r.render(eye, f.yaw, 0.18, 11.0).unwrap();
+            r.device.poll(wgpu::PollType::Wait).unwrap();
+            png(
+                &format!("{dir}/{}-{step}.png", names[kind]),
+                &r.capture_rgba().unwrap(),
+            );
+            records.push(serde_json::json!({"type":names[kind],"stage":step,"event":fantasy_land::weather::lightning_event(seed,r.weather_state().seconds as f64),"flash":r.weather_state().lightning}));
+        }
+        println!("Captured {}", names[kind]);
+        if seen.into_iter().all(|s| s) {
+            break;
+        }
+    }
+    assert!(
+        seen.into_iter().all(|s| s),
+        "all discharge families must appear"
+    );
+    fs::write(
+        format!("{dir}/lightning.json"),
+        serde_json::to_string_pretty(&records).unwrap(),
+    )
+    .unwrap();
+}

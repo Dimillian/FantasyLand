@@ -72,3 +72,29 @@ cargo run --release --bin verify -- output/weather-drama/inn 1337 weather-studie
 
 Each writes PNGs and a manifest with actual weather state. Sequential fronts
 retain wetness and snow history. Local preview remains at http://127.0.0.1:4173/.
+
+## Blue-violet storms and procedural lightning
+
+Storm/Tempest now move smoothly toward an indigo cloud base, violet haze and
+blue-purple grading. Ordinary rain, fair weather and snow retain their separate
+palettes. Lightning has three seeded event families: concealed cloud illumination,
+horizontal cloud crawlers and downward branching channels. The CPU supplies a
+16-byte event uniform (identity, age, family, seed variation), using the same
+start time as the flash envelope. Eighteen seeded main segments reveal over
+85 milliseconds; irregular thinner forks follow, then a return stroke reuses
+the same channel. Shapes do not regenerate every frame or follow the camera.
+
+Cloud discharges grow two localized scattering lobes modulated by cloud thickness.
+Reduced global sky fill keeps these illuminated cloud patches distinct. The
+white-lilac channel cores have violet bloom halos. Rendering remains in the
+existing sky/reflection shaders, with early rejection outside active flashes
+and bounded world-cell/angular searches. More segment work occurs during a
+visible flash; no new render pass or persistent lightning texture is introduced.
+These are art-directed distant effects, not terrain impact objects or volumetric
+cloud ray marching. Cached planar reflections retain their existing update cadence.
+
+`verify output/violet-lightning 1337 lightning-studies` captures all three
+families at five leader/return-stroke ages using the real renderer. Seven weather
+tests pass, including stable identity through a stroke, seeded family coverage,
+bounded cadence and gradual transitions. Release native captures and WASM builds
+validate the expanded GPU uniform and all shader entry points.

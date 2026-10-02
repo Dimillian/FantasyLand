@@ -49,6 +49,7 @@ struct Globals {
     hearth_rooms: [[f32; 4]; 2],
     wind_field: crate::wind::WindUniform,
     ao_params: [f32; 4],
+    lightning_event: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -2317,6 +2318,10 @@ impl Renderer {
             weather: weather.weather,
             storm: weather.storm,
             surface: weather.surface,
+            lightning_event: self
+                .weather_system
+                .as_ref()
+                .map_or([0.0; 4], |w| w.lightning_event()),
             precipitation_offset: self.precipitation.uniform(),
             wind_field: self.wind.uniform(),
             reflection_matrix: (self.reflection_projection

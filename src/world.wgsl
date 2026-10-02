@@ -40,6 +40,7 @@ struct Globals {
     hearth_rooms:array<vec4<f32>,2>,
     wind_field:WindField,
     ao_params:vec4<f32>, // ambient visibility strength; zero is the legacy path
+    lightning_event:vec4<f32>, // event id, age, kind, seeded variation
 };
 @group(0) @binding(0) var<uniform> u: Globals;
 @group(0) @binding(9) var ambient_visibility:texture_2d<f32>;
@@ -165,18 +166,20 @@ fn horizon_color(direction: vec3<f32>) -> vec3<f32> {
     let overcast = smoothstep(0.60, 1.0, u.weather.x);
     let rain_air = mix(vec3<f32>(0.035, 0.056, 0.095), vec3<f32>(0.32, 0.38, 0.43), daylight());
     let snow_air = mix(vec3<f32>(0.09, 0.125, 0.185), vec3<f32>(0.65, 0.70, 0.73), daylight());
-    let weather_air = mix(rain_air, snow_air, clamp(u.weather.z * 0.8 + u.surface.y * 0.2, 0.0, 1.0));
+    let storm_tint = smoothstep(0.70,1.0,u.weather.y);
+    let violet_air = mix(vec3<f32>(0.047,0.038,0.095),vec3<f32>(0.30,0.30,0.46),daylight());
+    let weather_air = mix(mix(rain_air,violet_air,storm_tint*0.85), snow_air, clamp(u.weather.z * 0.8 + u.surface.y * 0.2, 0.0, 1.0));
     return mix(fair, weather_air, overcast * (0.43 + u.weather.w * 0.40))
-        + vec3<f32>(0.30, 0.38, 0.53) * u.storm.w;
+        + vec3<f32>(0.09, 0.085, 0.18) * u.storm.w;
 }
 
 fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     let day = daylight();
     let fair_zenith = mix(vec3<f32>(0.008, 0.015, 0.035), vec3<f32>(0.105, 0.295, 0.57), day);
     let overcast = smoothstep(0.60,1.0,u.weather.x);
-    let storm_zenith = mix(vec3<f32>(0.017,0.025,0.042),vec3<f32>(0.19,0.245,0.30),day);
+    let storm_zenith = mix(vec3<f32>(0.017,0.025,0.042),mix(vec3<f32>(0.19,0.245,0.30),vec3<f32>(0.19,0.17,0.32),smoothstep(0.70,1.0,u.weather.y)),day);
     let zenith = mix(fair_zenith,storm_zenith,overcast*0.90)
-        + vec3<f32>(0.22,0.30,0.44)*u.storm.w;
+        + vec3<f32>(0.055,0.05,0.12)*u.storm.w;
     let height = max(direction.y, 0.0);
     var color = mix(horizon_color(direction), zenith, pow(clamp(height, 0.0, 1.0), 0.43));
     // Purple upper twilight and a compact amber forward scatter preserve depth.
@@ -580,7 +583,7 @@ fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, 
     // Illuminate linear albedo. Gamma-converting the product would darken
     // forest shelter and moonlight twice, obscuring otherwise walkable ground.
     return albedo * illumination * mix(0.72,0.85,daylight())
-        + albedo * vec3<f32>(0.90,1.18,1.70) * u.storm.w * sky_access;
+        + albedo * vec3<f32>(0.68,0.65,1.22) * u.storm.w * sky_access;
 
 }
 
@@ -891,7 +894,8 @@ fn shared_sky_weather(ray: vec3<f32>, base_color: vec3<f32>) -> vec3<f32> {
     let lit_weather = mix(lit_day,vec3<f32>(0.40,0.47,0.53),rain_weight*0.86);
     let cloud_lit = mix(vec3<f32>(0.085, 0.13, 0.215), lit_weather, day);
     let shade_day = mix(vec3<f32>(0.34, 0.43, 0.51), vec3<f32>(0.17, 0.215, 0.27), severity);
-    let cloud_shade = mix(vec3<f32>(0.018, 0.031, 0.057), shade_day, day);
+    let violet_shade = mix(shade_day,vec3<f32>(0.15,0.16,0.29),rain_weight*0.75);
+    let cloud_shade = mix(vec3<f32>(0.023, 0.024, 0.062), violet_shade, day);
     let shading = clamp(low.y * 0.84 + (1.0 - low.z) * 0.16 + severity * 0.13, 0.0, 1.0);
     var cloud_color = mix(cloud_lit, cloud_shade, shading);
     let silver = edge_light * (1.0 - smoothstep(0.15, 0.80, low.y)) * u.direct.w;
@@ -900,7 +904,7 @@ fn shared_sky_weather(ray: vec3<f32>, base_color: vec3<f32>) -> vec3<f32> {
     // Snow scatters soft neutral light. Storm flashes illuminate the underside
     // coherently with root's surface light, not the sun/moon texture itself.
     cloud_color = mix(cloud_color, mix(vec3<f32>(0.12, 0.15, 0.21), vec3<f32>(0.58, 0.64, 0.68), day), u.weather.z * 0.34);
-    cloud_color += vec3<f32>(0.55, 0.65, 0.84) * u.storm.w * (0.35 + low.y * 0.65);
+    cloud_color += vec3<f32>(0.12, 0.11, 0.25) * u.storm.w * (0.35 + low.y * 0.65);
     color = mix(color, cloud_color, low.x * mix(0.94, 0.998, overcast));
     return color;
 }
@@ -1015,9 +1019,8 @@ fn moon_disc(ray: vec3<f32>, body: vec4<f32>, copper: f32, aa: f32) -> vec4<f32>
 
 // Derivative-free: water may call this from its material branch. Internal
 // dimensions live in the existing spare settings.z/w, avoiding another uniform.
-// Sparse world-anchored forks. The 11-second event id is exactly the window used
-// by weather.rs::lightning. storm.w carries both pulse envelopes; geometry never
-// re-randomizes between the leading flash and its afterstroke.
+// Fixed world anchors and event keys keep channels continuous during a flash
+// and when crossing cell boundaries. Growth changes revealed length, not shape.
 fn lightning_segment(ray: vec3<f32>, world_a: vec3<f32>, world_b: vec3<f32>, aa: f32, thickness: f32) -> vec2<f32> {
     let a = normalize(world_a - u.camera.xyz);
     let b = normalize(world_b - u.camera.xyz);
@@ -1032,56 +1035,86 @@ fn lightning_segment(ray: vec3<f32>, world_a: vec3<f32>, world_b: vec3<f32>, aa:
 }
 
 fn lightning_radiance(ray: vec3<f32>, aa: f32) -> vec3<f32> {
-    if u.storm.w <= 0.0001 { return vec3<f32>(0.0); }
-    let event = floor(u.surface.w / 8.0);
+    if u.storm.w <= 0.0001 || ray.y < -0.12 { return vec3<f32>(0.0); }
+    let event = u.lightning_event;
+    let age = max(event.y,0.0);
+    let sheet = event.z < 0.32;
+    let crawler = event.z >= 0.32 && event.z < 0.62;
+    let growth = smoothstep(0.0,0.085,age);
     let cell_size = 14000.0;
     let local_cell = floor(u.camera.xz / cell_size);
     let bolt_top = weather_cloud_base(false) - 60.0;
     var emission = vec2<f32>(0.0);
-    // Nine bounded candidate cells let the same absolute bolt remain visible
-    // across a storm-cell boundary. Distances and a tight angular cap skip all
-    // segment work for almost every pixel, even during the brief flash.
+    var cloud_glow = vec3<f32>(0.0);
     for (var dz = -1; dz <= 1; dz += 1) {
         for (var dx = -1; dx <= 1; dx += 1) {
             let cell = local_cell + vec2<f32>(f32(dx), f32(dz));
-            let key = cell + vec2<f32>(event * 3.17, event * -5.71);
-            if hash21(key + vec2<f32>(8.7, 31.9)) < 0.35 { continue; }
-            let offset = vec2<f32>(hash21(key + vec2<f32>(13.1, 5.8)), hash21(key + vec2<f32>(-3.1, 19.4)));
-            let anchor = (cell + vec2<f32>(0.5)) * cell_size + (offset - vec2<f32>(0.5)) * 10000.0;
-            let distance = length(anchor - u.camera.xz);
-            let visibility = smoothstep(2800.0, 4400.0, distance) * (1.0 - smoothstep(17500.0, 20000.0, distance));
-            if visibility <= 0.0 { continue; }
-            let center = normalize(vec3<f32>(anchor.x, bolt_top * 0.5, anchor.y) - u.camera.xyz);
-            let cap_radius = 1800.0 / max(distance, 2800.0);
-            if length(ray - center) > cap_radius + aa * 5.0 { continue; }
-            let side = normalize(vec2<f32>(offset.y - 0.5, 0.35 + offset.x));
-            var previous = vec3<f32>(anchor.x, bolt_top, anchor.y);
-            var branch_a = previous;
-            var branch_b = previous;
-            for (var i = 1u; i <= 6u; i += 1u) {
-                let along = f32(i) / 6.0;
-                let jitter = vec2<f32>(hash21(key + vec2<f32>(f32(i) * 7.9, 9.1)), hash21(key + vec2<f32>(13.7, f32(i) * 11.3))) - vec2<f32>(0.5);
-                let p = anchor + jitter * (230.0 * sin(along * 3.14159265));
-                let point = vec3<f32>(p.x, bolt_top * (1.0 - along), p.y);
-                emission = max(emission, lightning_segment(ray, previous, point, aa, 2.2) * visibility);
-                if i == 2u { branch_a = point; }
-                if i == 3u { branch_b = point; }
-                previous = point;
+            let key = cell + vec2<f32>(event.x * 3.17 + event.w, event.x * -5.71);
+            if hash21(key + vec2<f32>(8.7,31.9)) < 0.42 { continue; }
+            let offset = vec2<f32>(hash21(key+vec2<f32>(13.1,5.8)),hash21(key+vec2<f32>(-3.1,19.4)));
+            let anchor = (cell+vec2<f32>(0.5))*cell_size+(offset-vec2<f32>(0.5))*10000.0;
+            let distance = length(anchor-u.camera.xz);
+            let visibility = smoothstep(2200.0,3600.0,distance)*(1.0-smoothstep(17500.0,21000.0,distance));
+            if visibility <= 0.0 {continue;}
+            let top = vec3<f32>(anchor.x,bolt_top,anchor.y);
+            let side = normalize(vec2<f32>(offset.y-0.5,0.35+offset.x));
+            // In-cloud discharge blooms through a broad patch of cloud. The
+            // second lobe spreads along the cloud, then fades with the stroke.
+            let center_ray = normalize(top-u.camera.xyz);
+            let radius = (650.0+growth*800.0)/max(distance,2200.0);
+            let angular = length(ray-center_ray);
+            let glow = exp(-angular*angular/(radius*radius));
+            let second = normalize(top+vec3<f32>(side.x*1250.0,180.0,side.y*1250.0)-u.camera.xyz);
+            let angular2 = length(ray-second);
+            let spread = exp(-angular2*angular2/(radius*radius*0.65))*smoothstep(0.025,0.14,age);
+            cloud_glow += vec3<f32>(0.40,0.30,0.95)*(glow+spread*0.65)*visibility
+                * select(0.38,1.65,sheet || crawler)*smoothstep(0.0,0.08,ray.y);
+            if sheet {continue;}
+            let center = normalize(top-vec3<f32>(0.0,select(bolt_top*0.5,0.0,crawler),0.0)-u.camera.xyz);
+            if length(ray-center) > 3400.0/max(distance,2200.0)+aa*5.0 {continue;}
+            let end = select(vec3<f32>(anchor.x+(offset.x-0.5)*800.0,-250.0,anchor.y+(offset.y-0.5)*800.0),
+                top+vec3<f32>(side.x*2700.0,160.0,side.y*2700.0),crawler);
+            var previous = top;
+            for (var i=1u;i<=18u;i+=1u) {
+                let along = f32(i)/18.0;
+                let jitter = vec3<f32>(hash21(key+vec2<f32>(f32(i)*7.9,9.1)),
+                    hash21(key+vec2<f32>(f32(i)*2.3,71.4)),hash21(key+vec2<f32>(13.7,f32(i)*11.3)))-vec3<f32>(0.5);
+                let bend = sin(along*3.14159265);
+                let point = mix(top,end,along)+jitter*vec3<f32>(380.0,150.0,380.0)*bend;
+                let reveal = clamp((growth-(along-1.0/18.0))*18.0,0.0,1.0);
+                let tip = mix(previous,point,reveal);
+                let pulse = 0.87+0.13*sin(age*82.0-along*14.0);
+                let buried = select(1.0,0.26,crawler);
+                if reveal>0.001 {
+                    emission=max(emission,lightning_segment(ray,previous,tip,aa,mix(2.4,0.85,along))*visibility*pulse*buried);
+                }
+                // Irregular, thinner secondary channels grow from seeded nodes.
+                if i>2u && i<16u && hash21(key+vec2<f32>(f32(i),47.3))>0.73 && growth>along {
+                    let fork_growth=clamp((growth-along)*4.5,0.0,1.0);
+                    let direction=normalize(vec3<f32>(jitter.x,select(-0.5,jitter.y,crawler),jitter.z));
+                    let reach=350.0+hash21(key+f32(i)*9.7)*650.0;
+                    var start=point;
+                    for (var j=1u;j<=4u;j+=1u) {
+                        let part=f32(j)/4.0;
+                        let kink=vec3<f32>(side.x,0.3,side.y)*sin(f32(j)*7.1+f32(i))*90.0;
+                        let finish=point+direction*reach*part+kink;
+                        let amount=clamp((fork_growth-(part-0.25))*4.0,0.0,1.0);
+                        if amount>0.001 {
+                            emission=max(emission,lightning_segment(ray,start,mix(start,finish,amount),aa,0.9*(1.0-part*0.7))*visibility*buried*(0.58-part*0.30));
+                        }
+                        start=finish;
+                    }
+                }
+                previous=point;
             }
-            let fork_a = branch_a + vec3<f32>(side.x * 340.0, -430.0, side.y * 340.0);
-            let tip_a = fork_a + vec3<f32>(side.x * 210.0, -580.0, side.y * 210.0);
-            let fork_b = branch_b - vec3<f32>(side.x * 310.0, 260.0, side.y * 310.0);
-            let tip_b = fork_b - vec3<f32>(side.x * 230.0, 430.0, side.y * 230.0);
-            emission = max(emission, lightning_segment(ray, branch_a, fork_a, aa, 1.3) * visibility * 0.70);
-            emission = max(emission, lightning_segment(ray, fork_a, tip_a, aa, 0.8) * visibility * 0.52);
-            emission = max(emission, lightning_segment(ray, branch_b, fork_b, aa, 1.1) * visibility * 0.65);
-            emission = max(emission, lightning_segment(ray, fork_b, tip_b, aa, 0.7) * visibility * 0.42);
         }
     }
-    // The sky pass is behind terrain depth: every branch disappears into the
-    // actual visible ridge/shore silhouette instead of ending above the ground.
-    return (vec3<f32>(0.78, 0.87, 1.0) * emission.x * 15.0
-        + vec3<f32>(0.25, 0.43, 0.82) * emission.y * 1.1) * u.storm.w;
+    // Cloud thickness breaks the glow into billows instead of a flat halo.
+    if dot(cloud_glow,cloud_glow)>0.0001 {
+        cloud_glow *= 0.30+weather_cloud_ray(ray,false).y*0.70;
+    }
+    return (vec3<f32>(0.87,0.85,1.0)*emission.x*12.0
+        + vec3<f32>(0.38,0.25,1.0)*emission.y*1.8 + cloud_glow)*u.storm.w;
 }
 
 fn sky_radiance(ray: vec3<f32>) -> vec3<f32> {
