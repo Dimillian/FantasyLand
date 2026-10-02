@@ -21,6 +21,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1337);
     let check = std::env::args().nth(3);
+    if check.as_deref() == Some("regional-studies") {
+        render_checks::regional_studies(seed, &dir);
+        return;
+    }
     if check.as_deref() == Some("lightning-studies") {
         render_checks::lightning_studies(seed, &dir);
         return;
@@ -54,6 +58,20 @@ fn main() {
         generation_time.elapsed(),
         world.hydrology_stats()
     );
+    if check.as_deref() == Some("regional-data") {
+        let falls = world.waterfalls_near(0., 0., 192000.);
+        fs::write(
+            format!("{dir}/falls.json"),
+            serde_json::to_string_pretty(&falls).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "{} falls; {} names",
+            falls.len(),
+            world.named_rivers().len()
+        );
+        return;
+    }
     if check.as_deref() == Some("settlement-data") {
         use fantasy_land::settlements::{dist, segment_rect, Kind};
         let mut summaries = vec![];
@@ -1549,6 +1567,8 @@ fn main() {
                     LandscapeKind::SandstoneCountry => r.rockiness * 7. + (1. - trees) * 3.,
                     LandscapeKind::Meadowlands => (1. - trees) * 10.,
                     LandscapeKind::Alpine => r.rockiness * 5. + s.height / 500.,
+                    LandscapeKind::ChalkDowns => (1. - trees) * 8.,
+                    LandscapeKind::BasaltUplands => r.rockiness * 9.,
                 };
                 if candidates.get(&name).is_none_or(|old| score > old.0) {
                     candidates.insert(name, (score, [x, z]));

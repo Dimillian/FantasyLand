@@ -417,8 +417,20 @@ impl World {
         let poorly_drained = regional.slope < 0.075
             && height < 380.
             && noise(self.seed ^ 0x5357414d, x / 5200., z / 5200.) > 0.52;
+        let shore = if coast.distance < 600.
+            && coast.distance > -90.
+            && height < 12.
+            && river.width > 6.
+            && river.distance < river.width * 3. + 85.
+        {
+            ShoreKind::Estuary
+        } else {
+            coast::regional_shore(self.seed, x, z, coast, &regional)
+        };
         let biome = if height > 2300. || (temperature < 0.26 && height > 1500.) {
             Biome::Alpine
+        } else if matches!(shore, ShoreKind::SaltMarsh | ShoreKind::Estuary) {
+            Biome::Wetland
         } else if temperature > 0.70 && coast.distance < 3800. {
             Biome::TropicalCoast
         } else if moisture > 0.63 && poorly_drained && temperature > 0.40 {
@@ -448,16 +460,7 @@ impl World {
             road,
             road_kind: road_hit.kind.filter(|_| road > 0.),
             ocean,
-            shore: if coast.distance < 260.
-                && coast.distance > -70.
-                && height < 12.
-                && river.width > 6.
-                && river.distance < river.width * 3. + 65.
-            {
-                ShoreKind::Beach
-            } else {
-                coast::regional_shore(self.seed, x, z, coast, &regional)
-            },
+            shore,
             river: water.river,
             water_height: water.water,
             temperature,
@@ -780,13 +783,57 @@ impl World {
     }
 
     /// Top-down RGBA map: east is right; increasing world Z is down (south).
+    pub fn waterfalls_near(&self, x: f32, z: f32, radius: f32) -> Vec<crate::waterfalls::Fall> {
+        self.hydrology
+            .drops_near(x, z, radius)
+            .into_iter()
+            .filter_map(|(id, s)| {
+                let length = distance2(s.a, s.b).sqrt();
+                let lip_t = 0.16;
+                let toe_t = (0.16 + 12. / length).clamp(0.30, 0.55) + 0.06;
+                let at = |t: f32| [lerp(s.a[0], s.b[0], t), lerp(s.a[1], s.b[1], t)];
+                let a = at(lip_t);
+                let b = at(toe_t);
+                let sa = self.natural_sample(a[0], a[1]);
+                let sb = self.natural_sample(b[0], b[1]);
+                if sa.ocean
+                    || sb.ocean
+                    || sa.water_height < sa.height + 0.6
+                    || sb.water_height < sb.height + 0.6
+                    || sa.water_height - sb.water_height < 8.
+                {
+                    return None;
+                }
+                Some(crate::waterfalls::Fall {
+                    id,
+                    lip: [a[0], sa.water_height + 0.06, a[1]],
+                    toe: [b[0], sb.water_height + 0.06, b[1]],
+                    width: lerp(s.width_a, s.width_b, lip_t) * 0.75,
+                })
+            })
+            .collect()
+    }
+    pub fn named_rivers(&self) -> &[(u32, [f32; 2], f32)] {
+        &self.hydrology.named_rivers
+    }
     pub fn map_rgba(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
-        self.map_rgba_impl(cx, cz, span, res, true)
+        self.map_rgba_impl(cx, cz, span, res, true, 0)
     }
     pub fn map_background_rgba(&self, cx: f32, cz: f32, span: f32, res: u32) -> Vec<u8> {
-        self.map_rgba_impl(cx, cz, span, res, false)
+        self.map_rgba_impl(cx, cz, span, res, false, 0)
     }
-    fn map_rgba_impl(&self, cx: f32, cz: f32, span: f32, res: u32, draw_roads: bool) -> Vec<u8> {
+    pub fn map_layer_rgba(&self, cx: f32, cz: f32, span: f32, res: u32, layer: u32) -> Vec<u8> {
+        self.map_rgba_impl(cx, cz, span, res, false, layer.min(2))
+    }
+    fn map_rgba_impl(
+        &self,
+        cx: f32,
+        cz: f32,
+        span: f32,
+        res: u32,
+        draw_roads: bool,
+        layer: u32,
+    ) -> Vec<u8> {
         if res == 0 || !span.is_finite() || span <= 0.0 {
             return Vec::new();
         }
@@ -826,6 +873,11 @@ impl World {
                         c[k] = lerp(detail[k], c[k], generalize);
                     }
                 }
+                if !s.ocean && span < 22000. {
+                    if let Some(f) = crate::countryside::sample(self, x, z, &s) {
+                        c = crate::countryside::tint(c, f);
+                    }
+                }
                 // Ensure rivers remain legible when narrower than a map pixel.
                 let water = s.water_height > s.height;
                 heights[idx] = if s.ocean {
@@ -841,9 +893,33 @@ impl World {
                     c = [0.24, 0.40, 0.47];
                 } else {
                     match s.shore {
-                        ShoreKind::Beach => c = [0.72, 0.65, 0.44],
+                        ShoreKind::Beach | ShoreKind::Dunes => c = [0.72, 0.65, 0.44],
                         ShoreKind::Cliff => c = [0.48, 0.47, 0.41],
+                        ShoreKind::Shingle => c = [0.49, 0.48, 0.40],
+                        ShoreKind::SaltMarsh | ShoreKind::Estuary => c = [0.33, 0.39, 0.26],
                         ShoreKind::None => {}
+                    }
+                }
+                if !s.ocean && !water {
+                    if layer == 1 {
+                        let low = [0.30, 0.43, 0.30];
+                        let high = [0.63, 0.51, 0.38];
+                        let snow = [0.91, 0.92, 0.89];
+                        let t = smooth(0., 2200., relief);
+                        let top = smooth(2200., 4400., relief);
+                        c = std::array::from_fn(|k| lerp(lerp(low[k], high[k], t), snow[k], top));
+                    } else if layer == 2 {
+                        let b = crate::regions::base(self.seed, x, z);
+                        let palette = [
+                            [0.47, 0.48, 0.29],
+                            [0.51, 0.58, 0.64],
+                            [0.73, 0.41, 0.24],
+                            [0.80, 0.78, 0.60],
+                            [0.35, 0.29, 0.43],
+                        ];
+                        c = std::array::from_fn(|k| {
+                            (0..5).map(|i| palette[i][k] * b.weights[i]).sum()
+                        });
                     }
                 }
                 let highland = smooth(420.0, 1000.0, s.height);
@@ -1455,6 +1531,7 @@ mod water_profile_regression {
             let cz = (p[1] / CHUNK_SIZE).floor() as i32;
             let mesh = water_chunk(&world, cx, cz, 0);
             let mut foam_vertices = 0;
+            let mut fall_vertices = 0;
             for v in &mesh.vertices {
                 let speed = v.color[0].hypot(v.color[1]);
                 assert!(v
@@ -1473,7 +1550,11 @@ mod water_profile_regression {
                     );
                     continue;
                 }
-                foam_vertices += 1;
+                if v.uv[1] > 0.5 {
+                    fall_vertices += 1;
+                } else {
+                    foam_vertices += 1;
+                }
                 assert!(speed <= 8.001 && v.color[2] < -1.);
                 let floor = terrain_surface_height_lod(&world, v.position[0], v.position[2], 0);
                 assert!(
@@ -1482,12 +1563,15 @@ mod water_profile_regression {
                 );
             }
             assert!(foam_vertices <= 48 * 9 && foam_vertices % 9 == 0);
+            assert!(fall_vertices <= 2 * 10 * 4 * 6 && fall_vertices % 6 == 0);
             wet_chunks += usize::from(foam_vertices > 0);
             let far = water_chunk(&world, cx, cz, 2);
-            assert!(far
-                .vertices
-                .iter()
-                .all(|v| v.color[0].hypot(v.color[1]) <= 4.501));
+            assert!(
+                far.vertices
+                    .iter()
+                    .all(|v| v.color[0].hypot(v.color[1])
+                        <= if v.uv[1] > 0.5 { 8.001 } else { 4.501 })
+            );
         }
         assert!(
             wet_chunks >= 2,

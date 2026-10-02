@@ -39,7 +39,7 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_lighting_mode(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_layer_data(){return new Uint8Array(320*320*4);},map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_lighting_mode(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
@@ -644,3 +644,13 @@ console.log('Single-view rendering passed: pause, input takeover, stale claims a
 
 }
 main().then(verifyAudioSettings).then(verifyStreamingLifecycle).catch(error=>{console.error(error);process.exitCode=1;});
+
+// Survey controls retain normal form keyboard behavior and update the legend.
+ids['atlas-layer'].tagName='SELECT';
+ids['atlas-layer'].value='2';ids['atlas-layer'].fire('change');
+assert.equal(ids['atlas-legend'].classList.contains('hidden'),true);
+assert.match(ids['atlas-layer-key'].textContent,/basalt/);
+ids['atlas-layer'].value='0';ids['atlas-layer'].fire('change');
+assert.equal(ids['atlas-legend'].classList.contains('hidden'),false);
+run('map.dirty=false');ids['atlas-names'].fire('change');assert.equal(run('map.dirty'),true);
+console.log('PASS: atlas survey legend and geography-name redraw controls.');

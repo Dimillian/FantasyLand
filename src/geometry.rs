@@ -103,7 +103,10 @@ struct GroundVertex {
 }
 fn ground_vertex(world: &World, x: f32, z: f32) -> GroundVertex {
     let s = world.sample(x, z);
-    let color = ecology::ground_color(world.seed, x, z, &s);
+    let mut color = ecology::ground_color(world.seed, x, z, &s);
+    if let Some(f) = crate::countryside::sample(world, x, z, &s) {
+        color = crate::countryside::tint(color, f);
+    }
     let wet = mix(color, [0.34, 0.34, 0.25], (s.river * 0.7).clamp(0.0, 0.7));
     // Road paint refines only affected terrain cells before adding road pigment;
     // coarse terrain vertices alone would inflate paths into triangular patches.
@@ -469,6 +472,7 @@ pub fn water_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
         }
     }
     append_drop_sheets(world, &mut mesh, lod);
+    crate::waterfalls::append(world, &mut mesh, cx, cz, lod);
     mesh
 }
 /// Classify whole flat triangles, so outlet ramps never create invisible ice
@@ -863,8 +867,32 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         && sample.shore == crate::world::ShoreKind::None;
     let species = random(seed, 6);
     let detail = random(seed, 8);
-    let kind = if sample.shore != crate::world::ShoreKind::None {
-        if pick < 0.035 {
+    let field = crate::countryside::sample(world, x, z, &sample);
+    let kind = if let Some(f) = field.filter(|f| f.strength > 0.35) {
+        if f.track > 0.35 {
+            return None;
+        }
+        if f.edge > 0.20 {
+            PropKind::Shrub
+        } else {
+            match f.usage {
+                crate::countryside::Use::Orchard
+                    if gx.rem_euclid(2) == 0 && gz.rem_euclid(2) == 0 =>
+                {
+                    PropKind::Broadleaf
+                }
+                crate::countryside::Use::Coppice if pick < 0.40 => PropKind::Birch,
+                _ => return None,
+            }
+        }
+    } else if sample.shore != crate::world::ShoreKind::None {
+        if matches!(
+            sample.shore,
+            crate::world::ShoreKind::SaltMarsh | crate::world::ShoreKind::Estuary
+        ) && pick < 0.55
+        {
+            PropKind::Reed
+        } else if pick < 0.035 {
             PropKind::Boulder
         } else {
             return None;
@@ -955,7 +983,7 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
     } else {
         0.
     };
-    let prop = Prop {
+    let mut prop = Prop {
         position: [x, terrain_surface_height(world, x, z) - 0.08, z],
         scale: (0.65 + random(seed, 4) * 0.87) * grove_scale,
         canopy: if matches!(kind, PropKind::Pine | PropKind::Fir) {
@@ -981,6 +1009,18 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
             formation,
         },
     };
+    if let Some(f) = field.filter(|f| f.strength > 0.35) {
+        prop.style.formation = false;
+        prop.style.ancient = 0.;
+        prop.style.stature = 0.72;
+        if f.usage == crate::countryside::Use::Orchard {
+            prop.scale *= 0.52;
+            prop.canopy = 1.12;
+        }
+        if prop.kind == PropKind::Shrub {
+            prop.scale = 0.85 + random(seed, 8) * 0.40;
+        }
+    }
     if matches!(
         prop.kind,
         PropKind::Pine
@@ -1755,7 +1795,7 @@ fn ground_cover_lod(world: &World, mesh: &mut MeshData, ox: f32, oz: f32, lod: u
             if sample.road > 0.10 || sample.water_height > sample.height + 0.15 {
                 continue;
             }
-            let cover = ecology::sample(world.seed, x, z, &sample);
+            let cover = crate::countryside::cover(world, x, z, &sample);
             if random(seed, 304) > cover.grass_density {
                 continue;
             }

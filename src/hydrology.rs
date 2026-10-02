@@ -395,6 +395,7 @@ pub struct Hydrology {
     seed: u32,
     pub segments: Vec<Segment>,
     pub lakes: Vec<LakeInfo>,
+    pub named_rivers: Vec<(u32, [f32; 2], f32)>,
     lake_grid: Vec<u16>,
     lake_strength: Vec<u8>,
     buckets: Vec<Vec<u32>>,
@@ -479,7 +480,7 @@ fn reach_width(flow: f32, level: f32) -> f32 {
     // A low-gradient tidal reach broadens smoothly as it approaches sea level.
     // Accumulation and downstream drop only increase this width, preserving
     // confluence continuity and the no-narrowing downstream invariant.
-    width(flow) * (1. + smooth(180., 2200., flow) * (1. - smooth(2., 30., level)) * 0.85)
+    width(flow) * (1. + smooth(180., 2200., flow) * (1. - smooth(2., 30., level)) * 1.40)
 }
 fn bezier(a: [f32; 2], b: [f32; 2], ta: [f32; 2], tb: [f32; 2], t: f32) -> [f32; 2] {
     let length = distance2(a, b).sqrt();
@@ -942,7 +943,32 @@ impl Hydrology {
                 }
             }
         }
-        let retained_bytes = lake_strength.capacity()
+        // One name per drainage catchment, anchored on its strongest inland
+        // reach. The temporary basin array is discarded after generation.
+        let mut roots = vec![NONE; size];
+        let mut river_anchors = std::collections::BTreeMap::<u32, (f32, [f32; 2], f32)>::new();
+        for &id in &order {
+            let i = id as usize;
+            let r = receiver[i];
+            roots[i] = if r == NONE { id } else { roots[r as usize] };
+            if !active[i] || accumulation[i] < 650. || water_level[i] < 8. {
+                continue;
+            }
+            let score = accumulation[i].sqrt() * (0.5 + smooth(8., 90., water_level[i]) * 0.5);
+            let entry = river_anchors
+                .entry(roots[i])
+                .or_insert((0., positions[i], 0.));
+            if score > entry.0 {
+                *entry = (score, positions[i], accumulation[i]);
+            }
+        }
+        let named_rivers: Vec<_> = river_anchors
+            .into_iter()
+            .map(|(id, (_, p, f))| (hash(seed ^ 0xA71A, id as i32, 0), p, f))
+            .collect();
+        drop(roots);
+        let retained_bytes = named_rivers.capacity() * std::mem::size_of::<(u32, [f32; 2], f32)>()
+            + lake_strength.capacity()
             + lake_grid.capacity() * std::mem::size_of::<u16>()
             + lakes.capacity() * std::mem::size_of::<LakeInfo>()
             + segments.capacity() * std::mem::size_of::<Segment>()
@@ -984,6 +1010,7 @@ impl Hydrology {
             seed,
             segments,
             lakes,
+            named_rivers,
             lake_grid,
             lake_strength,
             buckets,
@@ -1074,6 +1101,25 @@ impl Hydrology {
         let t = self.terrain(x, z, height_at());
         (t.water > t.height && (t.water - lake.surface).abs() < 8.).then_some(lake)
     }
+    pub fn drops_near(&self, x: f32, z: f32, radius: f32) -> Vec<(u32, Segment)> {
+        let mut ids = std::collections::BTreeSet::new();
+        for j in bucket(z - radius)..=bucket(z + radius) {
+            for i in bucket(x - radius)..=bucket(x + radius) {
+                for &id in &self.buckets[j * BUCKETS + i] {
+                    let s = &self.segments[id as usize];
+                    if s.cascade > 0.56
+                        && s.level_a - s.level_b > 12.
+                        && distance2(s.a, [x, z]).sqrt() < radius + 100.
+                    {
+                        ids.insert(id);
+                    }
+                }
+            }
+        }
+        ids.into_iter()
+            .map(|id| (id, self.segments[id as usize]))
+            .collect()
+    }
     pub fn nearest(&self, x: f32, z: f32) -> Hit {
         let mut best = Hit::none();
         for &id in &self.buckets[bucket(z) * BUCKETS + bucket(x)] {
@@ -1112,7 +1158,12 @@ impl Hydrology {
             if h.distance >= segment.influence {
                 continue;
             }
-            let depth = (2.2 + h.width * 0.09).min(9.0);
+            let length = distance2(segment.a, segment.b).sqrt().max(0.1);
+            let t =
+                ((x - segment.a[0]) * h.tangent[0] + (z - segment.a[1]) * h.tangent[1]) / length;
+            let foot = (0.16 + 12. / length).clamp(0.30, 0.55) + 0.12;
+            let scour = segment.cascade * 3.5 * (1. - smooth(0.03, 0.22, (t - foot).abs()));
+            let depth = (2.2 + h.width * 0.09).min(9.0) + scour;
             let bank_end = h.width * 1.9;
             let bank = smooth(h.width * 0.70, bank_end, h.distance);
             let floor = h.level - depth;
@@ -1179,6 +1230,20 @@ impl Hydrology {
             );
             let protection = 1.0 - smooth(1.90, 2.60, proximity);
             result.height = lerp(shaped, channel, protection);
+            // Rare sheltered tidal mouths deposit a bar beside the thalweg.
+            // Both distributary gaps share one continuous sea-level surface.
+            if level < 3. && result.nearest.width > 22. && proximity > 0.22 && proximity < 0.82 {
+                let c = super::coast::info(self.seed, x, z);
+                let exposed = super::coast::wave_exposure(self.seed, x, z);
+                let along = (x * result.nearest.tangent[0] + z * result.nearest.tangent[1]) / 110.;
+                let bar = smooth(0.50, 0.73, noise(self.seed ^ 0xD317, along, (x - z) / 320.))
+                    * smooth(0.22, 0.45, proximity)
+                    * (1. - smooth(0.62, 0.82, proximity))
+                    * smooth(10., 80., c.distance)
+                    * (1. - smooth(220., 420., c.distance))
+                    * (1. - smooth(0.35, 0.53, exposed));
+                result.height = lerp(result.height, level + 0.38, bar);
+            }
             if proximity < 1.90 {
                 result.water = level;
             }

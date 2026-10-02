@@ -419,7 +419,15 @@ fn water_color(world: vec3<f32>, distance: f32, channel: vec3<f32>, footprint: f
     let whitecap = ocean * smoothstep(0.48, 0.90, wind) * smoothstep(0.91, 0.995, sin(phase_a))
                  * broken * broad * (1.0 - smoothstep(900.0, 2800.0, distance));
     let cascade = sheet * (0.48 + 0.52 * riffle) * (0.42 + broken * 0.58) * near;
-    let foam = clamp(turbulent * 0.64 + surf * 0.64 + whitecap * 0.28 + cascade * 0.84 + local.foam * fine * 0.72, 0.0, 0.92);
+    // Falling sheets use their actual vertical surface, with downwards bands
+    // in world Y. Ordinary flat currents keep the existing bounded advection.
+    let falling = sheet * (1.0-smoothstep(0.60,0.93,abs(surface_normal.y)));
+    var fall_foam = 0.0;
+    if falling > 0.01 {
+        let streak = noise(vec2<f32>(dot(world.xz,vec2<f32>(0.73,0.68))*2.7,world.y*0.32+time*2.8));
+        fall_foam = falling*(0.28+0.54*smoothstep(0.2,0.72,streak));
+    }
+    let foam = clamp(fall_foam + turbulent * 0.64 + surf * 0.64 + whitecap * 0.28 + cascade * (1.0-falling) * 0.84 + local.foam * fine * 0.72, 0.0, 0.92);
     let foam_light = (u.ambient.rgb * 0.64 + u.direct.rgb * u.direct.w * nl * 0.48 * visibility)
                    * vec3<f32>(0.80, 0.88, 0.84);
     color = mix(color, foam_light, foam);

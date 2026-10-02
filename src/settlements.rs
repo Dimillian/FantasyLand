@@ -420,6 +420,30 @@ impl Catalog {
         }
         result
     }
+    /// Allocation-free hinterland lookup; no lazy building generation.
+    pub fn rural_owner(&self, x: f32, z: f32) -> Option<&Entry> {
+        let mut best = None;
+        let mut score = f32::MAX;
+        for i in bucket(x - 1550.)..=bucket(x + 1550.) {
+            for j in bucket(z - 1550.)..=bucket(z + 1550.) {
+                if let Some(ids) = self.buckets.get(&(i, j)) {
+                    for &id in ids {
+                        let e = &self.entries[id];
+                        let reach = crate::countryside::reach(e);
+                        let d = dist([x, z], [e.site.x, e.site.z]);
+                        if d < e.radius + 22. {
+                            return None;
+                        }
+                        if d < reach && d > e.radius + 22. && d / reach < score {
+                            score = d / reach;
+                            best = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
     pub fn near(&self, x: f32, z: f32, radius: f32) -> Vec<&Entry> {
         if !radius.is_finite() || radius < 0. {
             return vec![];

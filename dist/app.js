@@ -474,7 +474,7 @@ function scheduleMapData(delay = 100) {
     try {
       const res = map.span > 25000 ? 384 : 320;
       // The engine returns RGBA for a north-up square of the requested span.
-      const pixels = game.map_data(map.x, map.z, map.span, res);
+      const pixels = game.map_layer_data(map.x, map.z, map.span, res, Number($('atlas-layer').value));
       const image = document.createElement('canvas');
       image.width = res; image.height = res;
       image.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), res, res), 0, 0);
@@ -486,6 +486,8 @@ function scheduleMapData(delay = 100) {
         landmarks: (features.landmarks || []).map((f) => normalizeFeature(f, 'landmark')),
         roads: features.roads || [],
         routes: Array.isArray(features.routes) ? features.routes : null,
+        buildings: features.buildings || [], streets: features.streets || [],
+        geography: features.geography || [],
       };
       map.dirty = true;
     } catch (error) {
@@ -572,6 +574,23 @@ function drawMap(now) {
   }
   const visible = [];
   const occupied = [];
+  if ($('atlas-names').checked) {
+    ctx.font = `${map.span>170000?10:12}px "Marches Pixel", monospace`; ctx.textAlign='center';
+    const markers=[...map.features.sites,...map.features.landmarks].map(f=>worldToScreen(f.x,f.z));
+    const you=worldToScreen(state.x||0,state.z||0);
+    for (const f of map.features.geography || []) {
+      const anchor=worldToScreen(f.x,f.z), width=ctx.measureText(f.name).width;
+      const p=[0,-24,24,-48,48].map(dy=>({x:anchor.x,y:anchor.y+dy})).find(p=>
+        p.x>width/2+12 && p.x<w-width/2-12 && p.y>35 && p.y<h-40 &&
+        !(Math.abs(you.x-p.x)<width/2+20 && Math.abs(you.y-p.y)<32) &&
+        !markers.some(q=>Math.abs(q.x-p.x)<width/2+7 && Math.abs(q.y-(p.y-4))<13) &&
+        !occupied.some(q=>Math.abs(q.x-p.x)<Math.max(120,(width+(q.width||130))/2+10)&&Math.abs(q.y-p.y)<34));
+      if(!p)continue;
+      ctx.lineWidth=3;ctx.strokeStyle='#172c2ce6';ctx.strokeText(f.name,p.x,p.y);
+      ctx.fillStyle=(f.kind==='river'||f.kind==='lake')?'#acd7dd':'#e5d5ac';ctx.fillText(f.name,p.x,p.y);
+      occupied.push({...p,width});
+    }
+  }
   const features = [...map.features.sites.map((f) => ({ ...f, isSite: true })), ...map.features.landmarks];
   for (const feature of features) {
     const p = worldToScreen(feature.x, feature.z);
@@ -1460,5 +1479,13 @@ $('study-form').addEventListener('submit',event=>{
   closeModal(); clearMovement(); state=game.state(); saveProgress();
   toast('Light study · walk anywhere from here');
 });
+
+
+$('atlas-layer').addEventListener('change',()=>{
+  $('atlas-legend').classList.toggle('hidden',Number($('atlas-layer').value)!==0);
+  $('atlas-layer-key').textContent=['Habitats, shores & farmland','Green lowlands → ochre heights → white summits','Olive loam · blue-grey granite · red sandstone · ivory chalk · violet basalt'][Number($('atlas-layer').value)];
+  scheduleMapData(0);
+});
+$('atlas-names').addEventListener('change',()=>{map.dirty=true;});
 
 boot();

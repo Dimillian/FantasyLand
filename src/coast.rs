@@ -10,6 +10,10 @@ pub enum ShoreKind {
     None,
     Beach,
     Cliff,
+    Dunes,
+    Shingle,
+    SaltMarsh,
+    Estuary,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Info {
@@ -56,7 +60,19 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
         (63000., -19000., 69000., 43000., 0.22),
         (35000., 59000., 59000., 69000., -0.3),
         (-63000., 47000., 55000., 43000., 0.35),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (cx, cz, rx, rz, a))| {
+        let r = |k| rand01(hash(seed ^ 0x6D41, i as i32, k));
+        (
+            cx + (r(0) - 0.5) * 18000.,
+            cz + (r(1) - 0.5) * 18000.,
+            rx * (0.82 + r(2) * 0.24),
+            rz * (0.82 + r(3) * 0.24),
+            a + (r(4) - 0.5) * 0.62,
+        )
+    }) {
         mainland = union(mainland, ellipse(wx, wz, cx, cz, rx, rz, angle), 4200.);
     }
     // Every bay opens onto the surrounding ocean, avoiding inland sea holes.
@@ -65,7 +81,19 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
         (124000., 36000., 47000., 24000., 0.22),
         (18000., -106000., 32000., 30000., 0.1),
         (82000., 119000., 35000., 42000., -0.32),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (cx, cz, rx, rz, a))| {
+        let r = |k| rand01(hash(seed ^ 0x6D42, i as i32, k));
+        (
+            cx,
+            cz,
+            rx * (0.72 + r(0) * 0.55),
+            rz * (0.72 + r(1) * 0.55),
+            a + (r(2) - 0.5) * 0.45,
+        )
+    }) {
         mainland = mainland.min(-ellipse(wx, wz, cx, cz, rx, rz, angle));
     }
     mainland += detail(seed, wx, wz);
@@ -73,7 +101,7 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
     let mut id = 0;
     // Envelopes are deliberately separated by generous straits. Seed variation
     // changes coast shapes and orientation while keeping the component budget.
-    for (index, (cx, cz, rx, rz, angle)) in [
+    for (index, (_cx, _cz, rx, rz, angle)) in [
         (-158000., 42000., 15500., 21000., -0.35),
         (-18000., -155000., 23000., 17500., 0.25),
         (154000., -86000., 18000., 22500., -0.3),
@@ -84,9 +112,8 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
     .enumerate()
     {
         let salt = index as i32;
-        let cx = cx + (rand01(hash(seed ^ 0x6401, salt, 1)) - 0.5) * 3500.;
-        let cz = cz + (rand01(hash(seed ^ 0x6402, salt, 2)) - 0.5) * 3500.;
-        let scale = 0.94 + rand01(hash(seed ^ 0x6403, salt, 3)) * 0.12;
+        let [cx, cz] = island_center(seed, index);
+        let scale = 0.88 + rand01(hash(seed ^ 0x6403, salt, 3)) * 0.18;
         let angle = angle + (rand01(hash(seed ^ 0x6404, salt, 4)) - 0.5) * 0.30;
         let (sin, cos) = angle.sin_cos();
         let dx = wx - cx;
@@ -98,45 +125,47 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
         let shape = |cx: f32, cz: f32, sx: f32, sz: f32, a: f32| {
             ellipse(x, z, cx * rx, cz * rz, sx * rx, sz * rz, a)
         };
-        let (core, lobe_a, lobe_b, bay) = match index {
-            // A crooked north-south crescent, with a narrow southern tail.
-            0 => (
-                shape(0., 0., 0.72, 0.78, 0.),
-                shape(-0.18, -0.44, 0.65, 0.55, -0.20),
-                shape(0.28, 0.55, 0.43, 0.60, 0.40),
-                shape(0.65, 0.05, 0.62, 0.46, 0.15),
-            ),
-            // A broad, two-lobed island with a long eastern headland.
-            1 => (
-                shape(0., 0., 0.85, 0.65, 0.),
-                shape(-0.50, -0.22, 0.72, 0.60, -0.15),
-                shape(0.72, 0.20, 0.62, 0.38, 0.12),
-                shape(-0.08, -0.72, 0.45, 0.66, -0.1),
-            ),
-            // An elongated ridge with a deep western inlet and offset ends.
-            2 => (
-                shape(0., 0., 0.60, 0.82, 0.),
-                shape(-0.25, -0.47, 0.70, 0.59, -0.20),
-                shape(0.26, 0.48, 0.55, 0.58, 0.35),
-                shape(-0.68, 0.10, 0.45, 0.62, -0.10),
-            ),
-            // Two unequal arms form an asymmetric branching peninsula.
-            3 => (
-                shape(0., 0., 0.72, 0.60, 0.),
-                shape(-0.62, 0.20, 0.63, 0.40, -0.15),
-                shape(0.55, -0.29, 0.65, 0.50, 0.20),
-                shape(0.05, 0.66, 0.48, 0.52, 0.10),
-            ),
-            // A large western mass curls around a deeply indented northeast bay.
-            _ => (
-                shape(0., 0., 0.70, 0.75, 0.),
-                shape(-0.56, -0.02, 0.60, 0.72, -0.25),
-                shape(0.48, 0.37, 0.60, 0.45, 0.30),
-                shape(0.40, -0.70, 0.60, 0.60, -0.20),
-            ),
-        };
+        let (core, lobe_a, lobe_b, bay) =
+            match (index + (hash(seed ^ 0x6D43, salt, 0) % 5) as usize) % 5 {
+                // A crooked north-south crescent, with a narrow southern tail.
+                0 => (
+                    shape(0., 0., 0.72, 0.78, 0.),
+                    shape(-0.18, -0.44, 0.65, 0.55, -0.20),
+                    shape(0.28, 0.55, 0.43, 0.60, 0.40),
+                    shape(0.65, 0.05, 0.62, 0.46, 0.15),
+                ),
+                // A broad, two-lobed island with a long eastern headland.
+                1 => (
+                    shape(0., 0., 0.85, 0.65, 0.),
+                    shape(-0.50, -0.22, 0.72, 0.60, -0.15),
+                    shape(0.72, 0.20, 0.62, 0.38, 0.12),
+                    shape(-0.08, -0.72, 0.45, 0.66, -0.1),
+                ),
+                // An elongated ridge with a deep western inlet and offset ends.
+                2 => (
+                    shape(0., 0., 0.60, 0.82, 0.),
+                    shape(-0.25, -0.47, 0.70, 0.59, -0.20),
+                    shape(0.26, 0.48, 0.55, 0.58, 0.35),
+                    shape(-0.68, 0.10, 0.45, 0.62, -0.10),
+                ),
+                // Two unequal arms form an asymmetric branching peninsula.
+                3 => (
+                    shape(0., 0., 0.72, 0.60, 0.),
+                    shape(-0.62, 0.20, 0.63, 0.40, -0.15),
+                    shape(0.55, -0.29, 0.65, 0.50, 0.20),
+                    shape(0.05, 0.66, 0.48, 0.52, 0.10),
+                ),
+                // A large western mass curls around a deeply indented northeast bay.
+                _ => (
+                    shape(0., 0., 0.70, 0.75, 0.),
+                    shape(-0.56, -0.02, 0.60, 0.72, -0.25),
+                    shape(0.48, 0.37, 0.60, 0.45, 0.30),
+                    shape(0.40, -0.70, 0.60, 0.60, -0.20),
+                ),
+            };
         let mut island = union(union(core, lobe_a, 1500.), lobe_b, 1200.).min(-bay);
         island += detail(seed ^ (index as u32 * 0x1731 + 0x6511), wx, wz)
+            * 0.5
             * (1. - smooth(10000., 16000., island.abs()));
         if island > best {
             best = island;
@@ -147,6 +176,21 @@ pub fn info(seed: u32, x: f32, z: f32) -> Info {
         distance: best.min(12000.),
         landmass_id: (best >= 0.).then_some(id),
     }
+}
+/// Shared with mountain descriptors, so island ranges follow seed variation.
+pub fn island_center(seed: u32, index: usize) -> [f32; 2] {
+    let centers = [
+        [-158000., 42000.],
+        [-18000., -155000.],
+        [154000., -86000.],
+        [149000., 131000.],
+        [-38000., 159000.],
+    ];
+    let c = centers[index % 5];
+    [
+        c[0] + (rand01(hash(seed ^ 0x6401, index as i32, 1)) - 0.5) * 10000.,
+        c[1] + (rand01(hash(seed ^ 0x6402, index as i32, 2)) - 0.5) * 10000.,
+    ]
 }
 pub fn landmass_id(seed: u32, x: f32, z: f32) -> Option<u32> {
     info(seed, x, z).landmass_id
@@ -257,7 +301,7 @@ mod tests {
             assert_eq!(
                 components.len(),
                 6,
-                "unexpected detached rocks or joined islands"
+                "seed {seed}: unexpected detached rocks or joined islands: {components:?}"
             );
             assert!(min_edge_depth > 190., "world border must be deep ocean");
             for island in 1..=5 {
@@ -372,15 +416,24 @@ pub fn regional_shore(
     c: Info,
     region: &crate::regions::Base,
 ) -> ShoreKind {
-    if c.distance < -70. || c.distance > 300. {
+    if c.distance < -70. || c.distance > 750. {
         return ShoreKind::None;
     }
     let (cliff, sediment) = coastal_profile(seed, x, z, region);
+    let wave = wave_exposure(seed, x, z);
+    if cliff < 0.32 && wave < 0.44 && sediment > 0.50 && c.distance < 380. {
+        return ShoreKind::SaltMarsh;
+    }
+    if cliff < 0.38 && sediment > 0.46 && c.distance > 110. && c.distance < 700. {
+        return ShoreKind::Dunes;
+    }
     if c.distance > lerp(120., 280., sediment.max(cliff)) {
         return ShoreKind::None;
     }
     if cliff > 0.47 {
         ShoreKind::Cliff
+    } else if wave > 0.60 && region.weights[1] + region.weights[3] + region.weights[4] > 0.42 {
+        ShoreKind::Shingle
     } else {
         ShoreKind::Beach
     }
@@ -431,5 +484,62 @@ pub fn regional_elevation(
     let rock = platform
         + region.height * 0.22 * smooth(shelf_width, shelf_width + cliff_rise, d)
         + (region.height * 0.78 - platform) * smooth(350., 4400., d);
-    lerp(beach + dune, rock, cliff)
+    let dune = dune * (1.3 + sediment * 1.5);
+    let marsh = (1. - smooth(0.30, 0.48, wave_exposure(seed, x, z)))
+        * (1. - smooth(0.24, 0.36, cliff))
+        * smooth(0.46, 0.61, sediment);
+    let tidal = 0.35 * smooth(0., 25., d)
+        + 1.8 * smooth(0., 340., d)
+        + (region.height - 2.15) * smooth(330., 5500., d);
+    let ground = lerp(lerp(beach + dune, rock, cliff), tidal, marsh);
+    // Sheltered back-barrier pockets. Their salt-water plane is the same sea
+    // level as the shore; the dune ridge remains between lagoon and beach.
+    let pocket = smooth(0.60, 0.76, noise(seed ^ 0x6695, x / 900., z / 900.));
+    let lagoon = (1. - smooth(0.28, 0.47, wave_exposure(seed, x, z)))
+        * (1. - smooth(0.15, 0.32, cliff))
+        * smooth(0.44, 0.65, sediment)
+        * pocket
+        * smooth(110., 200., d)
+        * (1. - smooth(340., 460., d));
+    lerp(ground, -2.4, lagoon)
+}
+
+#[cfg(test)]
+mod regional_coast_checks {
+    use super::*;
+    #[test]
+    fn regional_shores_include_dunes_marsh_shingle_and_sheltered_lagoons() {
+        let seed = 1337;
+        let mut kinds = std::collections::BTreeSet::new();
+        let mut lagoons = 0;
+        for i in 0..360 {
+            let a = i as f32 * std::f32::consts::TAU / 360.;
+            let (dx, dz) = a.sin_cos();
+            let (mut lo, mut hi) = (0., 155000.);
+            for _ in 0..20 {
+                let r = (lo + hi) * 0.5;
+                if landmass_id(seed, dx * r, dz * r) == Some(0) {
+                    lo = r;
+                } else {
+                    hi = r;
+                }
+            }
+            for d in [40., 120., 200., 280., 360., 480., 650.] {
+                let x = dx * (lo - d);
+                let z = dz * (lo - d);
+                let c = info(seed, x, z);
+                let b = crate::regions::base(seed, x, z);
+                kinds.insert(format!("{:?}", regional_shore(seed, x, z, c, &b)));
+                let h = regional_elevation(seed, x, z, c, &b);
+                assert!(h.is_finite());
+                if c.distance > 100. && h < -0.2 {
+                    lagoons += 1;
+                }
+            }
+        }
+        for kind in ["Dunes", "SaltMarsh", "Shingle", "Cliff", "Beach"] {
+            assert!(kinds.contains(kind), "missing {kind}");
+        }
+        assert!(lagoons > 0, "no actual back-barrier water pockets");
+    }
 }

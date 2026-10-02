@@ -378,3 +378,52 @@ pub fn lightning_studies(seed: u32, dir: &str) {
     )
     .unwrap();
 }
+
+pub fn regional_studies(seed: u32, dir: &str) {
+    let w = World::new(seed);
+    let scenes = fantasy_land::regional_tour::destinations(&w);
+    fs::write(
+        format!("{dir}/destinations.json"),
+        serde_json::to_string_pretty(&scenes).unwrap(),
+    )
+    .unwrap();
+    let mut r = pollster::block_on(Renderer::headless(1280, 720)).unwrap();
+    r.set_quality(1);
+    r.set_antialiasing(1);
+    r.set_filter(1, 0.85);
+    r.set_ground_cover_density(4.);
+    r.set_lighting_mode(7);
+    for d in &scenes {
+        let eye = Vec3::new(d.x, geometry::walk_height(&w, d.x, d.z) + 1.72, d.z);
+        r.clear_chunks();
+        r.set_weather_mode(1);
+        for _ in 0..30 {
+            r.update_weather(&w, eye, 9., 1.);
+        }
+        r.update_chunks(&w, eye, true);
+        while r.pending_count() > 0 {
+            r.update_chunks(&w, eye, false);
+        }
+        for _ in 0..90 {
+            r.advance_time(1. / 60.);
+            r.render(eye, d.yaw, d.pitch, 9.).unwrap();
+            r.device.poll(wgpu::PollType::Wait).unwrap();
+        }
+        png(&format!("{dir}/{}.png", d.name), &r.capture_rgba().unwrap());
+        println!("captured {} at {},{}", d.name, d.x, d.z);
+    }
+    for (i, name) in ["landscape", "elevation", "geology"]
+        .into_iter()
+        .enumerate()
+    {
+        let pixels = w.map_layer_rgba(0., 0., 384000., 768, i as u32);
+        let mut e = png::Encoder::new(
+            BufWriter::new(File::create(format!("{dir}/{name}.png")).unwrap()),
+            768,
+            768,
+        );
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(&pixels).unwrap();
+    }
+}

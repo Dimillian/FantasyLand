@@ -124,7 +124,9 @@ fn floor(s: &Sample, w: &WeatherState, y: f32) -> &'static str {
     if w.snow_cover > 0.22 || (matches!(s.biome, Biome::Alpine) && s.temperature < 0.22) {
         return "snow";
     }
-    if s.shore == ShoreKind::Beach || matches!(s.biome, Biome::Desert | Biome::TropicalCoast) {
+    if matches!(s.shore, ShoreKind::Beach | ShoreKind::Dunes)
+        || matches!(s.biome, Biome::Desert | Biome::TropicalCoast)
+    {
         return "sand";
     }
     if matches!(s.biome, Biome::Swamp | Biome::Wetland)
@@ -132,7 +134,7 @@ fn floor(s: &Sample, w: &WeatherState, y: f32) -> &'static str {
     {
         return "mud";
     }
-    if s.road > 0.3 {
+    if s.road > 0.3 || s.shore == ShoreKind::Shingle {
         return "gravel";
     }
     if matches!(s.biome, Biome::Alpine) || s.shore == ShoreKind::Cliff {

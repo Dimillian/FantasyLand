@@ -1,7 +1,7 @@
 //! Small, immutable ground-cover tiles; density only changes an instance prefix.
 use crate::{
-    ecology, geometry,
-    world::{hash, rand01, ShoreKind, World},
+    geometry,
+    world::{hash, rand01, World},
 };
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
@@ -176,7 +176,7 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
             {
                 continue;
             }
-            let ecology = ecology::sample(world.seed, x, z, &sample);
+            let ecology = crate::countryside::cover(world, x, z, &sample);
             let dx = surface_height(world.seed, origin, &heights, [local[0] + 0.5, local[1]])
                 - surface_height(world.seed, origin, &heights, [local[0] - 0.5, local[1]]);
             let dz = surface_height(world.seed, origin, &heights, [local[0], local[1] + 0.5])
@@ -891,6 +891,7 @@ fn visible(min: Vec3, max: Vec3, eye: Vec3, projection: Mat4) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ecology, world::ShoreKind};
     #[test]
     fn distance_lods_preserve_foreground_and_taper_to_zero() {
         assert_eq!(distance_density(80.), 1.);
@@ -1169,7 +1170,10 @@ mod tests {
                         tile.origin[1] + plant.placement[1],
                     );
                     assert!(!terrain.ocean);
-                    if terrain.shore != ShoreKind::None {
+                    if matches!(
+                        terrain.shore,
+                        ShoreKind::Beach | ShoreKind::Cliff | ShoreKind::Shingle
+                    ) {
                         assert_eq!(plant.data[1] / VARIANTS, 0);
                         assert!(
                             terrain.height > 2.0 && terrain.water_height < terrain.height - 0.3

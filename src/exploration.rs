@@ -24,8 +24,10 @@ pub fn destinations(world: &World) -> Vec<Destination> {
         LandscapeKind::SandstoneCountry,
         LandscapeKind::Meadowlands,
         LandscapeKind::Alpine,
+        LandscapeKind::ChalkDowns,
+        LandscapeKind::BasaltUplands,
     ];
-    let mut chosen: [Option<(f32, Destination)>; 7] = std::array::from_fn(|_| None);
+    let mut chosen: [Option<(f32, Destination)>; 9] = std::array::from_fn(|_| None);
     let biome_kinds = [
         crate::world::Biome::Desert,
         crate::world::Biome::Swamp,
@@ -112,6 +114,8 @@ pub fn destinations(world: &World) -> Vec<Destination> {
                     LandscapeKind::SandstoneCountry => r.rockiness * 7.0 + (1.0 - trees) * 3.0,
                     LandscapeKind::Meadowlands => (1.0 - trees) * 10.0,
                     LandscapeKind::Alpine => r.rockiness * 5.0 + s.height / 500.0,
+                    LandscapeKind::ChalkDowns => (1. - trees) * 8. + r.soil * 3.,
+                    LandscapeKind::BasaltUplands => r.rockiness * 9. + s.height / 500.,
                 };
             let i = kinds.iter().position(|k| *k == r.kind).unwrap();
             if chosen[i].as_ref().is_none_or(|old| score > old.0) {
@@ -213,6 +217,7 @@ pub fn destinations(world: &World) -> Vec<Destination> {
             }
         }
     }
+    result.extend(crate::regional_tour::destinations(world));
     result
 }
 
@@ -348,6 +353,8 @@ mod tests {
             "Desert & badlands",
             "Frozen mountain tarn",
             "Mountain ascent · I",
+            "Cultivated countryside",
+            "River gorge waterfall",
         ] {
             assert!(points.iter().any(|p| p.name == label), "missing {label}");
         }

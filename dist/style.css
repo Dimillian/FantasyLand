@@ -38,3 +38,5 @@
 .conversation-panel .command-footer{padding:9px 18px;font-size:10px;flex-shrink:0}
 .sheet-content,.setting-row{font-size:14px}.setting-row{padding:14px 0}.sheet-content h3{font-size:18px}.modal-header{padding:14px 20px}.modal-header h2{font-size:20px}.settings-disclosure summary{padding:13px 0;font-size:14px}
 @media(max-width:600px){.conversation-body{grid-template-columns:175px minmax(0,1fr)}.conversation-heading{padding:10px 12px}.conversation-heading h2{font-size:18px}.conversation-menu{padding:10px 6px}.conversation-topics button{font-size:12px;line-height:18px;gap:7px;padding:4px 5px}.conversation-text{padding:12px;font-size:12px}.conversation-speaker{font-size:10px}.conversation-panel .command-footer{padding:8px 12px}}
+
+.atlas-layers{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid #bda77b35;margin-bottom:12px;font-size:12px}.atlas-layers label{display:flex;align-items:center;gap:7px;color:#d3bc87}.atlas-layers select{background:#1b2527;color:#e9d6ae;border:1px solid #bda77b60;padding:6px;font:inherit}.atlas-layers p{margin:0;font-size:11px}

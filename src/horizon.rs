@@ -17,6 +17,9 @@ pub fn patch_parts(world: &World, cx: i32, cz: i32) -> [MeshData; 2] {
             let wz = cz as f32 * PATCH_SIZE + z as f32 * PATCH_SIZE / N as f32;
             let sample = world.natural_sample(wx, wz);
             let mut color = ecology::ground_color(world.seed, wx, wz, &sample);
+            if let Some(f) = crate::countryside::sample(world, wx, wz, &sample) {
+                color = crate::countryside::tint(color, f);
+            }
             if sample.height < sample.water_height {
                 color = [0.12, 0.36, 0.44];
             }
@@ -177,7 +180,10 @@ fn canopy_trees(world: &World, cx: i32, cz: i32) -> Vec<CanopyTree> {
                 // verges are subpixel. Coast, water, climate and clearings retain
                 // the same exclusions and density as nearby actual trees.
                 let sample = world.natural_sample(wx, wz);
-                let density = ecology::tree_density(world.seed, wx, wz, &sample);
+                let mut density = ecology::tree_density(world.seed, wx, wz, &sample);
+                if let Some(f) = crate::countryside::sample(world, wx, wz, &sample) {
+                    density *= 1. - f.strength * 0.95;
+                }
                 let occupancy = ((density - 0.035) / 0.76).clamp(0.0, 1.0);
                 if canopy_random(seed, 5) >= occupancy {
                     continue;

@@ -65,11 +65,7 @@ pub fn forest_in(seed: u32, x: f32, z: f32, s: &Sample, region: &Landscape) -> F
     }
     let warp = field(seed ^ 0x46575250, x / 1700., z / 1700.) * 240.;
     let stand = field(seed ^ 0x464f5245, (x + warp) / 780., (z - warp) / 780.);
-    let cool = if s.biome == Biome::PineForest {
-        0.78
-    } else {
-        smooth(0.61, 0.30, s.temperature) * 0.65
-    };
+    let cool = (smooth(0.61, 0.30, s.temperature) * 0.78).max(smooth(850., 1400., s.height) * 0.78);
     let wet = if matches!(s.biome, Biome::Wetland | Biome::Swamp) {
         1.
     } else {
@@ -190,17 +186,24 @@ pub(crate) fn tree_density_in(
     let clearings = smooth(0.54, 0.82, opening);
     let ancient = region.ancient;
     let canopy = (woodland + ancient * 0.18).min(1.0) * (1.0 - clearings * (1.0 - ancient * 0.24));
-    let capacity = match terrain.biome {
-        Biome::Forest | Biome::PineForest => 0.98,
-        Biome::Grassland => 0.24,
-        Biome::Savanna => 0.12,
-        Biome::Jungle => 0.98,
-        Biome::TropicalCoast => 0.52,
-        Biome::Swamp => 0.68,
-        Biome::Wetland => 0.74,
-        Biome::Moor => 0.20,
-        _ => 0.0,
-    };
+    // Climate/stand capacities blend over broad ecotones before labels change.
+    let woods = smooth(0.47, 0.60, terrain.moisture)
+        * smooth(
+            0.25,
+            0.44,
+            crate::world::noise(seed ^ 0x3103, x / 8500., z / 8500.),
+        );
+    let temperate = 0.24 + woods * 0.74;
+    let tropical = smooth(0.66, 0.78, terrain.temperature);
+    let tropic_capacity = 0.12 + smooth(0.52, 0.67, terrain.moisture) * 0.86;
+    let treeline = 1. - smooth(1750., 2250., terrain.height);
+    let drought = smooth(0.30, 0.40, terrain.moisture);
+    let capacity = if matches!(terrain.biome, Biome::Swamp | Biome::Wetland) {
+        0.68
+    } else {
+        temperate * (1. - tropical) + tropic_capacity * tropical
+    } * treeline
+        * drought;
     let moisture = 0.86 + 0.14 * smooth(0.20, 0.60, terrain.moisture);
     let shelter = 1.0 - region.exposure * 0.22;
     (0.002 + canopy.powf(1.35) * capacity * moisture * shelter).min(0.985)
@@ -212,7 +215,11 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
     if terrain.ocean || terrain.shore != ShoreKind::None {
         // Salty exposed sites have sparse tough grass, never inland fern beds.
         let dry = !terrain.ocean && terrain.water_height < terrain.height - 0.3;
-        let density = if dry && terrain.shore == ShoreKind::Beach && terrain.height > 2.0 {
+        let density = if dry && matches!(terrain.shore, ShoreKind::SaltMarsh | ShoreKind::Estuary) {
+            0.22 + clump * 0.40
+        } else if dry && terrain.shore == ShoreKind::Dunes {
+            0.08 + smooth(0.30, 0.7, clump) * 0.26
+        } else if dry && terrain.shore == ShoreKind::Beach && terrain.height > 2.0 {
             0.025 + smooth(0.40, 0.72, clump) * 0.11
         } else if dry
             && terrain.shore == ShoreKind::Cliff
@@ -233,7 +240,11 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
             seedheads: 0.0,
             shrubs: 0.0,
             litter: 0.0,
-            reeds: 0.0,
+            reeds: if dry && matches!(terrain.shore, ShoreKind::SaltMarsh | ShoreKind::Estuary) {
+                0.65
+            } else {
+                0.0
+            },
             cover_color: mix([0.42, 0.49, 0.25], [0.59, 0.61, 0.34], clump),
             flower_group: 0,
             undergrowth: 0.,
@@ -380,32 +391,35 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Ecology {
 /// visible ground to the plants above it. The atlas samples this same palette.
 pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
     let patch = field(seed ^ 0x534f494c, x / 24.0, z / 24.0);
-    if terrain.ocean || terrain.shore == ShoreKind::Beach {
+    if terrain.ocean || matches!(terrain.shore, ShoreKind::Beach | ShoreKind::Dunes) {
         let sand = mix([0.55, 0.50, 0.36], [0.70, 0.64, 0.45], patch);
         return mix([0.34, 0.38, 0.30], sand, smooth(-0.5, 2.8, terrain.height));
     }
     let region = regions::sample(seed, x, z, terrain);
+    if matches!(terrain.shore, ShoreKind::SaltMarsh | ShoreKind::Estuary) {
+        return mix([0.25, 0.29, 0.18], [0.36, 0.42, 0.25], patch);
+    }
+    if terrain.shore == ShoreKind::Shingle {
+        return mix(region.rock_color, [0.43, 0.43, 0.40], patch);
+    }
     if terrain.shore == ShoreKind::Cliff {
         return mix(region.rock_color, [0.48, 0.48, 0.39], 0.10 + patch * 0.10);
     }
     let cover = smooth(0.08, 0.76, tree_density_in(seed, x, z, terrain, &region));
-    let open_color = match terrain.biome {
-        Biome::Grassland | Biome::Forest => [0.39, 0.51, 0.22],
-        Biome::PineForest => [0.38, 0.46, 0.28],
-        Biome::Moor => [0.46, 0.44, 0.31],
-        Biome::Wetland => [0.36, 0.46, 0.26],
-        Biome::Swamp => [0.29, 0.26, 0.18],
-        Biome::Jungle => [0.22, 0.37, 0.18],
-        Biome::TropicalCoast => [0.41, 0.53, 0.25],
-        Biome::Savanna => [0.60, 0.53, 0.25],
-        Biome::Alpine => [0.53, 0.55, 0.46],
-        Biome::Desert => [0.71, 0.57, 0.36],
-    };
-    let forest_floor = if terrain.biome == Biome::PineForest {
-        [0.31, 0.29, 0.18]
-    } else {
-        [0.28, 0.34, 0.15]
-    };
+    // Pigments transition with climate rather than snapping at biome labels.
+    let dry_climate =
+        smooth(0.56, 0.72, terrain.temperature) * (1. - smooth(0.31, 0.55, terrain.moisture));
+    let desert =
+        smooth(0.55, 0.66, terrain.temperature) * (1. - smooth(0.27, 0.37, terrain.moisture));
+    let tropical = smooth(0.66, 0.79, terrain.temperature) * smooth(0.53, 0.68, terrain.moisture);
+    let alpine = smooth(1650., 2300., terrain.height);
+    let cool = 1. - smooth(0.33, 0.47, terrain.temperature);
+    let mut open_color = mix([0.39, 0.51, 0.22], [0.38, 0.46, 0.28], cool);
+    open_color = mix(open_color, [0.22, 0.37, 0.18], tropical);
+    open_color = mix(open_color, [0.60, 0.53, 0.25], dry_climate);
+    open_color = mix(open_color, [0.71, 0.57, 0.36], desert);
+    open_color = mix(open_color, [0.53, 0.55, 0.46], alpine);
+    let forest_floor = mix([0.28, 0.34, 0.15], [0.31, 0.29, 0.18], cool);
     let substrate = mix(
         open_color,
         region.ground_color,
@@ -433,12 +447,8 @@ pub fn ground_color(seed: u32, x: f32, z: f32, terrain: &Sample) -> [f32; 3] {
     if terrain.biome == Biome::Swamp {
         ground = mix(ground, [0.25, 0.225, 0.16], 0.58 + patch * 0.24);
     }
-    if terrain.biome == Biome::Savanna {
-        ground = mix(ground, [0.61, 0.53, 0.28], 0.56);
-    }
-    if terrain.biome == Biome::Desert {
-        ground = mix(ground, [0.73, 0.57, 0.34], 0.65);
-    }
+    ground = mix(ground, [0.61, 0.53, 0.28], dry_climate * 0.56);
+    ground = mix(ground, [0.73, 0.57, 0.34], desert * 0.65);
     let snow = crate::climate::snow_cover(terrain.temperature, region.slope)
         * smooth(1400., 2000., terrain.height);
     mix(ground, [0.82, 0.87, 0.90], snow)

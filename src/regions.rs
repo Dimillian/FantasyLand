@@ -13,6 +13,8 @@ pub enum LandscapeKind {
     SandstoneCountry,
     Meadowlands,
     Alpine,
+    ChalkDowns,
+    BasaltUplands,
 }
 impl LandscapeKind {
     pub fn name(self) -> &'static str {
@@ -24,6 +26,8 @@ impl LandscapeKind {
             Self::SandstoneCountry => "Sandstone country",
             Self::Meadowlands => "Meadowlands",
             Self::Alpine => "Alpine heights",
+            Self::ChalkDowns => "Chalk downs",
+            Self::BasaltUplands => "Basalt uplands",
         }
     }
 }
@@ -547,6 +551,10 @@ pub fn sample(seed: u32, x: f32, z: f32, terrain: &Sample) -> Landscape {
         LandscapeKind::Alpine
     } else if bank > 0.34 && terrain.height < 620. {
         LandscapeKind::WetLowlands
+    } else if b.weights[4] > 0.45 {
+        LandscapeKind::BasaltUplands
+    } else if b.weights[3] > 0.46 {
+        LandscapeKind::ChalkDowns
     } else if b.weights[2] > 0.42 {
         LandscapeKind::SandstoneCountry
     } else if b.weights[1] > 0.43 && terrain.height > 420. {

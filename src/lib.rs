@@ -1,9 +1,11 @@
 mod antialias;
 pub mod ao;
+pub mod atlas;
 pub mod celestial;
 pub mod citizens;
 pub mod climate;
 mod cloud_shadow;
+pub mod countryside;
 pub mod cover;
 pub mod ecology;
 pub mod exploration;
@@ -25,6 +27,7 @@ mod player;
 mod postprocess;
 pub mod precipitation;
 mod rays;
+pub mod regional_tour;
 pub mod regions;
 pub mod renderer;
 pub mod settlement_mesh;
@@ -35,6 +38,7 @@ pub mod streaming;
 pub mod traversal;
 mod vertex;
 pub mod water_sim;
+pub mod waterfalls;
 pub mod weather;
 pub mod wind;
 pub mod world;
@@ -567,9 +571,19 @@ impl Game {
             res.clamp(32, 512),
         )
     }
+    pub fn map_layer_data(&self, cx: f32, cz: f32, span: f32, res: u32, layer: u32) -> Vec<u8> {
+        self.world.map_layer_rgba(
+            cx,
+            cz,
+            span.clamp(128., world::WORLD_SIZE * 4.),
+            res.clamp(32, 512),
+            layer,
+        )
+    }
     pub fn features(&self, cx: f32, cz: f32, span: f32) -> JsValue {
         #[derive(Serialize)]
         struct Features {
+            geography: Vec<atlas::Label>,
             sites: Vec<world::Site>,
             landmarks: Vec<world::Landmark>,
             roads: Vec<Vec<[f32; 2]>>,
@@ -635,6 +649,7 @@ impl Game {
         let routes = self.world.road_map_routes(cx, cz, span);
         let roads = routes.iter().map(|route| route.points.clone()).collect();
         serde_wasm_bindgen::to_value(&Features {
+            geography: atlas::labels(&self.world, cx, cz, span),
             sites,
             landmarks,
             roads,

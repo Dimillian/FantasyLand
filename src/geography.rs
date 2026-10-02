@@ -126,7 +126,10 @@ fn ranges(seed: u32) -> [Range; 8] {
         (-38000., 159000., 0.15, 23500., 5900., 2300.),
     ];
     std::array::from_fn(|i| {
-        let (x, z, a, l, w, h) = layouts[i];
+        let (mut x, mut z, a, l, w, h) = layouts[i];
+        if i >= 3 {
+            [x, z] = crate::world::coast::island_center(seed, i - 3);
+        }
         let i = i as i32;
         let random = |salt| rand01(hash(seed ^ 0x7812, i, salt));
         let angle = a + (random(0) - 0.5) * 0.25;
@@ -313,6 +316,28 @@ pub fn sample(seed: u32, x: f32, z: f32) -> Geography {
                         .mul(reach)
                         .mul(envelope);
                     local = local.add(rib.scale(r.height * 0.16));
+                }
+            }
+            // Connected U-shaped valleys descend from each pass into the
+            // foothills. Their curved centerlines and tapered mouths share the
+            // range frame; this removes uplift rather than scattering pits.
+            for &p in &r.passes {
+                for side in [-1., 1.] {
+                    let along = cross.scale(side / r.width);
+                    let reach = along.offset(-0.80).scale(1. / 0.86).bell();
+                    let curve = cross
+                        .scale(1. / (r.width * 0.70))
+                        .offset(r.phase)
+                        .sin()
+                        .scale(r.width * 0.09);
+                    let across = u.offset(-p).add(cross.scale(-side * 0.28)).add(curve);
+                    let bowl = across
+                        .scale(1. / (r.width * 0.18))
+                        .bell()
+                        .mul(reach)
+                        .mul(envelope);
+                    local = local.mul(bowl.scale(-0.67).offset(1.));
+                    basin = basin.add(bowl.scale(0.8).mul(basin.complement()));
                 }
             }
             // Glacial-style cirques interrupt an upper shoulder with a small
