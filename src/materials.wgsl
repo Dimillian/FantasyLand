@@ -1,4 +1,4 @@
-// Immutable procedural material library: 28 layers, shared by every chunk.
+// Immutable procedural material library: 33 layers, shared by every chunk.
 @group(3) @binding(0) var material_color: texture_2d_array<f32>;
 @group(3) @binding(1) var material_surface: texture_2d_array<f32>;
 @group(3) @binding(2) var material_sampler: sampler;
@@ -16,9 +16,9 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> 
         var pigment=v.color;switch slot {case 1u:{pigment=skins[(code/256u)%8u%5u];}case 2u:{pigment=hairs[(code/2048u)%8u];}case 4u:{pigment=v.color*0.56;}case 5u:{pigment=vec3<f32>(0.30,0.18,0.095);}case 6u:{pigment=vec3<f32>(0.53,0.57,0.58);}case 7u:{pigment=vec3<f32>(0.79,0.74,0.59);}case 8u:{pigment=vec3<f32>(0.69,0.48,0.17);}default:{}}
         return PixelMaterial(pigment*(pixel.r*0.98+0.12),normalize(v.normal),select(0.83,0.34,slot==6u),select(0.0,0.65,slot==6u),0.0,1.0);
     }
-    // Tree crowns share two tiny illustrations. Do the alpha test before any
+    // Tree crowns share small species illustrations. Do the alpha test before any
     // terrain projection or material work; distant leaves need only albedo.
-    if v.texture == 5.0 || v.texture == 6.0 {
+    if v.texture == 5.0 || v.texture == 6.0 || (v.texture >= 28.0 && v.texture < 33.0) {
         let layer=i32(v.texture);
         let tex=textureSampleGrad(material_color,foliage_sampler,v.uv,layer,grad.uv_x,grad.uv_y);
         if tex.a<0.4 {discard;}
@@ -63,14 +63,14 @@ fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> 
         let determinant=grad.uv_x.x*grad.uv_y.y-grad.uv_x.y*grad.uv_y.x;
         if abs(determinant)>0.0000001 {tangent=normalize((grad.world_x*grad.uv_y.y-grad.world_y*grad.uv_x.y)/determinant);bitangent=normalize((grad.world_y*grad.uv_x.x-grad.world_x*grad.uv_y.x)/determinant);}
     }
-    if v.texture>=5.0 && v.texture<10.0 {uv=v.uv;dx=grad.uv_x;dy=grad.uv_y;}
+    if ((v.texture>=5.0 && v.texture<10.0) || (v.texture>=28.0 && v.texture<33.0)) {uv=v.uv;dx=grad.uv_x;dy=grad.uv_y;}
     if v.material > 9.5 && v.material < 10.5 {
         layer=16i; uv=v.uv*vec2<f32>(1.0,0.9)+vec2<f32>(0.0,-u.params.x*0.47);
         dx=grad.uv_x*vec2<f32>(1.0,0.9);dy=grad.uv_y*vec2<f32>(1.0,0.9);
     }
     // Explicit gradients keep mip selection valid across material/alpha branches.
 
-    let cutout=v.texture>=5.0 && v.texture<10.0;
+    let cutout=((v.texture>=5.0 && v.texture<10.0) || (v.texture>=28.0 && v.texture<33.0));
     var tex:vec4<f32>;
     var packed:vec4<f32>;
     if cutout {

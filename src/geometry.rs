@@ -920,7 +920,8 @@ fn prop_at(world: &World, gx: i32, gz: i32) -> Option<Prop> {
         PropKind::Boulder
     } else if matches!(sample.biome, Biome::Wetland | Biome::Swamp) && detail < 0.28 {
         PropKind::Reed
-    } else if detail < 0.045 + density * (1.0 - density) * 0.25
+    } else if detail
+        < 0.045 + density * (1.0 - density) * 0.25 + density * forest.regeneration * 0.09
         && !matches!(sample.biome, Biome::Alpine | Biome::Desert)
     {
         PropKind::Shrub
@@ -1314,7 +1315,7 @@ fn anchor_prop(world: &World, mesh: &mut MeshData, first: usize, p: Prop, lod: u
     for triangle in mesh.vertices[first..].chunks_exact_mut(3) {
         // Grounding moves the roots, not the canopy. Preserve its volume
         // normals instead of replacing them with flat card-face lighting.
-        if !drape && matches!(triangle[0].texture, 5.0 | 6.0) {
+        if !drape && crate::materials::is_cutout(triangle[0].texture as usize) {
             continue;
         }
         let u = sub(triangle[1].position, triangle[0].position);
@@ -3978,20 +3979,93 @@ fn stem_at(model: &TreeModel, y: f32) -> [f32; 3] {
     }
     model.trunk.last().unwrap().0
 }
+/// Growth recipes are independent of the placement families: ecology still
+/// selects companion families, while climate and seed choose their architecture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TreeRecipe {
+    Pine,
+    Spruce,
+    Fir,
+    Cedar,
+    Oak,
+    Beech,
+    Alder,
+    Birch,
+    Willow,
+    Acacia,
+    Jungle,
+    Palm,
+    Snag,
+}
+fn tree_recipe(p: Prop) -> TreeRecipe {
+    match p.kind {
+        PropKind::Pine => {
+            if !matches!(p.biome, Biome::PineForest | Biome::Alpine | Biome::Moor)
+                && random(p.seed, 1501) < 0.42
+            {
+                TreeRecipe::Cedar
+            } else {
+                TreeRecipe::Pine
+            }
+        }
+        PropKind::Fir => {
+            if random(p.seed, 1502) < 0.48 {
+                TreeRecipe::Spruce
+            } else {
+                TreeRecipe::Fir
+            }
+        }
+        PropKind::Broadleaf => match p.biome {
+            Biome::Jungle => TreeRecipe::Jungle,
+            Biome::Savanna => TreeRecipe::Acacia,
+            Biome::Wetland | Biome::Swamp => TreeRecipe::Alder,
+            _ => {
+                if random(p.seed, 1437) > 0.64 {
+                    TreeRecipe::Beech
+                } else {
+                    TreeRecipe::Oak
+                }
+            }
+        },
+        PropKind::Birch => TreeRecipe::Birch,
+        PropKind::Willow => {
+            if matches!(p.biome, Biome::Jungle | Biome::TropicalCoast) {
+                TreeRecipe::Palm
+            } else {
+                TreeRecipe::Willow
+            }
+        }
+        _ => TreeRecipe::Snag,
+    }
+}
+fn tree_texture(p: Prop) -> f32 {
+    match tree_recipe(p) {
+        TreeRecipe::Spruce | TreeRecipe::Fir => 28.,
+        TreeRecipe::Cedar => 29.,
+        TreeRecipe::Birch => 30.,
+        TreeRecipe::Willow => 31.,
+        TreeRecipe::Beech | TreeRecipe::Alder => 32.,
+        TreeRecipe::Palm => 8.,
+        TreeRecipe::Pine => 6.,
+        _ => 5.,
+    }
+}
+fn needle_texture(texture: f32) -> bool {
+    texture == 6. || texture == 28. || texture == 29.
+}
 fn tree_model(p: Prop) -> TreeModel {
-    let palm =
-        p.kind == PropKind::Willow && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast);
+    let recipe = tree_recipe(p);
+    let palm = recipe == TreeRecipe::Palm;
     let jungle = p.biome == Biome::Jungle && p.kind == PropKind::Broadleaf;
     let acacia = p.biome == Biome::Savanna && p.kind == PropKind::Broadleaf;
     let age = tree_age(p);
     // One species can grow round oak-like crowns or taller beech-like forms.
     // The same deterministic scaffold drives both near cards and far proxies.
-    let upright = p.kind == PropKind::Broadleaf
-        && (p.biome == Biome::Wetland || random(p.seed, 1437) > 0.64)
-        && age != TreeAge::Windswept;
+    let upright =
+        matches!(recipe, TreeRecipe::Beech | TreeRecipe::Alder) && age != TreeAge::Windswept;
     let yaw = random(p.seed, 503) * TAU;
     let age_height = match age {
-        TreeAge::Young => 0.30 + random(p.seed, 500) * 0.16,
+        TreeAge::Young => 0.24 + random(p.seed, 500) * 0.19,
         TreeAge::Ancient => 1.12,
         TreeAge::Windswept => 0.85,
         _ => 1.,
@@ -4005,6 +4079,12 @@ fn tree_model(p: Prop) -> TreeModel {
         _ => 6. + random(p.seed, 281) * 5.,
     } * p.scale
         * age_height
+        * match recipe {
+            TreeRecipe::Cedar => 0.88,
+            TreeRecipe::Alder => 0.84,
+            TreeRecipe::Beech => 1.12,
+            _ => 1.,
+        }
         * p.style.stature)
         .min(if matches!(p.kind, PropKind::Pine | PropKind::Fir) {
             64.
@@ -4112,10 +4192,15 @@ fn tree_model(p: Prop) -> TreeModel {
         return model;
     }
     if matches!(p.kind, PropKind::Pine | PropKind::Fir) {
-        let fir = p.kind == PropKind::Fir;
-        let levels = if age == TreeAge::Young {
-            3
-        } else if fir || age == TreeAge::Ancient {
+        let fir = recipe == TreeRecipe::Fir;
+        let spruce = recipe == TreeRecipe::Spruce;
+        let cedar = recipe == TreeRecipe::Cedar;
+        let young = age == TreeAge::Young;
+        // Fifteen branch pads plus a leader: at most 48 near / 33 mid cards.
+        // Dense trees spend the same budget on overlapping lower skirts.
+        let levels = if young {
+            4
+        } else if fir || spruce || cedar || age == TreeAge::Ancient {
             5
         } else {
             4
@@ -4124,30 +4209,35 @@ fn tree_model(p: Prop) -> TreeModel {
         for level in 0..levels {
             let f = level as f32 / (levels as f32);
             let coastal = age == TreeAge::Windswept && !fir;
-            let y = h
-                * ((if age == TreeAge::Young {
-                    0.15
-                } else if fir {
-                    0.32
-                } else {
-                    0.53
-                }) + f * if age == TreeAge::Young {
-                    0.72
-                } else if fir {
-                    0.57
-                } else {
-                    0.36
-                });
+            let skirt = if young {
+                0.10
+            } else if spruce {
+                0.24
+            } else if fir {
+                0.30
+            } else if cedar {
+                0.30
+            } else {
+                0.45
+            };
+            let y = h * (skirt + f * (0.94 - skirt));
             let start = stem_at(&model, y);
-            let spread =
-                h * (if fir {
-                    0.18
-                } else if coastal {
-                    0.31
-                } else {
-                    0.24
-                }) * (1. - f * 0.77)
-                    * p.canopy;
+            let width = if cedar {
+                0.29
+            } else if spruce {
+                0.23
+            } else if fir {
+                0.22
+            } else if coastal {
+                0.31
+            } else {
+                0.25
+            };
+            let spread = h
+                * width
+                * (1. - f * if cedar { 0.60 } else { 0.76 })
+                * p.canopy
+                * if young { 1.18 } else { 1. };
             for arm in 0..spokes {
                 let n = (level * spokes + arm) as u32;
                 let a = yaw
@@ -4157,7 +4247,16 @@ fn tree_model(p: Prop) -> TreeModel {
                 let reach = spread * (0.65 + random(p.seed, 550 + n) * 0.45);
                 let end = [
                     start[0] + a.sin() * reach + direction.sin() * h * wind * f * 0.4,
-                    y + h * (if fir { -0.025 } else { 0.035 })
+                    y + h
+                        * (if fir {
+                            -0.060
+                        } else if spruce {
+                            -0.028
+                        } else if cedar {
+                            -0.008
+                        } else {
+                            0.025
+                        })
                         + (random(p.seed, 570 + n) - 0.5) * h * 0.018,
                     start[2] + a.cos() * reach + direction.cos() * h * wind * f * 0.4,
                 ];
@@ -4174,14 +4273,21 @@ fn tree_model(p: Prop) -> TreeModel {
                         start[2] + (end[2] - start[2]) * 0.62,
                     ],
                     radii: [
-                        spread * if fir { 0.63 } else { 0.57 },
-                        h * 0.064 * (1. - f * 0.36),
-                        reach * 0.82,
+                        spread
+                            * if cedar {
+                                0.78
+                            } else if spruce || young {
+                                0.73
+                            } else {
+                                0.66
+                            },
+                        h * (if cedar { 0.055 } else { 0.092 }) * (1. - f * 0.36),
+                        reach * if young { 1.00 } else { 0.92 },
                     ],
                     yaw: a,
                     seed: hash(p.seed, n as i32, 591),
                     color: mul(green, 0.85 + f * 0.18 + random(p.seed, 595 + n) * 0.06),
-                    pointed: !coastal,
+                    pointed: !coastal && !cedar,
                 });
             }
         }
@@ -4196,7 +4302,7 @@ fn tree_model(p: Prop) -> TreeModel {
         });
     } else {
         let arms = match age {
-            TreeAge::Young => 3,
+            TreeAge::Young => 4,
             TreeAge::Ancient => 5,
             _ => 4,
         };
@@ -4206,7 +4312,9 @@ fn tree_model(p: Prop) -> TreeModel {
             let willow = p.kind == PropKind::Willow;
             let dead = p.kind == PropKind::DeadTree;
             let a = yaw + n as f32 * 2.39996 + (random(p.seed, 620 + n) - 0.5) * 0.85;
-            let f = if jungle || acacia {
+            let f = if age == TreeAge::Young {
+                0.14 + n as f32 * 0.065
+            } else if jungle || acacia {
                 0.48 + n as f32 * 0.04
             } else if birch || dead {
                 0.35 + n as f32 * 0.095
@@ -4275,15 +4383,18 @@ fn tree_model(p: Prop) -> TreeModel {
                     } else if jungle {
                         [0.20, 0.15, 0.18]
                     } else if birch {
-                        [0.105, 0.235, 0.095]
+                        [0.13, 0.24, 0.115]
                     } else if willow {
                         [0.16, 0.28, 0.14]
+                    } else if recipe == TreeRecipe::Alder {
+                        [0.22, 0.22, 0.18]
                     } else if upright {
-                        [0.15, 0.28, 0.13]
+                        [0.18, 0.30, 0.16]
                     } else {
                         [0.21, 0.235, 0.18]
                     };
-                    let varied = 0.77 + random(p.seed, 690 + j) * 0.46;
+                    let varied = (0.86 + random(p.seed, 690 + j) * 0.35)
+                        * if age == TreeAge::Young { 1.18 } else { 1. };
                     model.crowns.push(TreeCrown {
                         center: [
                             end[0],
@@ -4511,7 +4622,7 @@ fn foliage_card(
     let first = mesh.vertices.len();
     // Needle sprays taper toward their tip. Clip only empty atlas corners,
     // keeping affine UVs and the same two triangles in every rendering pass.
-    let inset = if texture == 6. {
+    let inset = if needle_texture(texture) {
         crate::materials::NEEDLE_CARD_INSET
     } else {
         0.
@@ -4606,6 +4717,7 @@ fn visit_crown_cards(
     }
     let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir);
     let willow = p.kind == PropKind::Willow;
+    let recipe = tree_recipe(p);
     let leader = conifer && c.seed == p.seed ^ 613;
     let count = if conifer {
         3
@@ -4632,14 +4744,23 @@ fn visit_crown_cards(
             // Each card depicts a bough rather than another little tree.
             if i == 2 {
                 (
-                    0.78 + jitter,
-                    c.radii[0] * 0.63,
+                    if recipe == TreeRecipe::Cedar {
+                        0.42 + jitter
+                    } else {
+                        0.92 + jitter
+                    },
+                    c.radii[0] * 0.72,
                     c.radii[2] * 0.70,
                     c.radii[1] * 0.24,
                 )
             } else {
                 (
-                    0.18 + i as f32 * 0.23 + jitter * 0.3,
+                    (if recipe == TreeRecipe::Fir {
+                        -0.12
+                    } else {
+                        0.20
+                    }) + i as f32 * 0.35
+                        + jitter * 0.3,
                     c.radii[0],
                     c.radii[2],
                     0.,
@@ -4684,7 +4805,8 @@ fn visit_crown_cards(
         let side = [yaw.cos() * half_width, 0., -yaw.sin() * half_width];
         let rise = [
             yaw.sin() * tilt.cos() * half_height,
-            tilt.sin() * half_height,
+            (tilt.sin() * half_height)
+                .clamp(-c.center[1].max(0.2) * 0.88, c.center[1].max(0.2) * 0.88),
             yaw.cos() * tilt.cos() * half_height,
         ];
         let base = [
@@ -4697,15 +4819,7 @@ fn visit_crown_cards(
             side,
             rise,
             color: mul(c.color, 0.96 + random(c.seed, 1420 + i) * 0.11),
-            texture: if p.kind == PropKind::Willow
-                && matches!(p.biome, Biome::Jungle | Biome::TropicalCoast)
-            {
-                8.
-            } else if conifer {
-                6.
-            } else {
-                5.
-            },
+            texture: tree_texture(p),
             pendant: willow && i < count - 1,
         });
     }
@@ -5504,10 +5618,11 @@ fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
         return Vec::new();
     }
     let conifer = matches!(p.kind, PropKind::Pine | PropKind::Fir)
+        && tree_recipe(p) != TreeRecipe::Cedar
         && !(p.kind == PropKind::Pine && tree_age(p) == TreeAge::Windswept);
     let groups = match p.kind {
         PropKind::Pine => 3,
-        PropKind::Fir => 2,
+        PropKind::Fir => 3,
         PropKind::Birch => 2,
         PropKind::Broadleaf => 3,
         _ => 2,
@@ -5539,7 +5654,7 @@ fn distant_crowns(model: &TreeModel, p: Prop) -> Vec<TreeCrown> {
             // Reuse the actual card recipe without allocating a temporary mesh.
             // Rotation, leader, taper and shelf inclination all affect bounds.
             visit_crown_cards(local, *c, false, false, |card| {
-                let top = if card.texture == 6. {
+                let top = if needle_texture(card.texture) {
                     1. - crate::materials::NEEDLE_CARD_INSET * 2.
                 } else {
                     1.
@@ -5979,15 +6094,16 @@ mod character_asset_tests {
         let normals: Vec<_> = mesh
             .vertices
             .iter()
-            .filter(|v| v.texture == 6.)
+            .filter(|v| v.texture == tree_texture(p))
             .map(|v| v.normal)
             .collect();
+        assert!(!normals.is_empty());
         anchor_prop(&w, &mut mesh, 0, p, 0);
         assert_eq!(
             normals,
             mesh.vertices
                 .iter()
-                .filter(|v| v.texture == 6.)
+                .filter(|v| v.texture == tree_texture(p))
                 .map(|v| v.normal)
                 .collect::<Vec<_>>()
         );
@@ -6064,7 +6180,7 @@ mod character_asset_tests {
                 let middle_leaves: Vec<_> = middle
                     .vertices
                     .iter()
-                    .filter(|v| (5.0..10.0).contains(&v.texture))
+                    .filter(|v| crate::materials::is_cutout(v.texture as usize))
                     .collect();
                 assert!(!middle_leaves.is_empty());
                 assert!(
@@ -6083,12 +6199,7 @@ mod character_asset_tests {
                     );
                 }
                 assert!(leaves.iter().all(|v| {
-                    v.texture
-                        == if matches!(kind, PropKind::Pine | PropKind::Fir) {
-                            6.
-                        } else {
-                            5.
-                        }
+                    v.texture == tree_texture(p)
                         && v.uv
                             .iter()
                             .all(|u| u.is_finite() && (0.0..=1.0).contains(u))
@@ -6096,12 +6207,80 @@ mod character_asset_tests {
                 assert!(
                     far.vertices
                         .iter()
-                        .all(|v| !(5.0..=9.0).contains(&v.texture)),
+                        .all(|v| !crate::materials::is_cutout(v.texture as usize)),
                     "distant tree mesh must not add alpha overdraw"
                 );
             }
         }
         println!("maximum near tree foliage cards: {maximum_cards}");
+    }
+    #[test]
+    fn twelve_growth_recipes_keep_species_and_saplings_within_lod_budgets() {
+        let mut recipes = std::collections::BTreeSet::new();
+        for biome in [
+            Biome::Forest,
+            Biome::PineForest,
+            Biome::Wetland,
+            Biome::Swamp,
+            Biome::Jungle,
+            Biome::Savanna,
+            Biome::TropicalCoast,
+        ] {
+            for kind in [
+                PropKind::Pine,
+                PropKind::Fir,
+                PropKind::Broadleaf,
+                PropKind::Birch,
+                PropKind::Willow,
+            ] {
+                for seed in 0..64 {
+                    let p = Prop {
+                        position: [0.; 3],
+                        scale: 1.,
+                        canopy: 1.3,
+                        seed,
+                        kind,
+                        biome,
+                        style: PropStyle {
+                            regeneration: 1.,
+                            ..PropStyle::default()
+                        },
+                    };
+                    recipes.insert(format!("{:?}", tree_recipe(p)));
+                    let model = tree_model(p);
+                    let mut card_count = 0;
+                    for c in &model.crowns {
+                        visit_crown_cards(p, *c, false, false, |card| {
+                            card_count += 1;
+                            assert!(card
+                                .center
+                                .into_iter()
+                                .chain(card.side)
+                                .chain(card.rise)
+                                .all(f32::is_finite));
+                            assert!(crate::materials::is_cutout(card.texture as usize));
+                        });
+                    }
+                    assert!(card_count <= 48, "{:?}: {card_count}", tree_recipe(p));
+                    if matches!(kind, PropKind::Pine | PropKind::Fir)
+                        && tree_age(p) == TreeAge::Young
+                    {
+                        assert_eq!(
+                            model.crowns.len(),
+                            13,
+                            "saplings need four full branch tiers plus leader"
+                        );
+                        assert!(model.limbs[0].start[1] < model.height * 0.15);
+                    }
+                    let distant = distant_crowns(&model, p);
+                    assert!(distant.len() <= 4);
+                    assert!(distant
+                        .iter()
+                        .all(|c| c.radii.into_iter().all(|v| v > 0. && v.is_finite())));
+                }
+            }
+        }
+        assert_eq!(recipes.len(), 12, "{recipes:?}");
     }
     #[test]
     fn broad_canopies_have_layers_and_birch_stems_stay_connected() {

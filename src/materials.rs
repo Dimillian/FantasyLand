@@ -1,16 +1,19 @@
 //! Small, entirely code-generated pixel materials shared by land, vegetation,
 //! props and water. RGB is linear pigment modulation (multiply by 1.45 before
 //! the mesh palette); surface RGBA stores normal XY, roughness and emission.
-//! Every layer tiles except the five alpha-cutout plant illustrations.
+//! Surface layers tile; plant illustrations use clamped, coverage-preserving cutouts.
 
 pub const SIZE: u32 = 128;
-pub const LAYERS: u32 = 28;
+pub const LAYERS: u32 = 33;
 pub const LEVELS: u32 = 8;
 pub const ALPHA_CUTOFF: f32 = 0.4;
 /// Empty top corners removed from conifer cards; shared with the mask guard.
 pub const NEEDLE_CARD_INSET: f32 = 0.24;
 const DRAW: usize = 64;
-const CUTOUTS: std::ops::RangeInclusive<usize> = 5..=9;
+const CUTOUTS: [usize; 10] = [5, 6, 7, 8, 9, 28, 29, 30, 31, 32];
+pub(crate) fn is_cutout(layer: usize) -> bool {
+    CUTOUTS.contains(&layer)
+}
 
 pub struct MaterialPixels {
     /// Each entry contains one mip, with all array layers concatenated.
@@ -598,6 +601,109 @@ impl Plant {
         }
     }
 
+    /// Dense bough interiors with isolated tips: coverage comes from coherent
+    /// needle fans, not extra transparent planes. All use the trimmed card.
+    fn evergreen(&mut self, cedar: bool) {
+        self.line([32., 62.], [31., 6.], 1.0, 0.40);
+        for row in 0..7 {
+            let y = 55. - row as f32 * 7.;
+            for side in [-1.0_f32, 1.] {
+                let k = row * 2 + i32::from(side > 0.);
+                let span = (25. - row as f32 * 2.4) * (0.88 + hash(k, 0, 1901) * 0.12);
+                let root = [32., y + 2.];
+                let tip = [32. + side * span, y - if cedar { 3. } else { 8. }];
+                self.line(root, tip, 0.85, 0.43);
+                for twig in 0..5 {
+                    let t = (twig as f32 + 0.6) / 5.;
+                    let center = [
+                        root[0] + (tip[0] - root[0]) * t,
+                        root[1] + (tip[1] - root[1]) * t,
+                    ];
+                    for fan in 0..3 {
+                        let angle = if cedar {
+                            -1.57 + side * 0.62
+                        } else {
+                            -1.57 + side * 0.35
+                        } + (fan as f32 - 1.) * 0.55;
+                        self.leaf(
+                            [center[0] + side * fan as f32 * 0.55, center[1]],
+                            if cedar { 4.3 } else { 4.7 },
+                            if cedar { 1.7 } else { 1.5 },
+                            angle,
+                            0.43 + t * 0.15 + hash(k, twig + fan, 1921) * 0.09,
+                        );
+                    }
+                }
+            }
+        }
+        self.leaf([31., 7.], 5.8, 2.2, -1.57, 0.70);
+        for y in 0..DRAW {
+            let inset = NEEDLE_CARD_INSET * (1. - (y as f32 + 0.5) / DRAW as f32);
+            for x in 0..DRAW {
+                let u = (x as f32 + 0.5) / DRAW as f32;
+                if u < inset + 0.012 || u > 1. - inset - 0.012 {
+                    self.pixels[y * DRAW + x].alpha = 0.;
+                }
+            }
+        }
+    }
+    fn leafy_spray(&mut self, kind: usize) {
+        if kind == 31 {
+            // A loose curtain: independently curved strands rather than a
+            // solid triangular fan. Ragged lengths reveal light between twigs.
+            for branch in 0..6 {
+                let x = 8. + branch as f32 * 9.;
+                let root = [x, 6. + hash(branch, 0, 2001) * 9.];
+                let end = [
+                    x + (hash(branch, 1, 2001) - 0.5) * 10.,
+                    43. + hash(branch, 2, 2001) * 17.,
+                ];
+                self.line(root, end, 0.65, 0.41);
+                for leaf in 0..7 {
+                    let t = (leaf as f32 + 0.4) / 7.;
+                    let c = [
+                        root[0] + (end[0] - root[0]) * t,
+                        root[1] + (end[1] - root[1]) * t,
+                    ];
+                    for side in [-1.0_f32, 1.] {
+                        self.leaf(
+                            [c[0] + side * 2., c[1]],
+                            4.6,
+                            1.4,
+                            1.57 + side * 0.4,
+                            0.46 + hash(branch, leaf, 2011) * 0.17,
+                        );
+                    }
+                }
+            }
+            return;
+        }
+        let clusters = [
+            [12., 21.],
+            [27., 12.],
+            [44., 17.],
+            [51., 35.],
+            [36., 33.],
+            [15., 40.],
+            [30., 50.],
+        ];
+        for (i, c) in clusters.into_iter().enumerate() {
+            self.line([31., 59.], [c[0], c[1]], 0.6, 0.40);
+            for leaf in 0..14 {
+                let a = hash(i as i32, leaf, kind as u32 + 2001) * std::f32::consts::TAU;
+                let r = hash(i as i32, leaf, 2017).sqrt() * 8.;
+                let p = [c[0] + a.cos() * r, c[1] + a.sin() * r];
+                self.leaf(
+                    p,
+                    if kind == 30 { 3.6 } else { 4.7 },
+                    if kind == 30 { 2.0 } else { 2.9 },
+                    a * 0.6 - 1.1,
+                    0.44 + hash(i as i32, leaf, 2027) * 0.20,
+                );
+            }
+        }
+    }
+
     fn grass(&mut self) {
         for blade in 0..14 {
             let base = 25.0 + hash(blade, 0, 330) * 15.0;
@@ -738,6 +844,9 @@ impl MaterialPixels {
                     7 => plant.grass(),
                     8 => plant.fern(),
                     9 => plant.flowers(),
+                    28 => plant.evergreen(false),
+                    29 => plant.evergreen(true),
+                    30..=32 => plant.leafy_spray(layer),
                     _ => unreachable!(),
                 }
                 plant.pixels
@@ -858,7 +967,7 @@ impl MaterialPixels {
     }
 }
 
-/// GPU array textures are less than 4.67 MiB including every mip. They are built
+/// GPU array textures are less than 5.5 MiB including every mip. They are built
 /// once at renderer initialization and sampled by all streaming chunks.
 pub struct MaterialLibrary {
     pub layout: wgpu::BindGroupLayout,
@@ -1011,21 +1120,24 @@ mod tests {
     fn tapered_needle_cards_keep_the_authored_mask() {
         let atlas = super::MaterialPixels::generate();
         let size = super::SIZE as usize;
-        let layer = &atlas.albedo[0][6 * size * size * 4..7 * size * size * 4];
-        let mut covered = 0;
-        for y in 0..size {
-            let v = (y as f32 + 0.5) / size as f32;
-            let inset = super::NEEDLE_CARD_INSET * (1. - v);
-            for x in 0..size {
-                if layer[(y * size + x) * 4 + 3] as f32 / 255. < super::ALPHA_CUTOFF {
-                    continue;
+        for layer_id in [6, 28, 29] {
+            let layer =
+                &atlas.albedo[0][layer_id * size * size * 4..(layer_id + 1) * size * size * 4];
+            let mut covered = 0;
+            for y in 0..size {
+                let v = (y as f32 + 0.5) / size as f32;
+                let inset = super::NEEDLE_CARD_INSET * (1. - v);
+                for x in 0..size {
+                    if layer[(y * size + x) * 4 + 3] as f32 / 255. < super::ALPHA_CUTOFF {
+                        continue;
+                    }
+                    let u = (x as f32 + 0.5) / size as f32;
+                    assert!(u >= inset && u <= 1. - inset, "needle clipped at {x},{y}");
+                    covered += 1;
                 }
-                let u = (x as f32 + 0.5) / size as f32;
-                assert!(u >= inset && u <= 1. - inset, "needle clipped at {x},{y}");
-                covered += 1;
             }
+            assert!(covered > size * size / 6);
         }
-        assert!(covered > size * size / 6);
     }
     use super::*;
 
@@ -1044,8 +1156,8 @@ mod tests {
             );
             assert_eq!(first.surface[level].len(), first.albedo[level].len());
         }
-        // Twenty-eight 128px albedo/surface layers, including architectural variants.
-        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 4_900_000);
+        // Thirty-three 128px albedo/surface layers, including species foliage.
+        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 5_800_000);
     }
 
     #[test]

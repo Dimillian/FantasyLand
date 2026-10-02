@@ -729,7 +729,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     let vegetation = (v.material>0.5 && v.material<1.5)
         || (v.material>5.5 && v.material<6.5) || (v.material>8.5 && v.material<9.5);
     if distance < 450.0 && room<0 {
-        let tree_leaf = v.texture == 5.0 || v.texture == 6.0;
+        let tree_leaf = v.texture == 5.0 || v.texture == 6.0 || (v.texture >= 28.0 && v.texture < 33.0);
         if vegetation && (tree_leaf || distance > 24.0) {
             var highlight = vegetation_highlight(normal,view,light,roughness,wet,visibility);
             if !tree_leaf && distance < 64.0 {
@@ -743,7 +743,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     }
     // Leaf transmission and godrays retain exact cutout depth and sunlight.
     // A broad waxy leaf sheen avoids expensive, glittering reflected-sky lobes.
-    if v.texture >= 5.0 && v.texture < 10.0 {
+    if ((v.texture >= 5.0 && v.texture < 10.0) || (v.texture >= 28.0 && v.texture < 33.0)) {
         let forward_scatter = pow(max(dot(-view,light),0.0),3.0);
         color += pigment_linear*u.direct.rgb*u.direct.w*visibility*(0.12+forward_scatter*0.52);
     }
@@ -779,7 +779,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
         let texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(48.0,96.0))
             +vec2<u32>(((code/16u)%4u)*48u,((code/64u)%4u)*96u));
         if textureLoad(human_sprites,texel,i32(code%16u+((code/16384u)%4u)*16u),0).g<0.04 {discard;}
-    } else if v.texture>=5.0 && v.texture<10.0 {
+    } else if ((v.texture>=5.0 && v.texture<10.0) || (v.texture>=28.0 && v.texture<33.0)) {
         if textureSampleGrad(material_color,foliage_sampler,v.uv,i32(v.texture+0.1),uv_x,uv_y).a<0.40 {discard;}
     }
 }
