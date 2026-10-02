@@ -8,7 +8,7 @@ Find your road. Walk to the horizon.
 
 Inspired by the scale and freedom of **Daggerfall**, FantasyLand starts with the world itself: a vast, seeded landscape where cities belong to regions, roads follow the terrain, rivers drain into the sea, and people have homes and places to be. Explore on foot, enter buildings, talk to residents, or open the atlas and follow a road into the wilderness.
 
-The visual direction combines low-poly silhouettes, procedural pixel textures, dense vegetation, atmospheric light, and a parchment-and-brass field codex. The engine generates terrain, buildings, plants, materials, human sprites, and the sky in code. Rust and wgpu render the world; a small JavaScript shell supplies browser input and the interface.
+The visual direction combines low-poly silhouettes, procedural pixel textures, dense vegetation, atmospheric light, and an iron-and-brass interface with compact title bars, amber lettering, and inset stone panels. The engine generates terrain, buildings, plants, materials, human sprites, and the sky in code. Rust and wgpu render the world; a small JavaScript shell supplies browser input and the interface.
 
 **Status:** playable world-generation and exploration prototype. Settlements, conversations, movement, weather, and interiors work today. Combat, quests, inventory gameplay, commerce, and guild progression are future work.
 
@@ -60,7 +60,7 @@ Open **[http://127.0.0.1:4173/](http://127.0.0.1:4173/)** and choose **Enter the
 
 WebGPU is required; there is currently no WebGL fallback. Use localhost for development or HTTPS when serving elsewhere. There is no npm install step for the game.
 
-To explore a different deterministic world, open [http://127.0.0.1:4173/?seed=42](http://127.0.0.1:4173/?seed=42), or change the seed in Settings.
+To explore a different deterministic world, open [http://127.0.0.1:4173/?seed=42](http://127.0.0.1:4173/?seed=42), or change the seed in Developer tools (O).
 
 ### Controls
 
@@ -71,15 +71,17 @@ To explore a different deterministic world, open [http://127.0.0.1:4173/?seed=42
 | Sprint / jump | Shift / Space |
 | Talk to a person / open a door | E |
 | Atlas | M / Tab |
-| Bag / character / skills | I / C / K |
-| Settings | O |
-| Close a menu / release mouse | Escape |
+| Inventory / character / skills | I / C / K |
+| Quick menu | Click Menu / Q |
+| Pause menu / Options | Escape |
+| Developer tools | O |
+| Close a screen / back in Options | Escape |
 | Diagnostics / hide HUD for photos | F3 / F4 |
 | Navigate dialogue | Arrows, Enter, 1–9 / A–C |
 
 If pointer capture is unavailable, click-focused mouse look works within the window. Touch controls provide movement and drag look. Inside menus, Tab navigates controls.
 
-For a first tour, open **O → World tools & experiments**. Visit a settlement, a generated landscape, or a natural wonder. In seed 1337, **Lighting studies** offers forest mornings, meadow dusk, lake moonlight, and hearth-lit interiors. Press **E** when aiming at a resident or door. Conversations pause the world.
+For a first tour, open **O → World tools & experiments**. Player options live under **Escape → Options**, with Graphics, Audio, Controls, and Interface pages. Character, Inventory, Equipment, Skills, and Atlas share a menu bar and a fixed-size frame; the RPG systems are marked as planned. Full player screens pause the world; the quick menu releases the mouse and blocks movement while the world continues. Developer tools keep it running for experiments. Skills show illustrative levels and XP across Combat, Magic, and Life; these preview values are not saved as character progress. Hover, focus, or tap a skill or equipment slot for details. Escape dismisses a tooltip first. Inventory cells support arrow-key navigation. Visit a settlement, a generated landscape, or a natural wonder. In seed 1337, **Lighting studies** offers forest mornings, meadow dusk, lake moonlight, and hearth-lit interiors. Press **E** when aiming at a resident or door. Conversations pause the world.
 
 ## Build from source
 
@@ -99,6 +101,8 @@ The CLI version must match the `wasm-bindgen` version pinned in `Cargo.toml`. Th
 ```sh
 cargo test --release --lib --locked -- --test-threads=2
 node scripts/verify-ui.cjs
+node scripts/verify-game-ui.mjs
+node scripts/verify-hud.mjs
 node scripts/verify-wasm.mjs
 node scripts/verify-streaming.mjs
 node scripts/verify-adaptive.mjs
@@ -113,7 +117,7 @@ cargo run --release --bin verify -- output/verification 1337
 cargo run --release --bin verify -- output/settlement-art 1337 settlement-art
 ```
 
-The verifier needs a supported native GPU backend. Native timings are separate from browser FPS; the game's Settings includes browser performance checks.
+The verifier needs a supported native GPU backend. Native timings are separate from browser FPS; the game's developer tools include browser performance checks.
 
 ## Inside the project
 
@@ -125,6 +129,10 @@ The verifier needs a supported native GPU backend. Native timings are separate f
 | `src/ecology.rs`, `plants.rs`, `cover.rs`, `meadow.rs`, `natural.rs` | Forest communities, vegetation, ground cover, and rock formations |
 | `src/renderer.rs`, `materials.rs`, `*.wgsl` | wgpu rendering, generated materials, lighting, weather, and water |
 | `dist/` | Browser interface, worker, fonts, and ready-to-run WASM build |
+| `dist/hud.css`, `hud-navigation.js` | Minimal playing HUD, compass bearings, and pinned destinations |
+| `dist/game-ui.js`, `skill-catalog.js`, `ui-tooltips.js` | Compact RPG screens, preview skill data, and shared tooltips |
+| `scripts/build-ui-icons.py`, `dist/ui/icons.svg` | Small 24-pixel UI icons; regenerate with `python3 scripts/build-ui-icons.py` |
+| `dist/ui/equipment-icons.svg`, `equipment-figure.svg` | Hand-authored 64px equipment art and neutral paper doll; equipment slots use muted empty-state styling |
 | `scripts/`, `docs/` | Local build/server, verification tools, implementation notes, and benchmarks |
 
 Start with [settlements and citizens](docs/settlements-and-citizens.md), [geography](docs/geography-rework.md), [forest communities](docs/forest-communities.md), or [anti-aliasing](docs/antialiasing.md). The [archived development notes](docs/development-notes.md) preserve the original technical write-up and successive rendering refinements.

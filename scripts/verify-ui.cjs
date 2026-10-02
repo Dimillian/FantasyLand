@@ -5,10 +5,11 @@ const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html
 const adaptiveSource = fs.readFileSync(require('path').join(__dirname, '../dist/adaptive-resolution.js'), 'utf8').replace('export class', 'class');
 const portraitSource = fs.readFileSync(require('path').join(__dirname, '../dist/portrait.js'), 'utf8').replace('export function', 'function');
 const soundStub = `class Soundscape { constructor(saved={}){this.volumes={master:.75,ambience:.8,footsteps:.45,wildlife:.75,...saved};this.voices=new Set();this.thunder={pending:[]};} cancelThunder(){} setVolume(k,v){this.volumes[k]=v;} setActive(){} unlock(){} update(){} }`;
+const navigationSource = fs.readFileSync(require('path').join(__dirname, '../dist/hud-navigation.js'), 'utf8').replaceAll('export function', 'function');
 const storageSource=fs.readFileSync(require('path').join(__dirname,'../dist/world-store.mjs'),'utf8').replace(/export /g,'');
 const cacheSource=fs.readFileSync(require('path').join(__dirname,'../dist/atlas-cache.mjs'),'utf8').replace(/export /g,'');
 const snapshotFor=(seed, p={})=>({schema:1,world:{seed,generator_version:1,recipe_revision:1},clock:1080,doors:[],player:{x:0,z:0,yaw:0,pitch:0,health:100,mana:100,stamina:100,walked:0,...Object.fromEntries(Object.entries(p).filter(([k])=>['x','z','yaw','pitch','health','mana','stamina','walked'].includes(k)))}});
-const source = storageSource + '\n' + cacheSource + '\n' + soundStub + '\n' + portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/^import .*from '\.\/(?:world-store|atlas-cache)\.mjs';\n/gm,'').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '').replace(/import \{ Soundscape \}[^\n]+\n/, '');
+const source = navigationSource + '\n' + storageSource + '\n' + cacheSource + '\n' + soundStub + '\n' + portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/^import .*from '\.\/(?:world-store|atlas-cache)\.mjs';\n/gm,'').replace(/import \{ compassReading \}[^\n]+\n/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '').replace(/import \{ Soundscape \}[^\n]+\n/, '');
 class Element {
   constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; this.children=[]; this._text=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
@@ -18,6 +19,7 @@ class Element {
   click(){this.fire('click');}
   get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
   set textContent(value){this._text=String(value);this.children=[];}
+  contains(node){return node===this || this.children.some(child=>child.contains(node));}
   get firstElementChild(){return this.children[0];}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(c=>c!==this);}
   removeAttribute(name){delete this.attributes[name];}
@@ -309,7 +311,7 @@ async function verifyRemovedFilterMigration() {
   for(const key of Object.keys(existing).filter(key=>!['filterMode','filterStrength','asciiScale','asciiPalette'].includes(key))) assert.deepEqual(persisted[key],existing[key],`Filter migration must preserve ${key}.`);
   const restored=filterHarness(persisted); await restored.run('boot()');
   assert.deepEqual(restored.calls,[[1,1]],'Migrated Bloom must survive reload.');
-  const filterOptions=html.match(/<select id="filter-select"[^>]*>([\s\S]*?)<\/select>/)?.[1];
+  const filterOptions=html.match(/<select\b[^>]*\bid="filter-select"[^>]*>([\s\S]*?)<\/select>/)?.[1];
   assert.deepEqual([...filterOptions.matchAll(/<option value="(\d+)"/g)].map(match=>Number(match[1])).sort(),[0,1,2]);
   for (const invalid of [3,-1,99,'invalid']) {
     selected.ids['filter-select'].value=String(invalid); selected.ids['filter-select'].fire('change');
@@ -320,7 +322,7 @@ async function verifyRemovedFilterMigration() {
 
 async function verifyGroundCoverSettings() {
   const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:2,filterStrength:0.8,renderResolution:720,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
-  const controls = html.match(/<input id="ground-cover-density"[^>]+>/)?.[0];
+  const controls = html.match(/<input\b[^>]*\bid="ground-cover-density"[^>]+>/)?.[0];
   assert.ok(controls, 'Ground-cover control must exist in the actual settings HTML.');
   for (const attr of ['type="range"','min="0"','max="400"','step="25"','value="400"','aria-describedby="ground-cover-density-help"']) assert.ok(controls.includes(attr), attr);
   const selected = filterHarness(existing);
@@ -370,10 +372,10 @@ async function verifyGroundCoverSettings() {
 
 async function verifyWeatherSettings() {
   const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:1,filterStrength:.8,renderResolution:720,groundCoverDensity:4,sunShadows:false,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
-  const slider = html.match(/<input id="weather-speed"[^>]+>/)?.[0];
+  const slider = html.match(/<input\b[^>]*\bid="weather-speed"[^>]+>/)?.[0];
   assert.ok(slider,'The weather speed slider must exist in the actual HTML.');
   for (const attr of ['type="range"','min="0.25"','max="20"','step="0.25"','value="1"','aria-describedby="weather-speed-help"']) assert.ok(slider.includes(attr),attr);
-  const modeSelect = html.match(/<select id="weather-mode"[^>]*>([\s\S]*?)<\/select>/)?.[1];
+  const modeSelect = html.match(/<select\b[^>]*\bid="weather-mode"[^>]*>([\s\S]*?)<\/select>/)?.[1];
   assert.ok(modeSelect);
   const modeOptions = Object.fromEntries([...modeSelect.matchAll(/<option value="(\d+)"[^>]*>([^<]+)<\/option>/g)].map(match=>[match[1],match[2]]));
   assert.deepEqual(modeOptions,{0:'Automatic',1:'Clear',2:'Cloudy',3:'Rain',4:'Storm',5:'Tempest',6:'Snow',7:'Blizzard',8:'Overcast'},'Every visible mode must use the WASM mode number.');
@@ -421,7 +423,8 @@ async function verifyWeatherSettings() {
   }
   h.ids['compass-track'].parentElement={clientWidth:320};
   h.run("modal='settings';state.dayTime=9;state.weather={label:'Blizzard',modeLabel:'Automatic',temperature:-5.7,windX:22,windZ:4,cloudCover:.9,rain:0,snow:.82,wetness:.6,snowCover:.5};state.reflectionDraws=12;updateHUD(100);");
-  assert.equal(h.ids['weather-hud'].textContent,'Blizzard · -6°C');
+  assert.equal(h.ids['weather-hud'].textContent,'-6°C');
+  assert.equal(h.ids['weather-hud'].attributes['aria-label'],'Blizzard · -6°C');
   assert.match(h.ids['weather-current'].textContent,/Blizzard · -6°C · Automatic/);
   assert.match(h.ids['weather-air'].textContent,/Wind fierce · cloud 90% · rain 0% · snow 82%/);
   assert.equal(h.ids['weather-ground'].textContent,'Ground wetness 60% · snow cover 50%');
@@ -509,7 +512,109 @@ async function verifySkyAndWalkControls() {
   console.log('PASS: celestial presets; natural-wonder viewpoint travel; continuous walk navigation and completion.');
 }
 
+async function verifyGameShell() {
+  const h = filterHarness({seed:1337,x:42,z:84});
+  await h.run('boot()'); h.run('initialReady=true; started=true;');
+  h.run("keys.add('KeyW'); setQuickMenu(true)");
+  assert.equal(h.run('quickMenuOpen'),true);
+  assert.equal(h.run('focusedLook'),false);
+  assert.equal(h.run('keys.size'),0,'Opening the quick menu clears movement.');
+  assert.equal(h.ids['quick-menu-toggle'].attributes['aria-expanded'],'true');
+  h.run("document.fire('keydown', {code:'KeyW',target:document.body})");
+  assert.equal(h.run('keys.size'),0,'Quick-menu navigation must not move the player.');
+  h.run("document.fire('keydown', {code:'Escape',target:document.body})");
+  assert.equal(h.run('quickMenuOpen'),false);
+  assert.equal(h.run('modal'),null,'Escape first dismisses the quick menu.');
+  h.run("document.fire('keydown', {code:'KeyQ',target:document.body})");
+  assert.equal(h.run('quickMenuOpen'),true);
+  h.ids['bag-button'].fire('click');
+  assert.equal(h.run('quickMenuOpen'),false);
+  assert.equal(h.run('modal'),'bag');
+  assert.equal(h.run("modalReturnFocus === $('quick-menu-toggle')"),true);
+  h.run("closeModal(); setQuickMenu(true); document.fire('pointerdown', {target:document.body})");
+  assert.equal(h.run('quickMenuOpen'),false,'Clicking outside dismisses the quick menu.');
+  h.run('setQuickMenu(true)');
+  h.ids['hud-options-button'].fire('click');
+  assert.equal(h.run('modal'),'options');
+  h.run('backFromMenu()');
+  assert.equal(h.run('modal'),null);
+  assert.equal(h.run('quickMenuOpen'),true,'Options returns to the menu it was opened from.');
+  h.run("openModal('pause')");
+  assert.equal(h.run('modal'),'pause');
+  assert.equal(h.ids['pause-modal'].classList.contains('hidden'),false);
+  h.ids['options-button'].fire('click');
+  assert.equal(h.run('modal'),'options');
+  assert.equal(h.ids['pause-modal'].classList.contains('hidden'),true);
+  h.run("showOptionsPage('audio')");
+  assert.equal(h.ids['options-audio'].classList.contains('hidden'),false);
+  assert.equal(h.ids['options-graphics'].classList.contains('hidden'),true);
+  assert.equal(h.ids['option-audio'].attributes['aria-current'],'page');
+  h.run('backFromMenu()'); assert.equal(h.run('modal'),'pause');
+  h.ids['resume-button'].fire('click'); assert.equal(h.run('modal'),null);
+  assert.equal(h.run('focusedLook'),true);
+  h.run("openModal('equipment')");
+  assert.equal(h.ids['equipment-modal'].classList.contains('hidden'),false);
+  h.run("openModal('settings')");
+  assert.equal(h.ids['equipment-modal'].classList.contains('hidden'),true);
+  assert.equal(h.ids['settings-modal'].classList.contains('hidden'),false);
+  h.ids['ui-text-size'].value='large';h.ids['ui-text-size'].fire('change');
+  h.ids['ui-hud-detail'].value='minimal';h.ids['ui-hud-detail'].fire('change');
+  h.ids['ui-contrast'].value='high';h.ids['ui-contrast'].fire('change');
+  assert.equal(h.saved().uiTextSize,'large');
+  assert.equal(h.saved().uiHudDetail,'minimal');
+  assert.equal(h.saved().uiContrast,'high');
+  assert.equal(h.saved().x,42);assert.equal(h.saved().z,84);
+  const restored=filterHarness(h.saved());
+  assert.equal(restored.ids['ui-text-size'].value,'large');
+  assert.equal(restored.ids['ui-hud-detail'].value,'minimal');
+  assert.equal(restored.ids['ui-contrast'].value,'high');
+  h.ids['title-button'].fire('click');
+  assert.equal(h.run('started'),false);assert.equal(h.run('modal'),null);
+  assert.equal(h.ids.intro.classList.contains('hidden'),false);
+  assert.equal(h.saved().x,42);assert.equal(h.saved().z,84);
+  console.log('PASS: quick-menu toggle, Escape, outside click, movement isolation, pause/resume, exclusive RPG screens, options/back, debug tools, saved interface preferences, and title return without losing position.');
+}
+
+async function verifyCompassFrames() {
+  const h = filterHarness({seed:1337,x:0,z:0});
+  await h.run('boot()');
+  h.run(`
+    initialReady = true; started = true; lastFrame = 1000; lastHUD = 1000;
+    let cameraYaw = 0, cameraX = 0, packetReads = 0, stateReads = 0, audioFrames = 0;
+    const originalState = game.state;
+    game.state = () => { stateReads++; return originalState(); };
+    game.tick = () => { cameraYaw += .01; };
+    game.lightning_audio_frame = () => { packetReads++; return [0,0,0,0,0,0,0,cameraX,2,0,cameraYaw,0,0,0]; };
+    waypoint = {name:'North',x:0,z:-100};
+    soundscape.ready = false; soundscape.active = false;
+  `);
+  const positions = [];
+  const pins = [];
+  for (const time of [1016,1032,1048]) {
+    h.run(`renderFrame(${time})`);
+    assert.equal(h.run('fatal'),false);
+    positions.push(h.ids['compass-track'].children[0].style.left);
+    pins.push(h.ids['compass-pin'].style.left);
+  }
+  assert.equal(new Set(positions).size,3,'Compass must follow sub-degree turns every frame, between HUD refreshes.');
+  assert.equal(new Set(pins).size,3,'Pinned marker must move on the same frames.');
+  assert.equal(h.run('stateReads'),0,'Smooth compass must not trigger full world probes.');
+  assert.equal(h.run('packetReads'),3,'Compass works even when audio is disabled.');
+  h.run('cameraX = 25; renderFrame(1064)');
+  assert.notEqual(h.ids['compass-pin'].style.left,pins.at(-1),'Marker uses current camera position, not throttled player state.');
+  h.run('soundscape.ready = true; soundscape.active = true; soundscape.updateLightningFrame = () => audioFrames++; renderFrame(1080)');
+  assert.equal(h.run('packetReads'),5,'Audio and compass share one packet per frame.');
+  assert.equal(h.run('audioFrames'),1);
+  h.run('renderFrame(1112)');
+  assert.equal(h.run('stateReads'),1,'Full status stays on its slower refresh cadence.');
+  h.run("soundscape.active = false; openModal('pause'); renderFrame(1128)");
+  assert.equal(h.run('packetReads'),6,'Hidden compass does not request camera packets.');
+  console.log('PASS: frame-synchronous compass and pin, live camera position, muted audio, shared frame packet, and throttled full-state reads.');
+}
+
 async function main(){
+  await verifyGameShell();
+  await verifyCompassFrames();
   assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),null); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
   ids.world.fire('click',{clientX:10,clientY:20});
@@ -517,17 +622,19 @@ async function main(){
   document.pointerLockElement=ids.world;document.fire('pointerlockchange');
   assert.equal(run('locked'),true);
   document.fire('mousemove',{movementX:10,movementY:-5}); assert.deepEqual(looks.at(-1),[14,-7]);
-  key('Escape');assert.equal(run('focusedLook'),false);assert.equal(run('locked'),false);
+  key('Escape');assert.equal(run('focusedLook'),false);assert.equal(run('locked'),false);assert.equal(run('modal'),'pause');key('Escape');assert.equal(run('modal'),null);
   ids.world.requestPointerLock=()=>Promise.reject(new Error('Blocked by host'));
   ids.world.fire('click',{clientX:10,clientY:10}); await new Promise(setImmediate);
   assert.equal(run('focusedLook'),true);assert.equal(run('pointerLockFallback'),true);
   document.fire('mousemove',{clientX:30,clientY:20});assert.deepEqual(looks.at(-1),[28,14]);
-  key('Escape');const count=looks.length;document.fire('mousemove',{clientX:60,clientY:30});assert.equal(looks.length,count);
+  key('Escape');const count=looks.length;document.fire('mousemove',{clientX:60,clientY:30});assert.equal(looks.length,count);assert.equal(run('modal'),'pause');key('Escape');
   // Escape during a pending request must survive both late rejection and success.
   ids.world.requestPointerLock=()=>new Promise((_,reject)=>rejected=reject);
   ids.world.fire('click',{clientX:5,clientY:5});assert.equal(run('lockPending'),true);
   key('Escape');rejected(new Error('Late'));await new Promise(setImmediate);assert.equal(run('focusedLook'),false);
   document.pointerLockElement=ids.world;document.fire('pointerlockchange');assert.equal(document.pointerLockElement,null);assert.equal(run('focusedLook'),false);
+  key('KeyO');assert.equal(run('modal'),'settings');key('KeyO');assert.equal(run('modal'),null);
+  run('locked=true;focusedLook=true;');document.pointerLockElement=null;document.fire('pointerlockchange');assert.equal(run('modal'),'pause');key('Escape');
   key('KeyM');assert.equal(run('modal'),'map');
   run('map.span=27000;map.x=450;map.z=900;');key('KeyM');assert.equal(run('modal'),null);
   key('Tab');assert.equal(run('modal'),'map');assert.equal(run('map.span'),27000);assert.equal(run('map.x'),450);

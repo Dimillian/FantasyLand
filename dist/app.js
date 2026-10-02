@@ -1,3 +1,4 @@
+import { compassReading } from './hud-navigation.js';
 import { descriptor, worldKey, validSeed, validateSave, WorldStore } from './world-store.mjs';
 import { AtlasCache } from './atlas-cache.mjs';
 import { Soundscape } from './soundscape.mjs?v=footstep-foley-3';
@@ -43,7 +44,14 @@ const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(
 let giOutstanding = false;
 let streamWorker = null, streamReady = false, streamOutstanding = 0, streamResults = [], streamDeadline = 0;
 let game, state = {}, started = false, locked = false, modal = null;
+const menuScreens = ['map', 'settings', 'bag', 'character', 'equipment', 'skills', 'pause', 'options'];
 let modalReturnFocus = null;
+let optionsPage = 'graphics';
+let optionsReturnMenu = 'pause';
+let quickMenuOpen = false;
+let uiTextSize = saved.uiTextSize === 'large' ? 'large' : 'standard';
+let uiHudDetail = saved.uiHudDetail === 'minimal' ? 'minimal' : 'full';
+let uiContrast = saved.uiContrast === 'high' ? 'high' : 'standard';
 let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
@@ -125,7 +133,7 @@ function saveProgress() {
     const snapshot=game.save_snapshot();
     const save={schema:1,updated:Date.now(),snapshot,waypoint,atlas:map.initialized?{x:map.x,z:map.z,span:map.span}:null};
     worldStore.write(save); playedSave=save;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({atlasLayer:Number($('atlas-layer').value),audio:soundscape.volumes,seed,quality,sensitivity,filterMode,filterStrength,renderResolution,antialiasing,adaptiveResolution,groundCoverDensity,meadowCarpet,sunShadows,lightingMode,weatherMode,weatherSpeed,weatherPaused,reflections,enclosure}));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({uiTextSize,uiHudDetail,uiContrast,atlasLayer:Number($('atlas-layer').value),audio:soundscape.volumes,seed,quality,sensitivity,filterMode,filterStrength,renderResolution,antialiasing,adaptiveResolution,groundCoverDensity,meadowCarpet,sunShadows,lightingMode,weatherMode,weatherSpeed,weatherPaused,reflections,enclosure}));
     $('save-status').textContent=`World ${seed} · saved locally`;
     return save;
   } catch (error) {
@@ -145,7 +153,7 @@ function loadLandscapeDestinations() {
   if (landscapeDestinations !== null || !game || !initialReady) return;
   const select = $('landscape-destination');
   try {
-    // Query lazily when this control is used, not during boot or every Settings visit.
+    // Query lazily when this control is used, not during boot or every developer-tools visit.
     const destinations = game.landscape_destinations();
     if (!Array.isArray(destinations)) throw new Error('Invalid landscape destinations');
     landscapeDestinations = destinations.filter((d) => d && typeof d.name === 'string' && d.name.trim() && Number.isFinite(d.x) && Number.isFinite(d.z) && Math.abs(d.x) < worldSize / 2 && Math.abs(d.z) < worldSize / 2).map((d) => ({ name: d.name.trim(), x: d.x, z: d.z, yaw: Number.isFinite(d.yaw) ? d.yaw : 0, pitch: Number.isFinite(d.pitch) ? d.pitch : -0.04, kind: 'landscape' }));
@@ -240,7 +248,8 @@ function updateWeatherStatus() {
   if (!weather || typeof weather.label !== 'string') return;
   const temperature = Number.isFinite(weather.temperature) ? `${Math.round(weather.temperature)}°C` : '—';
   const summary = `${weather.label} · ${temperature}`;
-  $('weather-hud').textContent = summary;
+  $('weather-hud').textContent = temperature;
+  $('weather-hud').setAttribute('aria-label', summary);
   if (modal !== 'settings') return;
   const percent = value => Number.isFinite(value) ? `${Math.round(clamp(value, 0, 1) * 100)}%` : '—';
   const wind = Math.hypot(Number(weather.windX), Number(weather.windZ));
@@ -354,7 +363,7 @@ function clearMovement() {
 // Keep requestPointerLock on the original click/Enter user-gesture stack. No
 // promise await, animation-frame callback, or pointer-capture competes with it.
 function updateFocusHint() {
-  const show = started && !modal && (!focusedLook || otherViewActive) && !fatal && !matchMedia('(pointer: coarse)').matches;
+  const show = started && !modal && !quickMenuOpen && (!focusedLook || otherViewActive) && !fatal && !matchMedia('(pointer: coarse)').matches;
   $('focus-hint').classList.toggle('hidden', !show);
   document.body.classList.toggle('mouse-focused', focusedLook && !modal);
   $('focus-hint-text').textContent = otherViewActive ? 'Another view is active · click here to resume' : focusedLook ? 'Mouse look active · Esc releases' : 'Click the world to look around';
@@ -378,6 +387,7 @@ function lockFailed(epoch = lockEpoch) {
 function captureMouse(event) {
   if (started && !otherViewActive && !document.hidden) soundscape.unlock();
   if (!started || modal || fatal || benchmark || motionCapture || matchMedia('(pointer: coarse)').matches) return;
+  setQuickMenu(false);
   canvas.focus({ preventScroll: true });
   focusedLook = true;
   lastMouse = event && Number.isFinite(event.clientX) ? { x: event.clientX, y: event.clientY } : null;
@@ -405,16 +415,45 @@ function releaseMouse() {
   updateFocusHint();
 }
 
+function setQuickMenu(open, restoreFocus = false) {
+  if (open && (!started || modal)) return;
+  quickMenuOpen = open;
+  $('quick-menu').classList.toggle('hidden', !open);
+  $('quick-menu-toggle').setAttribute('aria-expanded', String(open));
+  document.body.classList.toggle('quick-menu-open', open);
+  if (open) {
+    releaseMouse();
+    $('character-button').focus({ preventScroll: true });
+  } else if (restoreFocus) {
+    $('quick-menu-toggle').focus({ preventScroll: true });
+  }
+  updateFocusHint();
+}
+
+function quickMenuKeyboard(event) {
+  if (!quickMenuOpen || !['Tab', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.code)) return false;
+  const controls = [...$('quick-menu').querySelectorAll('button'), $('quick-menu-toggle')];
+  const index = controls.indexOf(document.activeElement);
+  const backwards = event.code === 'ArrowUp' || (event.code === 'Tab' && event.shiftKey);
+  const next = event.code === 'Home' ? 0 : event.code === 'End' ? controls.length - 1
+    : (index + (backwards ? -1 : 1) + controls.length) % controls.length;
+  controls[next].focus();
+  event.preventDefault();
+  return true;
+}
+
 function openModal(type) {
   if (!game || !initialReady) return;
   if (motionCapture) finishMotionCapture(true);
   if (benchmark) finishBenchmark(true);
   game?.end_dialogue();$('dialogue-modal').classList.add('hidden');
-  if (!modal) modalReturnFocus = document.activeElement;
+  if (type === 'options') optionsReturnMenu = quickMenuOpen ? 'quick' : 'pause';
+  if (!modal) modalReturnFocus = quickMenuOpen ? $('quick-menu-toggle') : document.activeElement;
+  setQuickMenu(false);
   modal = type;
   releaseMouse();
-  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.toggle('hidden', name !== type);
-  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', String(name === type));
+  for (const name of menuScreens) $(name + '-modal').classList.toggle('hidden', name !== type);
+  for (const name of menuScreens) $(name + '-button')?.setAttribute('aria-expanded', String(name === type));
   document.body.classList.add('modal-open');
   if (type === 'settings') {
     $('time-setting').value = Number(state.dayTime ?? 9);
@@ -422,21 +461,75 @@ function openModal(type) {
     updateWeatherStatus();
   }
   if (type === 'character') updateCharacter();
-  const initialFocus = {map: mapCanvas, settings: $('render-resolution'), bag: $('bag-open-map'), skills: $('skills-open-map')};
+  if (type === 'pause') {
+    $('pause-location').textContent = `${state.siteName || 'The wilderness'} · ${formatTime(state.dayTime)}`;
+  }
+  if (type === 'options') showOptionsPage(optionsPage);
+  const initialFocus = {
+    map: mapCanvas,
+    settings: $('time-setting'),
+    pause: $('resume-button'),
+    options: $('option-' + optionsPage),
+  };
   (initialFocus[type] || $(type + '-modal').querySelector('[data-close]')).focus({ preventScroll: true });
 }
 
 function closeModal() {
   game?.end_dialogue();$('dialogue-modal').classList.add('hidden');
   modal = null;
-  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-modal').classList.add('hidden');
-  for (const name of ['map', 'settings', 'bag', 'character', 'skills']) $(name + '-button').setAttribute('aria-expanded', 'false');
+  for (const name of menuScreens) $(name + '-modal').classList.add('hidden');
+  for (const name of menuScreens) $(name + '-button')?.setAttribute('aria-expanded', 'false');
   document.body.classList.remove('modal-open');
   clearMovement();
   const restore = modalReturnFocus && modalReturnFocus !== document.body && modalReturnFocus.getClientRects().length ? modalReturnFocus : canvas;
   restore.focus({ preventScroll: true }); modalReturnFocus = null;
   updateFocusHint();
   saveProgress();
+}
+
+function showOptionsPage(page) {
+  optionsPage = page;
+  for (const name of ['graphics', 'audio', 'controls', 'interface']) {
+    $('options-' + name).classList.toggle('hidden', name !== page);
+    $('option-' + name).setAttribute('aria-current', name === page ? 'page' : 'false');
+  }
+}
+
+function applyInterfacePreferences() {
+  document.body.classList.toggle('large-menu-text', uiTextSize === 'large');
+  document.body.classList.toggle('minimal-hud', uiHudDetail === 'minimal');
+  document.body.classList.toggle('high-contrast', uiContrast === 'high');
+  $('ui-text-size').value = uiTextSize;
+  $('ui-hud-detail').value = uiHudDetail;
+  $('ui-contrast').value = uiContrast;
+}
+
+function backFromMenu() {
+  if (modal === 'options') {
+    if (optionsReturnMenu === 'quick') {
+      closeModal();
+      setQuickMenu(true);
+      $('hud-options-button').focus({ preventScroll: true });
+    } else {
+      openModal('pause');
+      $('options-button').focus({ preventScroll: true });
+    }
+  } else closeModal();
+}
+
+function resumeJourney(event) {
+  closeModal();
+  captureMouse(event);
+}
+
+function returnToTitle() {
+  closeModal();
+  started = false;
+  releaseMouse();
+  $('intro').classList.remove('hidden');
+  document.body.classList.add('intro-open');
+  $('start-button').textContent = 'CONTINUE YOUR JOURNEY →';
+  $('start-button').focus({ preventScroll: true });
 }
 
 function openMap() {
@@ -719,24 +812,48 @@ function updateCharacter() {
   $('character-seed').textContent = seed;
 }
 
+const compassTicks = compassReading(0, { x: 0, z: 0 }, null).ticks.map(mark => {
+  const tick = document.createElement('span');
+  const label = document.createElement('span');
+  tick.className = `compass-tick${mark.label ? ' major' : ''}${mark.cardinal ? ' cardinal' : ''}`;
+  label.textContent = mark.label;
+  tick.append(label);
+  $('compass-track').append(tick);
+  return tick;
+});
+let previousCompassPose = null;
+let previousCompassLabel = '';
+
+function updateCompass(x, z, yaw) {
+  const previous = previousCompassPose;
+  if (previous && previous.x === x && previous.z === z && previous.yaw === yaw
+    && previous.targetX === waypoint?.x && previous.targetZ === waypoint?.z) return;
+  previousCompassPose = { x, z, yaw, targetX: waypoint?.x, targetZ: waypoint?.z };
+  const navigation = compassReading(yaw, { x, z }, waypoint);
+  const label = `Compass, facing ${navigation.direction}, ${Math.round(navigation.degrees) % 360} degrees`;
+  if (label !== previousCompassLabel) {
+    $('compass').setAttribute('aria-label', label);
+    previousCompassLabel = label;
+  }
+  navigation.ticks.forEach((mark, index) => {
+    compassTicks[index].style.left = `${mark.offset}%`;
+  });
+  const pin = navigation.pin;
+  $('compass-pin').classList.toggle('hidden', !pin || pin.arrived);
+  if (pin) {
+    $('compass-pin').style.left = `${pin.offset}%`;
+    $('compass-pin').textContent = pin.edge === 'left' ? '‹' : pin.edge === 'right' ? '›' : '◆';
+    $('compass-pin').classList.toggle('at-edge', !!pin.edge);
+  }
+}
+
 function updateHUD(now) {
   const prompt=state.interaction || ''; $('interaction-prompt').textContent=prompt;$('interaction-prompt').classList.toggle('hidden',!prompt||!!modal||!started);
 
-  const radians = Number(state.yaw || 0);
-  const degrees = (radians * 180 / Math.PI % 360 + 360) % 360;
-  const headings = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  $('heading-label').textContent = `${headings[Math.round(degrees / 45) % 8]} · ${String(Math.round(degrees) % 360).padStart(3, '0')}°`;
-  const compassWidth = $('compass-track').parentElement.clientWidth;
-  $('compass-track').innerHTML = Array.from({ length: 24 }, (_, i) => {
-    const angle = i * 15;
-    const diff = (angle - degrees + 540) % 360 - 180;
-    if (Math.abs(diff) > 80) return '';
-    const major = i % 3 === 0;
-    return `<span class="${major ? '' : 'minor'}" style="left:${diff * compassWidth / 120}px">${major ? headings[i / 3] : '·'}</span>`;
-  }).join('');
+  updateWalk();
+  const navigation = compassReading(Number(state.yaw || 0), state, waypoint);
   const biome = niceName(state.forest || state.landscape || state.biome || 'Wilderness');
-  $('biome-label').textContent = biome;
-  $('place-name').textContent = state.siteName || 'The Wilds';
+  $('place-name').textContent = state.siteName && state.siteName !== 'The Wilds' ? state.siteName : biome;
   $('clock').textContent = formatTime(state.dayTime);
   updateWeatherStatus();
   for (const name of ['health', 'mana', 'stamina']) {
@@ -744,24 +861,15 @@ function updateHUD(now) {
     $(name + '-fill').style.width = `${amount}%`;
     $(name + '-value').textContent = amount;
     $(name + '-meter').setAttribute('aria-valuenow', amount);
+    $(name + '-stat').classList.toggle('is-depleted', amount < 100);
   }
-  updateWalk();
-  if (waypoint) {
-    const distance = Math.hypot(waypoint.x - state.x, waypoint.z - state.z);
-    $('journey-target').textContent = `◇ ${waypoint.name}`;
-    $('journey-distance').textContent = activeJourney ? `${fmtDistance(distance)} to the next turn · route in atlas` : distance < 40 ? 'Destination reached.' : `${fmtDistance(distance)} · ~${Math.max(1, Math.round(distance / 330))} min on foot`;
-    const bearing = Math.atan2(waypoint.x - state.x, -(waypoint.z - state.z));
-    const angle = wrapAngle(bearing - radians);
-    const markerVisible = Math.abs(angle) < .8 && distance >= 40 && !modal;
-    $('destination-marker').classList.toggle('hidden', !markerVisible);
-    if (markerVisible) {
-      $('destination-marker').style.left = `${50 + Math.tan(angle) * 43}%`;
-      $('marker-distance').textContent = fmtDistance(distance);
-    }
-  } else {
-    $('journey-target').textContent = 'A road of your own';
-    $('journey-distance').textContent = `${fmtDistance(Number(state.walked || 0))} explored`;
-    $('destination-marker').classList.add('hidden');
+  const pin = navigation.pin;
+  $('pinned-location').classList.toggle('hidden', !pin);
+  if (pin) {
+    $('journey-target').textContent = waypoint.name;
+    $('journey-distance').textContent = pin.arrived ? 'Arrived' : fmtDistance(pin.distance);
+    const direction = pin.arrived ? 'arrived' : pin.edge ? `turn ${pin.edge}` : 'ahead';
+    $('pinned-location').setAttribute('aria-label', `Pinned: ${waypoint.name}, ${fmtDistance(pin.distance)}, ${direction}`);
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
@@ -886,7 +994,7 @@ function renderFrame(now) {
     if (benchmark) updateBenchmark(now, frameGap);
     if (motionCapture) updateMotionCapture(now);
     updateAdaptiveResolution(now, frameGap);
-    const moving = started && !modal && !document.hidden && !benchmark && !motionCapture;
+    const moving = started && !modal && !quickMenuOpen && !document.hidden && !benchmark && !motionCapture;
     let forward = moving ? Number(keys.has('KeyW') || keys.has('ArrowUp') || touchMoves.has('forward')) - Number(keys.has('KeyS') || keys.has('ArrowDown') || touchMoves.has('back')) : 0;
     let strafe = moving ? Number(keys.has('KeyD') || keys.has('ArrowRight') || touchMoves.has('right')) - Number(keys.has('KeyA') || keys.has('ArrowLeft') || touchMoves.has('left')) : 0;
     // Avoid diagonal movement being faster than walking straight.
@@ -895,13 +1003,22 @@ function renderFrame(now) {
     if (benchmark?.walking && benchmark.phase === "sample") { forward=1;strafe=0; }
     if (motionCapture?.phase === "record") {forward=1;strafe=0;}
     pumpStreaming();
-    game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
+    game.tick((modal && modal !== 'settings') || !started ? 0 : dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
-    if(soundscape.ready && soundscape.active && game.lightning_audio_frame) soundscape.updateLightningFrame(game.lightning_audio_frame());
+    const compassVisible = started && !modal && !document.body.classList.contains('photo-mode');
+    const audioNeedsFrame = soundscape.ready && soundscape.active;
+    if (game.lightning_audio_frame && (compassVisible || audioNeedsFrame)) {
+      // This small engine packet already carries rendered camera x/y/z/yaw at
+      // indices 7–10. Share one read with audio instead of probing game.state()
+      // (terrain, settlements, weather, acoustics) at the rendering frequency.
+      const frame = game.lightning_audio_frame();
+      if (audioNeedsFrame) soundscape.updateLightningFrame(frame);
+      if (compassVisible) updateCompass(frame[7], frame[9], frame[10]);
+    }
     if (now-lastHUD > 100) {
       state = game.state();
       soundscape.update(state,{moving,dialogue:modal==='dialogue',lightningPerFrame:true});
-      $('sound-status').textContent = soundscape.failed ? 'Audio unavailable in this browser.' : soundscape.loading ? 'Preparing the soundscape…' : !soundscape.ctx ? 'Sound starts when you enter the world.' : soundscape.volumes.master===0 ? 'Muted' : 'Wind · wildlife · water · footsteps';
+      $('sound-status').textContent = soundscape.failed ? 'Audio unavailable' : soundscape.loading ? 'Loading audio…' : !soundscape.ctx ? '' : soundscape.volumes.master===0 ? 'Muted' : '';
     }
     if (benchmark?.phase === "sample") benchmark.cpu.push(performance.now()-frameStart);
     if (!initialReady && (!game.is_ready || game.is_ready())) {
@@ -997,7 +1114,7 @@ $('export-rejected-save').addEventListener('click',()=>{
   const raw=worldStore.preserved(worldIdentity);if(!raw)return;
   const url=URL.createObjectURL(new Blob([raw],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`fantasyland-preserved-${seed}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
-for (const type of ['map', 'bag', 'character', 'skills', 'settings']) {
+for (const type of ['map', 'bag', 'character', 'equipment', 'skills', 'settings', 'pause']) {
   $(type + '-button').setAttribute('aria-expanded', 'false');
   $(type + '-button').addEventListener('click', () => {
     if (!started) return;
@@ -1005,7 +1122,45 @@ for (const type of ['map', 'bag', 'character', 'skills', 'settings']) {
   });
 }
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', closeModal);
-for (const overlay of document.querySelectorAll('.overlay')) overlay.addEventListener('click', (event) => { if (event.target === overlay) closeModal(); });
+for (const overlay of document.querySelectorAll('.overlay')) {
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay && modal !== 'pause') backFromMenu();
+  });
+}
+for (const button of document.querySelectorAll('[data-screen]')) {
+  button.addEventListener('click', () => {
+    if (button.dataset.screen === 'map') openMap();
+    else openModal(button.dataset.screen);
+  });
+}
+for (const button of document.querySelectorAll('[data-option]')) {
+  button.addEventListener('click', () => showOptionsPage(button.dataset.option));
+}
+for (const button of document.querySelectorAll('[data-back]')) button.addEventListener('click', backFromMenu);
+$('options-button').addEventListener('click', () => openModal('options'));
+$('resume-button').addEventListener('click', resumeJourney);
+$('title-button').addEventListener('click', returnToTitle);
+$('ui-text-size').addEventListener('change', (event) => {
+  uiTextSize = event.target.value;
+  applyInterfacePreferences();
+  saveProgress();
+});
+$('ui-hud-detail').addEventListener('change', (event) => {
+  uiHudDetail = event.target.value;
+  applyInterfacePreferences();
+  saveProgress();
+});
+$('ui-contrast').addEventListener('change', (event) => {
+  uiContrast = event.target.value;
+  applyInterfacePreferences();
+  saveProgress();
+});
+applyInterfacePreferences();
+$('quick-menu-toggle').addEventListener('click', () => setQuickMenu(!quickMenuOpen, true));
+$('hud-options-button').addEventListener('click', () => openModal('options'));
+document.addEventListener('pointerdown', event => {
+  if (quickMenuOpen && !$('quick-menu').contains(event.target) && !$('quick-menu-toggle').contains(event.target)) setQuickMenu(false);
+});
 $('bag-open-map').addEventListener('click', openMap);
 $('skills-open-map').addEventListener('click', openMap);
 $('zoom-in').addEventListener('click', () => zoomMap(.70));
@@ -1250,16 +1405,26 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     if (motionCapture) {finishMotionCapture(true);toast('Recording cancelled.');}
     if (benchmark) {finishBenchmark(true);toast('Performance check cancelled.');}
-    if (modal) closeModal();
+    if (event.repeat) return;
+    if (quickMenuOpen) { setQuickMenu(false, true); return; }
+    if (modal) backFromMenu();
+    else if (started) openModal('pause');
     releaseMouse();
     return;
   }
-  if (modalKeyboard(event)) return;
+  if (quickMenuKeyboard(event) || modalKeyboard(event)) return;
   if (editing) return;
   if (event.code === 'F4') { event.preventDefault(); document.body.classList.toggle('photo-mode'); return; }
   if (event.code === 'F3') { event.preventDefault(); $('diagnostics').classList.toggle('hidden'); return; }
   if (!started) {
     if (event.code === 'Enter' && initialReady) { event.preventDefault(); startExploring(event); }
+    return;
+  }
+  if (event.code === 'KeyQ' && !modal && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    if (event.repeat) return;
+    setQuickMenu(!quickMenuOpen);
+    if (!quickMenuOpen) captureMouse(event);
     return;
   }
   // Within a modal, Tab keeps normal keyboard focus navigation; M is the atlas
@@ -1272,6 +1437,7 @@ document.addEventListener('keydown', (event) => {
     if (modal === menu) closeModal(); else if (menu === 'map') openMap(); else openModal(menu);
     return;
   }
+  if (quickMenuOpen) return;
   if(event.code==='KeyE'&&!event.repeat&&!modal){event.preventDefault();interact();return;}
   if (modal) {
     if (modal === 'map'  && event.target === mapCanvas) {
@@ -1314,10 +1480,12 @@ document.addEventListener('pointerlockchange', () => {
     document.exitPointerLock();
     return;
   }
+  const browserReleasedMouse = locked && !hasLock && focusedLook && !modal;
   locked = hasLock;
   clearTimeout(lockTimer); lockPending = false;
   if (locked) { focusedLook = true; pointerLockFallback = false; dragLook = null; }
   else { focusedLook = false; lastMouse = null; clearMovement(); }
+  if (browserReleasedMouse && started && !document.hidden) openModal('pause');
   updateFocusHint();
 });
 document.addEventListener('pointerlockerror', () => lockFailed());

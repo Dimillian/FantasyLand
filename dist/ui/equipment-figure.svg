@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 280" fill="none">
+  <!-- Neutral paper doll: a fitting diagram, not an equipped character. -->
+  <defs><linearGradient id="body" x1="25" y1="20" x2="130" y2="240" gradientUnits="userSpaceOnUse"><stop stop-color="#777865"/><stop offset=".45" stop-color="#424d46"/><stop offset="1" stop-color="#252f2c"/></linearGradient></defs>
+  <ellipse cx="80" cy="141" rx="64" ry="118" stroke="#706444" stroke-opacity=".25"/>
+  <path d="M80 5v266M10 95h140M16 174h128" stroke="#89754b" stroke-opacity=".16" stroke-dasharray="2 5"/>
+  <g fill="url(#body)" stroke="#8d8b6e" stroke-opacity=".55" stroke-width="1.2">
+    <path d="M65 28c0-12 5-18 15-18s15 6 15 18l-2 18-7 9H74l-7-9Z"/>
+    <path d="M73 55h14l3 9 21 9-7 28-10 19-2 24H68l-2-24-10-19-7-28 21-9Z"/>
+    <path d="m47 75 12 13-7 23-8 15-7 29-10-3 4-33 5-30Z"/>
+    <path d="m113 75-12 13 7 23 8 15 7 29 10-3-4-33-5-30Z"/>
+    <path d="m27 156 11 3-1 14-6 10-6-4-3-9Zm106 0-11 3 1 14 6 10 6-4 3-9Z"/>
+    <path d="M67 148h26l7 15-7 42-2 18H78l-2-28-4-12-5 40H55l2-27 2-33Z"/>
+    <path d="M55 226h13l2 27-4 8H47l-1-6 8-8Zm23 0h13l1 21 9 8-1 6H81l-4-8Z"/>
+  </g>
+  <g stroke="#b8aa7c" stroke-opacity=".3"><path d="m62 79 18 9 18-9M80 89v46m-11 5h22M62 165l10 8 15-8M68 35h24"/><path d="M42 67h17M101 67h17M15 167h12M133 167h12M47 265h26M77 265h26"/></g>
+  <g fill="#a08c59" fill-opacity=".5"><circle cx="80" cy="65" r="2"/><circle cx="80" cy="145" r="2"/><circle cx="34" cy="154" r="2"/><circle cx="126" cy="154" r="2"/></g>
+</svg>
