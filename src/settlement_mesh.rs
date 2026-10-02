@@ -56,7 +56,8 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
     for sign in [-1.0, 1.0] {
         if side {
             let x = sign * w;
-            for z in [-0.88, 0.80] {
+            let wz = b.window_z(sign);
+            for z in [wz - 0.88, wz + 0.80] {
                 block(
                     mesh,
                     b,
@@ -70,8 +71,8 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
                 block(
                     mesh,
                     b,
-                    [x - 0.2, y, -0.88],
-                    [x + 0.2, y + 0.07, 0.88],
+                    [x - 0.2, y, wz - 0.88],
+                    [x + 0.2, y + 0.07, wz + 0.88],
                     [0.26, 0.17, 0.09],
                     4.0,
                 );
@@ -103,11 +104,12 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
     for sign in [-1., 1.] {
         if side {
             let x = sign * w;
+            let wz = b.window_z(sign);
             for (z0, z1, y0, y1) in [
-                (-d, -0.85, 0., h),
-                (0.85, d, 0., h),
-                (-0.85, 0.85, 0., 1.1),
-                (-0.85, 0.85, 2.5, h),
+                (-d, wz - 0.85, 0., h),
+                (wz + 0.85, d, 0., h),
+                (wz - 0.85, wz + 0.85, 0., 1.1),
+                (wz - 0.85, wz + 0.85, 2.5, h),
             ] {
                 block(
                     mesh,
@@ -121,16 +123,16 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
             block(
                 mesh,
                 b,
-                [x - 0.17, 1.08, -1.],
-                [x + 0.17, 1.2, 1.],
+                [x - 0.17, 1.08, wz - 1.],
+                [x + 0.17, 1.2, wz + 1.],
                 [0.24, 0.16, 0.095],
                 4.,
             );
             block(
                 mesh,
                 b,
-                [x - 0.12, 1.2, -0.045],
-                [x + 0.12, 2.5, 0.045],
+                [x - 0.12, 1.2, wz - 0.045],
+                [x + 0.12, 2.5, wz + 0.045],
                 [0.23, 0.15, 0.09],
                 4.,
             );
@@ -498,6 +500,35 @@ fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
             12.,
         );
     }
+    if !matches!(b.usage, Use::Market | Use::Stable) {
+        let hx = -w + 1.;
+        let hz = b.hearth_z();
+        let top = h + rise * (1. - (hx / w).abs()) + 1.05;
+        block(
+            mesh,
+            b,
+            [hx - 0.60, h - 0.16, hz + 0.06],
+            [hx + 0.60, top, hz + 0.49],
+            [0.46, 0.41, 0.33],
+            20.,
+        );
+        block(
+            mesh,
+            b,
+            [hx - 0.69, top, hz - 0.02],
+            [hx + 0.69, top + 0.16, hz + 0.57],
+            [0.35, 0.34, 0.30],
+            17.,
+        );
+        block(
+            mesh,
+            b,
+            [hx - 0.47, top + 0.165, hz + 0.12],
+            [hx + 0.47, top + 0.17, hz + 0.43],
+            [0.09, 0.08, 0.07],
+            17.,
+        );
+    }
     if lod < 2 {
         furniture(mesh, b, lod);
     }
@@ -539,53 +570,6 @@ pub fn append_chunk(world: &World, mesh: &mut MeshData, cx: i32, cz: i32, lod: u
         for b in &l.buildings {
             if (b.x / CHUNK_SIZE).floor() as i32 == cx && (b.z / CHUNK_SIZE).floor() as i32 == cz {
                 building(mesh, b, lod);
-            }
-        }
-        // Narrow, subdivided paths follow precisely the same earthwork surface.
-        for street in &l.streets {
-            for s in street.points.windows(2) {
-                let d = [s[1][0] - s[0][0], s[1][1] - s[0][1]];
-                let length = d[0].hypot(d[1]);
-                let steps = (length / 3.).ceil().max(1.) as usize;
-                let across = [
-                    -d[1] / length.max(0.001) * street.width,
-                    d[0] / length.max(0.001) * street.width,
-                ];
-                for i in 0..steps {
-                    let a = [
-                        s[0][0] + d[0] * i as f32 / steps as f32,
-                        s[0][1] + d[1] * i as f32 / steps as f32,
-                    ];
-                    let b = [
-                        s[0][0] + d[0] * (i + 1) as f32 / steps as f32,
-                        s[0][1] + d[1] * (i + 1) as f32 / steps as f32,
-                    ];
-                    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-                    if (mid[0] / CHUNK_SIZE).floor() as i32 != cx
-                        || (mid[1] / CHUNK_SIZE).floor() as i32 != cz
-                    {
-                        continue;
-                    }
-                    let p = |p: [f32; 2], sign: f32| {
-                        let x = p[0] + across[0] * sign;
-                        let z = p[1] + across[1] * sign;
-                        [
-                            x,
-                            crate::geometry::terrain_surface_height_lod(world, x, z, lod) + 0.075,
-                            z,
-                        ]
-                    };
-                    let first = mesh.vertices.len();
-                    mesh.quad(
-                        p(a, -1.),
-                        p(b, -1.),
-                        p(b, 1.),
-                        p(a, 1.),
-                        [0.47, 0.39, 0.25],
-                        2.,
-                    );
-                    tinted(mesh, first, 0.);
-                }
             }
         }
     }
@@ -719,8 +703,8 @@ pub fn glass_mesh(world: &World, eye: [f32; 3]) -> MeshData {
         for face in 0..3 {
             let [w, d] = b.half;
             let point = |x, y| match face {
-                0 => b.point(-w, y, x),
-                1 => b.point(w, y, x),
+                0 => b.point(-w, y, x + b.window_z(-1.)),
+                1 => b.point(w, y, x + b.window_z(1.)),
                 _ => b.point(x, y, d),
             };
             let first = mesh.vertices.len();

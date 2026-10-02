@@ -105,14 +105,180 @@ fn ground_vertex(world: &World, x: f32, z: f32) -> GroundVertex {
     let s = world.sample(x, z);
     let color = ecology::ground_color(world.seed, x, z, &s);
     let wet = mix(color, [0.34, 0.34, 0.25], (s.river * 0.7).clamp(0.0, 0.7));
-    // Explicit draped ribbons carry road color. Tinting coarse terrain vertices
-    // inflated narrow paths into large triangular patches.
+    // Road paint refines only affected terrain cells before adding road pigment;
+    // coarse terrain vertices alone would inflate paths into triangular patches.
     let color = wet;
     GroundVertex {
         position: [x, s.height, z],
         normal: [0., 1., 0.],
         color,
         water: s.water_height,
+    }
+}
+
+/// Sparse road coverage over a terrain chunk. A single tessellated substrate
+/// owns junctions, so overlapping ribbons cannot z-fight or reveal triangle caps.
+struct RoadPaint {
+    ox: f32,
+    oz: f32,
+    step: f32,
+    segments: Vec<([f32; 2], [f32; 2], f32, f32)>,
+    cells: std::collections::HashMap<(i32, i32), Vec<usize>>,
+}
+impl RoadPaint {
+    fn new(world: &World, ox: f32, oz: f32, step: f32) -> Self {
+        let mut paint = Self {
+            ox,
+            oz,
+            step,
+            segments: vec![],
+            cells: Default::default(),
+        };
+        for road in world.road_routes_near(ox + CHUNK_SIZE * 0.5, oz + CHUNK_SIZE * 0.5, CHUNK_SIZE)
+        {
+            for s in road.points.windows(2) {
+                paint.add(
+                    s[0],
+                    s[1],
+                    road.kind.half_width(),
+                    road.kind.shoulder_width().max(1.0),
+                );
+            }
+        }
+        for l in world.settlements.layouts_near(
+            world,
+            ox + CHUNK_SIZE * 0.5,
+            oz + CHUNK_SIZE * 0.5,
+            CHUNK_SIZE * 0.72,
+        ) {
+            for street in &l.streets {
+                for s in street.points.windows(2) {
+                    paint.add(s[0], s[1], street.width, 1.1);
+                }
+            }
+        }
+        paint
+    }
+    fn add(&mut self, a: [f32; 2], b: [f32; 2], width: f32, shoulder: f32) {
+        let reach = width * 1.15 + shoulder;
+        let lo = [
+            a[0].min(b[0]) - self.ox - reach,
+            a[1].min(b[1]) - self.oz - reach,
+        ];
+        let hi = [
+            a[0].max(b[0]) - self.ox + reach,
+            a[1].max(b[1]) - self.oz + reach,
+        ];
+        if hi[0] < 0. || hi[1] < 0. || lo[0] > CHUNK_SIZE || lo[1] > CHUNK_SIZE {
+            return;
+        }
+        let id = self.segments.len();
+        self.segments.push((a, b, width, shoulder));
+        let cell = |v: f32| (v / self.step).floor() as i32;
+        for x in cell(lo[0].max(-self.step))..=cell(hi[0].min(CHUNK_SIZE)) {
+            for z in cell(lo[1].max(-self.step))..=cell(hi[1].min(CHUNK_SIZE)) {
+                self.cells.entry((x, z)).or_default().push(id);
+            }
+        }
+    }
+    fn coverage(&self, p: [f32; 2], footprint: f32) -> f32 {
+        let cell = (
+            ((p[0] - self.ox) / self.step).floor() as i32,
+            ((p[1] - self.oz) / self.step).floor() as i32,
+        );
+        let Some(ids) = self.cells.get(&cell) else {
+            return 0.;
+        };
+        let mut coverage = 0f32;
+        for &id in ids {
+            let (a, b, width, shoulder) = self.segments[id];
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1])
+                / (d[0] * d[0] + d[1] * d[1]).max(0.0001))
+            .clamp(0., 1.);
+            let distance = (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1]);
+            let width = width
+                * (0.94
+                    + 0.065 * (p[0] * 0.18 + p[1] * 0.12).sin()
+                    + 0.035 * (p[1] * 0.39 - p[0] * 0.23).sin());
+            let blend = ((width + shoulder + footprint * 0.2 - distance)
+                / (shoulder + footprint * 0.4))
+                .clamp(0., 1.);
+            coverage = coverage.max(blend * blend * (3. - 2. * blend));
+        }
+        coverage
+    }
+    fn cell_mesh(
+        &self,
+        mesh: &mut MeshData,
+        ground: [GroundVertex; 4],
+        diagonal: bool,
+        ix: usize,
+        iz: usize,
+    ) -> bool {
+        if !self.cells.contains_key(&(ix as i32, iz as i32)) {
+            return false;
+        }
+        let divisions = (self.step / 1.5).ceil().clamp(2., 16.) as usize;
+        let at = |x: usize, z: usize| {
+            let u = x as f32 / divisions as f32;
+            let v = z as f32 / divisions as f32;
+            let (g, weights) = if diagonal {
+                if u + v <= 1. {
+                    ([ground[0], ground[1], ground[3]], [1. - u - v, v, u])
+                } else {
+                    (
+                        [ground[2], ground[1], ground[3]],
+                        [u + v - 1., 1. - u, 1. - v],
+                    )
+                }
+            } else if v >= u {
+                ([ground[0], ground[1], ground[2]], [1. - v, v - u, u])
+            } else {
+                ([ground[0], ground[3], ground[2]], [1. - u, u - v, v])
+            };
+            let blend = |values: [[f32; 3]; 3]| {
+                std::array::from_fn(|k| {
+                    values[0][k] * weights[0]
+                        + values[1][k] * weights[1]
+                        + values[2][k] * weights[2]
+                })
+            };
+            let mut p = GroundVertex {
+                position: blend(g.map(|g| g.position)),
+                normal: blend(g.map(|g| g.normal)),
+                color: blend(g.map(|g| g.color)),
+                water: g[0].water * weights[0] + g[1].water * weights[1] + g[2].water * weights[2],
+            };
+            // XZ remains an exact shared lattice even at continental coordinates.
+            p.position[0] = ground[0].position[0] + u * self.step;
+            p.position[2] = ground[0].position[2] + v * self.step;
+            let coverage = if p.position[1] < p.water {
+                0.
+            } else {
+                self.coverage([p.position[0], p.position[2]], self.step / divisions as f32)
+            };
+            p.color = mix(p.color, [0.49, 0.395, 0.25], coverage * 0.88);
+            p
+        };
+        let points: Vec<_> = (0..=divisions)
+            .flat_map(|z| (0..=divisions).map(move |x| (x, z)))
+            .map(|(x, z)| at(x, z))
+            .collect();
+        let at = |x, z| points[z * (divisions + 1) + x];
+        for z in 0..divisions {
+            for x in 0..divisions {
+                let [a, b, c, d] = [at(x, z), at(x, z + 1), at(x + 1, z + 1), at(x + 1, z)];
+                if diagonal {
+                    terrain_triangle(mesh, a, b, d, 1.);
+                    terrain_triangle(mesh, b, c, d, 1.);
+                } else {
+                    terrain_triangle(mesh, a, b, c, 1.);
+                    terrain_triangle(mesh, a, c, d, 1.);
+                }
+            }
+        }
+        true
     }
 }
 
@@ -137,6 +303,7 @@ pub fn terrain_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
     };
     smooth_ground_grid(world, ox, oz, step, divisions, &mut grid);
     let at = |x: usize, z: usize| grid[z * (divisions + 1) + x];
+    let road_paint = RoadPaint::new(world, ox, oz, step);
     for z in 0..divisions {
         for x in 0..divisions {
             let a = at(x, z);
@@ -148,6 +315,9 @@ pub fn terrain_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
                 (ox / step) as i32 + x as i32,
                 (oz / step) as i32 + z as i32,
             );
+            if road_paint.cell_mesh(&mut mesh, [a, b, c, d], h & 1 == 0, x, z) {
+                continue;
+            }
             let tone = 0.99 + rand01(h) * 0.02;
             // Alternating diagonals avoid a strong regular diagonal pattern on slopes.
             if h & 1 == 0 {
@@ -182,7 +352,6 @@ pub fn terrain_chunk(world: &World, cx: i32, cz: i32, lod: u32) -> MeshData {
             );
         }
     }
-    road_ribbons(world, &mut mesh, ox, oz, divisions, &grid);
     mesh
 }
 fn smooth_ground_grid(
@@ -565,251 +734,8 @@ fn grid_height(
         a + (d - a) * u + (c - d) * v
     }
 }
-// Shared mitered cross-sections close the wedges between curved route segments.
-fn road_cross_section(points: &[[f32; 2]], index: usize) -> [f32; 2] {
-    let normal = |a: [f32; 2], b: [f32; 2]| {
-        let dx = b[0] - a[0];
-        let dz = b[1] - a[1];
-        let len = dx.hypot(dz).max(0.001);
-        [dz / len, -dx / len]
-    };
-    if index == 0 {
-        return normal(points[0], points[1]);
-    }
-    if index + 1 == points.len() {
-        return normal(points[index - 1], points[index]);
-    }
-    let a = normal(points[index - 1], points[index]);
-    let b = normal(points[index], points[index + 1]);
-    let divisor = (1.0 + a[0] * b[0] + a[1] * b[1]).max(0.625);
-    [(a[0] + b[0]) / divisor, (a[1] + b[1]) / divisor]
-}
-
 fn bridge_half_width(kind: RoadKind) -> f32 {
     kind.half_width() + 0.2
-}
-
-fn road_ribbons(
-    world: &World,
-    mesh: &mut MeshData,
-    ox: f32,
-    oz: f32,
-    divisions: usize,
-    grid: &[GroundVertex],
-) {
-    let step = CHUNK_SIZE / divisions as f32;
-    for road in world.road_routes_near(ox + CHUNK_SIZE / 2.0, oz + CHUNK_SIZE / 2.0, CHUNK_SIZE) {
-        let width = road.kind.half_width();
-        let verge = width + road.kind.shoulder_width();
-        let margin = verge * 2.0 + 3.0;
-        for (segment_index, segment) in road.points.windows(2).enumerate() {
-            let section_a = road_cross_section(&road.points, segment_index);
-            let section_b = road_cross_section(&road.points, segment_index + 1);
-            let a = segment[0];
-            let b = segment[1];
-            let dx = b[0] - a[0];
-            let dz = b[1] - a[1];
-            let len = (dx * dx + dz * dz).sqrt();
-            if len < 0.01 {
-                continue;
-            }
-            let pieces = (len / 5.0).ceil() as usize;
-            for i in 0..pieces {
-                let t0 = i as f32 / pieces as f32;
-                let t1 = (i + 1) as f32 / pieces as f32;
-                let mx = a[0] + dx * (t0 + t1) / 2.0;
-                let mz = a[1] + dz * (t0 + t1) / 2.0;
-                // Include strips whose center is outside but whose shoulders
-                // reach this chunk. Actual ownership comes from triangle clipping.
-                if mx < ox - margin
-                    || mx > ox + CHUNK_SIZE + margin
-                    || mz < oz - margin
-                    || mz > oz + CHUNK_SIZE + margin
-                {
-                    continue;
-                }
-                let sample = world.sample(mx, mz);
-                if sample.water_height > sample.height {
-                    continue;
-                }
-                let ground = ecology::ground_color(world.seed, mx, mz, &sample);
-                let base_color = match road.kind {
-                    RoadKind::Main => [0.56, 0.44, 0.28],
-                    RoadKind::Lane => [0.47, 0.39, 0.25],
-                    RoadKind::Trail => mix(ground, [0.44, 0.36, 0.23], 0.76),
-                };
-                let path_color = mul(
-                    base_color,
-                    0.96 + rand01(hash(world.seed ^ 0x524f4144, mx as i32, mz as i32)) * 0.08,
-                );
-                let start = [a[0] + dx * t0, a[1] + dz * t0];
-                let end = [a[0] + dx * t1, a[1] + dz * t1];
-                for (left, right, color) in [
-                    (-verge, -width, mix(ground, path_color, 0.35)),
-                    (-width, width, path_color),
-                    (width, verge, mix(ground, path_color, 0.35)),
-                ] {
-                    // Work in chunk-local XZ so clipping stays accurate far
-                    // from the origin. A road quad may cross multiple planes.
-                    let footprint = [
-                        (start, t0, left),
-                        (end, t1, left),
-                        (end, t1, right),
-                        (start, t0, right),
-                    ]
-                    .map(|(p, t, side)| {
-                        let section = [
-                            section_a[0] + (section_b[0] - section_a[0]) * t,
-                            section_a[1] + (section_b[1] - section_a[1]) * t,
-                        ];
-                        [p[0] + section[0] * side - ox, p[1] + section[1] * side - oz]
-                    });
-                    let min_x = footprint.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-                    let max_x = footprint
-                        .iter()
-                        .map(|p| p[0])
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    let min_z = footprint.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-                    let max_z = footprint
-                        .iter()
-                        .map(|p| p[1])
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    if max_x <= 0.0 || min_x >= CHUNK_SIZE || max_z <= 0.0 || min_z >= CHUNK_SIZE {
-                        continue;
-                    }
-                    let cell = |v: f32| {
-                        ((v / step).floor() as i32).clamp(0, divisions as i32 - 1) as usize
-                    };
-                    for iz in cell(min_z)..=cell(max_z) {
-                        for ix in cell(min_x)..=cell(max_x) {
-                            let at = |x: usize, z: usize| {
-                                let p = grid[z * (divisions + 1) + x].position;
-                                [p[0] - ox, p[1], p[2] - oz]
-                            };
-                            let a = at(ix, iz);
-                            let b = at(ix, iz + 1);
-                            let c = at(ix + 1, iz + 1);
-                            let d = at(ix + 1, iz);
-                            let diagonal = hash(
-                                world.seed,
-                                (ox / step) as i32 + ix as i32,
-                                (oz / step) as i32 + iz as i32,
-                            );
-                            let triangles = if diagonal & 1 == 0 {
-                                [[a, b, d], [b, c, d]]
-                            } else {
-                                [[a, b, c], [a, c, d]]
-                            };
-                            for triangle in triangles {
-                                road_on_triangle(mesh, footprint, triangle, ox, oz, color);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Sutherland-Hodgman intersection of a convex road quad with one clockwise
-// terrain triangle. Four vertices clipped by three edges produce at most seven
-// vertices; fixed buffers avoid per-piece heap allocation.
-fn road_clip_triangle(quad: [[f32; 2]; 4], triangle: [[f32; 3]; 3]) -> ([[f32; 2]; 8], usize) {
-    let mut polygon = [[0.0; 2]; 8];
-    polygon[..4].copy_from_slice(&quad);
-    let mut count = 4;
-    for edge in 0..3 {
-        if count < 3 {
-            break;
-        }
-        let a = triangle[edge];
-        let b = triangle[(edge + 1) % 3];
-        let signed_distance =
-            |p: [f32; 2]| (b[0] - a[0]) * (p[1] - a[2]) - (b[2] - a[2]) * (p[0] - a[0]);
-        let mut output = [[0.0; 2]; 8];
-        let mut output_count = 0;
-        let push = |output: &mut [[f32; 2]; 8], count: &mut usize, p: [f32; 2]| {
-            if *count == 0
-                || (output[*count - 1][0] - p[0]).abs() + (output[*count - 1][1] - p[1]).abs()
-                    > 0.000001
-            {
-                output[*count] = p;
-                *count += 1;
-            }
-        };
-        let mut previous = polygon[count - 1];
-        let mut previous_distance = signed_distance(previous);
-        for current in polygon[..count].iter().copied() {
-            let current_distance = signed_distance(current);
-            if (current_distance <= 0.0) != (previous_distance <= 0.0) {
-                let t =
-                    (previous_distance / (previous_distance - current_distance)).clamp(0.0, 1.0);
-                push(
-                    &mut output,
-                    &mut output_count,
-                    [
-                        previous[0] + (current[0] - previous[0]) * t,
-                        previous[1] + (current[1] - previous[1]) * t,
-                    ],
-                );
-            }
-            if current_distance <= 0.0 {
-                push(&mut output, &mut output_count, current);
-            }
-            previous = current;
-            previous_distance = current_distance;
-        }
-        if output_count > 1
-            && (output[0][0] - output[output_count - 1][0]).abs()
-                + (output[0][1] - output[output_count - 1][1]).abs()
-                < 0.000001
-        {
-            output_count -= 1;
-        }
-        polygon = output;
-        count = output_count;
-    }
-    (polygon, count)
-}
-
-fn road_on_triangle(
-    mesh: &mut MeshData,
-    quad: [[f32; 2]; 4],
-    triangle: [[f32; 3]; 3],
-    ox: f32,
-    oz: f32,
-    color: [f32; 3],
-) {
-    let (polygon, count) = road_clip_triangle(quad, triangle);
-    if count < 3 {
-        return;
-    }
-    let [a, b, c] = triangle;
-    let determinant = (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0]);
-    let drape = |p: [f32; 2]| {
-        // Drape the representable world coordinate, not its unrounded precursor.
-        let x = ox + p[0];
-        let z = oz + p[1];
-        let p = [x - ox, z - oz];
-        let u = ((p[0] - a[0]) * (c[2] - a[2]) - (p[1] - a[2]) * (c[0] - a[0])) / determinant;
-        let v = ((b[0] - a[0]) * (p[1] - a[2]) - (b[2] - a[2]) * (p[0] - a[0])) / determinant;
-        [x, a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]) + 0.025, z]
-    };
-    let first = drape(polygon[0]);
-    for i in 1..count - 1 {
-        let b = drape(polygon[i]);
-        let c = drape(polygon[i + 1]);
-        let up = (b[2] - first[2]) * (c[0] - first[0]) - (b[0] - first[0]) * (c[2] - first[2]);
-        // Clipped slivers can collapse in XZ at continental f32 coordinates.
-        if up.abs() <= 0.000001 {
-            continue;
-        }
-        if up > 0.0 {
-            mesh.triangle(first, b, c, color, 0.0);
-        } else {
-            mesh.triangle(first, c, b, color, 0.0);
-        }
-    }
 }
 
 // Physics uses the same six-meter triangles as the finest streamed terrain.
@@ -3769,7 +3695,7 @@ mod road_grounding_tests {
     use super::*;
     // Add inside geometry.rs's existing #[cfg(test)] mod tests.
     #[test]
-    fn road_ribbons_follow_sloping_terrain_at_every_lod() {
+    fn road_paint_follows_sloping_terrain_without_overlapping_at_every_lod() {
         let world = World::new(1337);
         let mut checked_triangles = 0;
         // Select real sloping routes rather than assuming the former grid still
@@ -3807,6 +3733,20 @@ mod road_grounding_tests {
             }
             chunks.push(chosen.expect("each road class needs a real sloping fixture"));
         }
+        let town = world
+            .settlements
+            .entries
+            .iter()
+            .filter(|e| e.kind == crate::settlements::Kind::Town)
+            .min_by(|a, b| {
+                (a.site.x * a.site.x + a.site.z * a.site.z)
+                    .total_cmp(&(b.site.x * b.site.x + b.site.z * b.site.z))
+            })
+            .unwrap();
+        chunks.push((
+            (town.site.x / CHUNK_SIZE).floor() as i32,
+            (town.site.z / CHUNK_SIZE).floor() as i32,
+        ));
         for (cx, cz) in chunks {
             for lod in 0..=4 {
                 let divisions = (32_usize >> lod).max(2);
@@ -3836,7 +3776,53 @@ mod road_grounding_tests {
                     "fixture must contain real sloping terrain"
                 );
                 let mut roads = MeshData::default();
-                road_ribbons(&world, &mut roads, ox, oz, divisions, &grid);
+                let paint = RoadPaint::new(&world, ox, oz, step);
+                let mut painted_cells = 0;
+                for iz in 0..divisions {
+                    for ix in 0..divisions {
+                        let at = |x, z| grid[z * (divisions + 1) + x];
+                        let h = hash(
+                            world.seed,
+                            (ox / step) as i32 + ix as i32,
+                            (oz / step) as i32 + iz as i32,
+                        );
+                        if paint.cell_mesh(
+                            &mut roads,
+                            [
+                                at(ix, iz),
+                                at(ix, iz + 1),
+                                at(ix + 1, iz + 1),
+                                at(ix + 1, iz),
+                            ],
+                            h & 1 == 0,
+                            ix,
+                            iz,
+                        ) {
+                            painted_cells += 1;
+                        }
+                    }
+                }
+                let area: f64 = roads
+                    .vertices
+                    .chunks_exact(3)
+                    .map(|t| {
+                        let a = t[0].position;
+                        let b = t[1].position;
+                        let c = t[2].position;
+                        (((b[0] - a[0]) as f64 * (c[2] - a[2]) as f64)
+                            - ((b[2] - a[2]) as f64 * (c[0] - a[0]) as f64))
+                            .abs()
+                            * 0.5
+                    })
+                    .sum();
+                assert!(
+                    (area - painted_cells as f64 * step as f64 * step as f64).abs() < 0.1,
+                    "duplicate surfaces at road junctions: {area}, {painted_cells} cells, step {step}"
+                );
+                assert!(roads
+                    .vertices
+                    .iter()
+                    .all(|v| v.color.into_iter().all(f32::is_finite)));
                 assert!(
                     !roads.vertices.is_empty(),
                     "missing road in chunk {cx},{cz} LOD{lod}"
@@ -3869,7 +3855,7 @@ mod road_grounding_tests {
                         // origin. Interior samples reject quads spanning two planes,
                         // even when every original corner touched the terrain.
                         assert!(
-                        (p[1] - ground - 0.025).abs() < 0.006,
+                        (p[1] - ground).abs() < 0.006,
                         "road floats or sinks in chunk {cx},{cz} LOD{lod}: {p:?}, ground {ground}"
                     );
                     }

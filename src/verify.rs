@@ -238,12 +238,20 @@ fn main() {
         pollster::block_on(Renderer::headless(1280, 720)).expect("create native wgpu renderer");
     if matches!(
         check.as_deref(),
-        Some("settlement-scenes" | "settlement-art")
+        Some("settlement-scenes" | "settlement-art" | "town-flow")
     ) {
         use fantasy_land::settlements::{dist, Kind, Use};
         let mut life = fantasy_land::citizens::Life::new();
-        renderer.set_quality(0);
-        renderer.set_render_resolution(540);
+        renderer.set_quality(if check.as_deref() == Some("town-flow") {
+            1
+        } else {
+            0
+        });
+        renderer.set_render_resolution(if check.as_deref() == Some("town-flow") {
+            720
+        } else {
+            540
+        });
         renderer.set_weather_mode(1);
         renderer.set_antialiasing(1);
         let chosen: Vec<_> = world
@@ -284,6 +292,51 @@ fn main() {
                 22.,
             ),
         ];
+        if check.as_deref() == Some("town-flow") {
+            let home = l.buildings.iter().find(|b| b.usage == Use::Home).unwrap();
+            let p = home.point(-home.half[0] - 5., 2.0, -home.half[1] * 0.75);
+            let target = home.point(-home.half[0], 2.7, home.window_z(-1.));
+            let dx = target[0] - p[0];
+            let dz = target[2] - p[2];
+            scenes.push((
+                "window-and-chimney",
+                p,
+                dx.atan2(-dz),
+                -(target[1] - p[1]).atan2(dx.hypot(dz)),
+                11.,
+            ));
+            let p = home.point(0., 1.65, -home.half[1] + 1.5);
+            let target = home.point(-home.half[0] + 0.7, 1.5, home.hearth_z());
+            scenes.push((
+                "home-layout",
+                p,
+                (target[0] - p[0]).atan2(-(target[2] - p[2])),
+                0.0,
+                15.,
+            ));
+            let street = l
+                .streets
+                .iter()
+                .filter(|s| s.width > 2.5)
+                .max_by(|a, b| {
+                    dist(a.points[0], [e.site.x, e.site.z])
+                        .total_cmp(&dist(b.points[0], [e.site.x, e.site.z]))
+                })
+                .unwrap();
+            let a = street.points[0];
+            let b = street.points[1];
+            scenes.push((
+                "neighborhood-lane",
+                [
+                    a[0],
+                    fantasy_land::geometry::walk_height(&world, a[0], a[1]) + 1.72,
+                    a[1],
+                ],
+                (b[0] - a[0]).atan2(-(b[1] - a[1])),
+                0.10,
+                10.,
+            ));
+        }
         if check.as_deref() == Some("settlement-art") {
             let look = |a: [f32; 3], b: [f32; 3]| {
                 let d = glam::Vec3::from_array(b) - glam::Vec3::from_array(a);
@@ -375,7 +428,12 @@ fn main() {
             life.update(&world, p, 0.1);
             renderer.update_weather(&world, eye, hour, 0.);
             renderer.update_people(&world, &life, eye, yaw);
-            for _ in 0..4 {
+            for _ in 0..if check.as_deref() == Some("town-flow") {
+                100
+            } else {
+                4
+            } {
+                renderer.advance_time(1. / 60.);
                 renderer.render(eye, yaw, pitch, hour).unwrap();
                 renderer.device.poll(wgpu::PollType::Wait).unwrap();
             }

@@ -465,10 +465,11 @@ pub fn generate(b: &Building, mut emit: impl FnMut(Part)) {
         };
         for sign in [-1., 1.] {
             let x = sign * (w - 0.14);
+            let wz = b.window_z(sign);
             for (z0, z1, y0, y1) in [
-                (-d, -0.89, 1., b.height),
-                (0.89, d, 1., b.height),
-                (-0.89, 0.89, 2.58, b.height),
+                (-d, wz - 0.89, 1., b.height),
+                (wz + 0.89, d, 1., b.height),
+                (wz - 0.89, wz + 0.89, 2.58, b.height),
             ] {
                 r.cuboid(
                     [x - 0.012, y0, z0],
@@ -505,7 +506,11 @@ pub fn generate(b: &Building, mut emit: impl FnMut(Part)) {
             );
         }
         for sign in [-1., 1.] {
-            for z in [-d + 1.3, -1.1, 1.1, d - 1.3] {
+            let wz = b.window_z(sign);
+            for z in [-d + 0.22, wz - 1.1, wz + 1.1, d - 0.22] {
+                if z < -d + 0.1 || z > d - 0.1 {
+                    continue;
+                }
                 r.wood(
                     [sign * (w - 0.11) - 0.09, 0.9, z - 0.07],
                     [sign * (w - 0.11) + 0.09, b.height - 0.1, z + 0.07],
@@ -581,7 +586,7 @@ pub fn generate(b: &Building, mut emit: impl FnMut(Part)) {
         r.wood([hx - 0.87, 1.51, hz - 0.38], [hx + 0.87, 1.67, hz + 0.52]);
         r.cuboid(
             [hx - 0.6, 1.67, hz + 0.06],
-            [hx + 0.6, b.height + 1.85, hz + 0.49],
+            [hx + 0.6, b.height, hz + 0.49],
             [0.46, 0.41, 0.33],
             20.,
             true,
@@ -902,6 +907,21 @@ mod tests {
                         p.lo,
                         p.hi
                     );
+                    if p.lo[1] < 2.49 && p.hi[1] > 1.2 {
+                        for side in [-1., 1.] {
+                            let wx = side * b.half[0];
+                            let wz = b.window_z(side);
+                            assert!(
+                                p.hi[0] < wx - 0.20
+                                    || p.lo[0] > wx + 0.20
+                                    || p.hi[2] < wz - 0.79
+                                    || p.lo[2] > wz + 0.79,
+                                "window obstructed {usage:?} side {side}: {:?} {:?}",
+                                p.lo,
+                                p.hi
+                            );
+                        }
+                    }
                     if p.solid
                         && p.lo[1] < 1.8
                         && p.hi[1] > 0.

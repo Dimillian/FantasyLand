@@ -6,5 +6,5 @@ fn room_at(p:vec3<f32>)->i32{
     return -1;
 }
 fn room_aperture(p:vec3<f32>,direction:vec3<f32>,i:u32)->f32{return probe_aperture(room_local(p,i),probe_direction(direction,u.rooms_b[i]),u.rooms_a[i],u.rooms_b[i],u.rooms_c[i]);}
-fn room_ambient(p:vec3<f32>,i:u32)->f32{let q=room_local(p,i);let b=u.rooms_b[i];let side=length(vec2<f32>(b.x-abs(q.x),q.z));let back=length(vec2<f32>(q.x,b.y-q.z));let front=length(vec2<f32>(q.x,b.y+q.z));let window=min(side,back);return 0.035+0.43/(1.0+window*window*0.28)+u.rooms_c[i].x*0.22/(1.0+front*front*0.3);}
+fn room_ambient(p:vec3<f32>,i:u32)->f32{let q=room_local(p,i);let b=u.rooms_b[i];let side=min(length(vec2<f32>(b.x+q.x,q.z+b.y*0.5)),length(vec2<f32>(b.x-q.x,q.z)));let back=length(vec2<f32>(q.x,b.y-q.z));let front=length(vec2<f32>(q.x,b.y+q.z));let window=min(side,back);return 0.035+0.43/(1.0+window*window*0.28)+u.rooms_c[i].x*0.22/(1.0+front*front*0.3);}
 fn room_fire_visibility(p:vec3<f32>,source:vec3<f32>,source_room:i32,to:i32)->f32{if source_room==to{if to<0{return 1.0;}let i=u32(to);return probe_partition(room_local(source,i),probe_direction(normalize(p-source),u.rooms_b[i]),length(p-source),u.rooms_c[i]);}if source_room>=0 {if room_aperture(source,normalize(p-source),u32(source_room))<0.5{return 0.0;}}if to>=0 {if room_aperture(p,normalize(source-p),u32(to))<0.5{return 0.0;}}return 1.0;}

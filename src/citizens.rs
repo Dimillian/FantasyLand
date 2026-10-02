@@ -102,7 +102,7 @@ struct Resident {
     wander: Route,
 }
 fn resident_pose(r: &Resident, now: f32) -> ([f32; 3], f32, bool, usize, f32, f32, f32) {
-    let phase_shift = (r.person.id % 37) as f32;
+    let phase_shift = (hash(r.person.id as u32, 41, 17) % 91) as f32;
     let t = (now - phase_shift).rem_euclid(2880.);
     let (phase, elapsed) = if t < 7. * 120. {
         (0, t + 2. * 120.)
@@ -124,7 +124,7 @@ fn resident_pose(r: &Resident, now: f32) -> ([f32; 3], f32, bool, usize, f32, f3
         let rest = if matches!(r.person.role, 2 | 6 | 7 | 15) {
             3.0
         } else {
-            25.0
+            80.0 + (r.person.id % 121) as f32
         };
         let cycle = rest + r.wander.length / 1.2;
         let phase = time.rem_euclid(cycle.max(1.));
@@ -143,9 +143,88 @@ fn resident_pose(r: &Resident, now: f32) -> ([f32; 3], f32, bool, usize, f32, f3
 
     (p, yaw, walking, phase, elapsed, speed, t)
 }
+#[derive(Clone, Copy)]
+struct WalkObstacle {
+    center: [f32; 2],
+    half: [f32; 2],
+    sin: f32,
+    cos: f32,
+}
+#[derive(Default)]
+struct WalkSpace {
+    cells: HashMap<(i32, i32), Vec<WalkObstacle>>,
+}
+impl WalkSpace {
+    fn new(l: &Layout) -> Self {
+        let mut space = Self::default();
+        let mut add = |b: &crate::settlements::Building, lo: [f32; 2], hi: [f32; 2]| {
+            let p = b.point((lo[0] + hi[0]) * 0.5, 0., (lo[1] + hi[1]) * 0.5);
+            let (sin, cos) = b.yaw.sin_cos();
+            let o = WalkObstacle {
+                center: [p[0], p[2]],
+                half: [(hi[0] - lo[0]) * 0.5 + 0.25, (hi[1] - lo[1]) * 0.5 + 0.25],
+                sin,
+                cos,
+            };
+            let extent = [
+                cos.abs() * o.half[0] + sin.abs() * o.half[1],
+                sin.abs() * o.half[0] + cos.abs() * o.half[1],
+            ];
+            for x in
+                ((p[0] - extent[0]) / 4.).floor() as i32..=((p[0] + extent[0]) / 4.).floor() as i32
+            {
+                for z in ((p[2] - extent[1]) / 4.).floor() as i32
+                    ..=((p[2] + extent[1]) / 4.).floor() as i32
+                {
+                    space.cells.entry((x, z)).or_default().push(o);
+                }
+            }
+        };
+        for b in &l.buildings {
+            let [w, d] = b.half;
+            if !matches!(b.usage, Use::Tent | Use::Market | Use::Stable) {
+                for sign in [-1., 1.] {
+                    add(b, [sign * w - 0.14, -d], [sign * w + 0.14, d]);
+                }
+                add(b, [-w, d - 0.14], [w, d + 0.14]);
+                add(b, [-w, -d - 0.14], [-0.88, -d + 0.14]);
+                add(b, [0.88, -d - 0.14], [w, -d + 0.14]);
+            }
+            settlement_mesh::interior_parts(b, |lo, hi, _, _, solid| {
+                if solid && lo[1] < 1.7 && hi[1] > 0.15 {
+                    add(b, [lo[0], lo[2]], [hi[0], hi[2]]);
+                }
+            });
+        }
+        for b in &l.walls {
+            add(b, [-b.half[0], -b.half[1]], [b.half[0], b.half[1]]);
+        }
+        space
+    }
+    fn clear(&self, p: [f32; 3]) -> bool {
+        self.cells
+            .get(&((p[0] / 4.).floor() as i32, (p[2] / 4.).floor() as i32))
+            .is_none_or(|items| {
+                items.iter().all(|o| {
+                    let d = [p[0] - o.center[0], p[2] - o.center[1]];
+                    (d[0] * o.cos - d[1] * o.sin).abs() >= o.half[0]
+                        || (d[0] * o.sin + d[1] * o.cos).abs() >= o.half[1]
+                })
+            })
+    }
+    fn segment_clear(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        let steps = (dist([a[0], a[2]], [b[0], b[2]]) / 0.35).ceil().max(1.) as usize;
+        (0..=steps).all(|i| {
+            self.clear(std::array::from_fn(|k| {
+                a[k] + (b[k] - a[k]) * i as f32 / steps as f32
+            }))
+        })
+    }
+}
 struct Community {
     layout: Rc<Layout>,
     residents: Vec<Resident>,
+    walk_space: WalkSpace,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Actor {
@@ -185,6 +264,8 @@ pub struct Life {
     traffic_routes: HashMap<u64, Route>,
     traffic_destinations: HashMap<u64, [String; 2]>,
     traffic: Vec<crate::world::Road>,
+    crowd_offsets: HashMap<u64, [f32; 2]>,
+    previous_positions: HashMap<u64, [f32; 3]>,
 }
 fn choose<'a>(id: u32, values: &[&'a str]) -> &'a str {
     values[id as usize % values.len()]
@@ -291,7 +372,7 @@ fn room_activity_spots(l: &Layout) -> HashMap<usize, Vec<[f32; 3]>> {
             if solid && lo[1] < 1.8 && hi[1] > 0. {
                 obstacles.push((
                     [(lo[0] + hi[0]) * 0.5, (lo[2] + hi[2]) * 0.5],
-                    [(hi[0] - lo[0]) * 0.5 + 0.25, (hi[2] - lo[2]) * 0.5 + 0.25],
+                    [(hi[0] - lo[0]) * 0.5 + 0.30, (hi[2] - lo[2]) * 0.5 + 0.30],
                 ));
             }
         });
@@ -328,6 +409,8 @@ fn room_activity_spots(l: &Layout) -> HashMap<usize, Vec<[f32; 3]>> {
 }
 fn community(l: Rc<Layout>) -> Community {
     let room_spots = room_activity_spots(&l);
+    let walk_space = WalkSpace::new(&l);
+    let mut outdoor_occupancy: HashMap<usize, Vec<[f32; 3]>> = HashMap::new();
     let mut room_occupancy: HashMap<usize, usize> = HashMap::new();
     let services: Vec<_> = l
         .buildings
@@ -370,21 +453,48 @@ fn community(l: Rc<Layout>) -> Community {
             } else {
                 role
             };
+            let work = if h.usage == Use::Home {
+                let service = match role {
+                    8 => Some(Use::Market),
+                    14 => Some(Use::Hall),
+                    1 => Some(Use::Stable),
+                    _ => None,
+                };
+                service
+                    .and_then(|usage| {
+                        services
+                            .iter()
+                            .copied()
+                            .find(|&i| l.buildings[i].usage == usage)
+                    })
+                    .or_else(|| {
+                        (role == 0 && seed % 3 != 0 && !services.is_empty())
+                            .then(|| services[seed as usize % services.len()])
+                    })
+                    .unwrap_or(home)
+            } else {
+                work
+            };
             let mut person = identity(&l, home, ordinal, role, work);
             let leisure = services
                 .iter()
                 .find(|&&i| l.buildings[i].usage == Use::Inn)
                 .copied()
                 .unwrap_or(home);
-            let work_node = if role == 0
-                || role == 2
-                || role == 6
-                || role == 7
-                || role == 1
-                || role == 8
-                || role == 15
-            {
-                l.buildings[(seed as usize) % l.buildings.len()].street_node
+            let work_node = if matches!(role, 2 | 6 | 7 | 1 | 15) {
+                // Outdoor trades belong at the edge of the inhabited area.
+                let outer = l
+                    .buildings
+                    .iter()
+                    .filter(|b| {
+                        dist([b.x, b.z], [l.entry.site.x, l.entry.site.z]) > l.entry.radius * 0.58
+                    })
+                    .collect::<Vec<_>>();
+                if outer.is_empty() {
+                    h.street_node
+                } else {
+                    outer[seed as usize % outer.len()].street_node
+                }
             } else {
                 l.buildings[work].room_node
             };
@@ -393,13 +503,28 @@ fn community(l: Rc<Layout>) -> Community {
             } else {
                 l.buildings[(seed as usize / 17) % l.buildings.len()].street_node
             };
-            let anchors = [
+            let mut anchors = [
                 h.room_node,
                 work_node,
                 l.buildings[(seed as usize / 7) % l.buildings.len()].street_node,
                 leisure_node,
             ];
-            if matches!(role, 0 | 1 | 6 | 7 | 8 | 15) && h.usage == Use::Home {
+            // Public rooms have finite standing capacity. Overflow visits wait
+            // in distinct outdoor yards instead of wrapping onto occupied spots.
+            for phase in 1..4 {
+                let node = anchors[phase];
+                if node != h.room_node
+                    && room_spots.get(&node).is_some_and(|spots| {
+                        room_occupancy.get(&node).copied().unwrap_or(0) >= spots.len()
+                    })
+                {
+                    anchors[phase] = l.buildings
+                        [(seed as usize / 29 + phase * 7) % l.buildings.len()]
+                    .street_node;
+                }
+            }
+            let work_node = anchors[1];
+            if matches!(role, 1 | 6 | 7 | 15) && h.usage == Use::Home {
                 person.work_name = match role {
                     1 => "the outer plots and grazing grounds",
                     6 | 7 => "the settlement's outskirts",
@@ -442,34 +567,97 @@ fn community(l: Rc<Layout>) -> Community {
                     let used = room_occupancy.entry(node).or_default();
                     assigned.insert(node, spots[*used % spots.len()]);
                     *used += 1;
+                } else {
+                    // Stop beside the lane, never at a shared centerline node.
+                    let p = l.nodes[node];
+                    let next = l.links[node]
+                        .iter()
+                        .copied()
+                        .find(|&n| {
+                            !l.buildings
+                                .iter()
+                                .any(|b| [b.porch_node, b.room_node].contains(&n))
+                        })
+                        .unwrap_or(node);
+                    let q = l.nodes[next];
+                    let length = dist([p[0], p[2]], [q[0], q[2]]).max(0.001);
+                    let tangent = [(q[0] - p[0]) / length, (q[2] - p[2]) / length];
+                    let used = outdoor_occupancy.entry(node).or_default();
+                    let mut spot = p;
+                    for trial in 0..32 {
+                        let side = if (seed + trial) % 2 == 0 { 1. } else { -1. };
+                        let along = ((trial / 2) % 8) as f32 * 0.9 - 3.15;
+                        let offset = side * (2.25 + (trial / 16) as f32 * 0.85);
+                        let candidate = [
+                            p[0] + tangent[0] * along - tangent[1] * offset,
+                            p[1],
+                            p[2] + tangent[1] * along + tangent[0] * offset,
+                        ];
+                        if used
+                            .iter()
+                            .all(|q| dist([q[0], q[2]], [candidate[0], candidate[2]]) > 0.85)
+                            && l.buildings.iter().all(|b| {
+                                let e = b.entrance();
+                                dist([e[0], e[2]], [candidate[0], candidate[2]]) > 2.2
+                            })
+                            && walk_space.segment_clear(p, candidate)
+                        {
+                            spot = candidate;
+                            break;
+                        }
+                    }
+                    used.push(spot);
+                    assigned.insert(node, spot);
                 }
             }
             let spread = |points: Vec<[f32; 3]>| {
                 let last = points.len().saturating_sub(1);
                 let mut out = Vec::with_capacity(points.len() + 2);
-                for (i, mut p) in points.into_iter().enumerate() {
-                    let room = assigned
+                for (i, p) in points.iter().copied().enumerate() {
+                    let endpoint = assigned
                         .iter()
                         .find(|(n, _)| l.nodes[**n] == p)
                         .map(|(_, p)| *p);
-                    if let Some(spot) = room {
-                        if i == 0 {
+                    if i == 0 {
+                        if let Some(spot) = endpoint {
                             out.push(spot);
                         }
-                        if last > 0 {
-                            out.push(p);
+                    }
+                    let mut lane = p;
+                    if !l.buildings.iter().any(|b| b.inside(p[0], p[2], 2.0)) {
+                        let a = points[i.saturating_sub(1)];
+                        let b = points[(i + 1).min(last)];
+                        let length = dist([a[0], a[2]], [b[0], b[2]]).max(0.001);
+                        let offset = 0.68 + (seed % 7) as f32 * 0.055;
+                        let q = [
+                            p[0] - (b[2] - a[2]) / length * offset,
+                            p[1],
+                            p[2] + (b[0] - a[0]) / length * offset,
+                        ];
+                        if walk_space.segment_clear(p, q) {
+                            lane = q;
                         }
-                        if i == last && i != 0 {
+                    }
+                    // Avoid cutting a corner into a porch or a building.
+                    if let Some(&previous) = out.last() {
+                        if !walk_space.segment_clear(previous, lane) {
+                            if i > 0 {
+                                out.push(points[i - 1]);
+                            }
+                            lane = p;
+                        }
+                    }
+                    out.push(lane);
+                    if i == last {
+                        if let Some(spot) = endpoint {
+                            if !walk_space.segment_clear(lane, spot) {
+                                out.push(p);
+                            }
                             out.push(spot);
                         }
-                    } else {
-                        if anchors.iter().any(|&n| p == l.nodes[n]) {
-                            p[0] += (seed % 5) as f32 * 0.22 - 0.44;
-                            p[2] += (seed / 5 % 5) as f32 * 0.22 - 0.44;
-                        }
-                        out.push(p);
                     }
                 }
+                out.dedup();
                 out
             };
             let wander = Route::new(spread(walk));
@@ -487,6 +675,7 @@ fn community(l: Rc<Layout>) -> Community {
     Community {
         layout: l,
         residents,
+        walk_space,
     }
 }
 impl Life {
@@ -497,6 +686,8 @@ impl Life {
         self.refresh = 0.;
         self.pose_elapsed = 1.;
         self.actors.clear();
+        self.crowd_offsets.clear();
+        self.previous_positions.clear();
     }
     pub fn new() -> Self {
         Self {
@@ -533,6 +724,11 @@ impl Life {
             .doors
             .borrow_mut()
             .retain(|id, _| self.communities.contains_key(&(id / 512)));
+        self.previous_positions = self
+            .actors
+            .iter()
+            .map(|a| (a.person.id, a.position))
+            .collect();
         self.actors.clear();
         let now = (self.clock % 2880.) as f32;
         for c in self.communities.values() {
@@ -641,6 +837,8 @@ impl Life {
                 if phase >= route.length {
                     yaw += PI;
                 }
+                p[0] += yaw.cos() * 0.9;
+                p[2] += yaw.sin() * 0.9;
                 if dist([eye[0], eye[2]], [p[0], p[2]]) > 145. {
                     continue;
                 }
@@ -678,8 +876,10 @@ impl Life {
         self.actors.sort_by(|a, b| {
             dist([a.position[0], a.position[2]], [eye[0], eye[2]])
                 .total_cmp(&dist([b.position[0], b.position[2]], [eye[0], eye[2]]))
+                .then_with(|| a.person.id.cmp(&b.person.id))
         });
         self.actors.truncate(320);
+        self.resolve_crowds(world, dt);
         let mut doors = world.doors.borrow_mut();
         for c in self.communities.values() {
             for b in c.layout.buildings.iter().filter(|b| b.door) {
@@ -705,6 +905,116 @@ impl Life {
             }
         }
     }
+    fn resolve_crowds(&mut self, world: &World, dt: f32) {
+        // Nearby actors only; spatial buckets keep this bounded instead of an
+        // all-pairs scan. Carry offsets between ticks to avoid jittering back
+        // into the same overlap every time the schedule is evaluated.
+        let desired: Vec<_> = self.actors.iter().map(|a| a.position).collect();
+        let clear = |p: [f32; 3]| self.communities.values().all(|c| c.walk_space.clear(p));
+        for actor in &mut self.actors {
+            if let Some(offset) = self.crowd_offsets.get(&actor.person.id) {
+                let fade = (-dt * 1.6).exp();
+                let p = [
+                    actor.position[0] + offset[0] * fade,
+                    actor.position[1],
+                    actor.position[2] + offset[1] * fade,
+                ];
+                if clear(p) {
+                    actor.position = p;
+                }
+            }
+        }
+        for _ in 0..5 {
+            let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+            for (i, a) in self.actors.iter().enumerate() {
+                cells
+                    .entry((
+                        (a.position[0] / 1.2).floor() as i32,
+                        (a.position[2] / 1.2).floor() as i32,
+                    ))
+                    .or_default()
+                    .push(i);
+            }
+            let mut shifts = vec![[0f32; 2]; self.actors.len()];
+            for (i, a) in self.actors.iter().enumerate() {
+                let cell = (
+                    (a.position[0] / 1.2).floor() as i32,
+                    (a.position[2] / 1.2).floor() as i32,
+                );
+                for x in cell.0 - 1..=cell.0 + 1 {
+                    for z in cell.1 - 1..=cell.1 + 1 {
+                        if let Some(indices) = cells.get(&(x, z)) {
+                            for &j in indices {
+                                if j <= i {
+                                    continue;
+                                }
+                                let b = &self.actors[j];
+                                if (a.position[1] - b.position[1]).abs() > 1.2 {
+                                    continue;
+                                }
+                                let mut dx = a.position[0] - b.position[0];
+                                let mut dz = a.position[2] - b.position[2];
+                                let distance = dx.hypot(dz);
+                                if distance >= 0.82 {
+                                    continue;
+                                }
+                                if distance < 0.001 {
+                                    let angle = (a.person.id % 17) as f32 * 0.37;
+                                    dx = angle.cos();
+                                    dz = angle.sin();
+                                } else {
+                                    dx /= distance;
+                                    dz /= distance;
+                                }
+                                let force = ((0.84 - distance) * 0.52).min(0.28);
+                                shifts[i][0] += dx * force;
+                                shifts[i][1] += dz * force;
+                                shifts[j][0] -= dx * force;
+                                shifts[j][1] -= dz * force;
+                            }
+                        }
+                    }
+                }
+            }
+            for (i, a) in self.actors.iter_mut().enumerate() {
+                let p = [
+                    a.position[0] + shifts[i][0],
+                    a.position[1],
+                    a.position[2] + shifts[i][1],
+                ];
+                if dist([p[0], p[2]], [desired[i][0], desired[i][2]]) < 2.2 && clear(p) {
+                    a.position = p;
+                }
+            }
+        }
+        self.crowd_offsets.clear();
+        for (i, a) in self.actors.iter_mut().enumerate() {
+            self.crowd_offsets.insert(
+                a.person.id,
+                [a.position[0] - desired[i][0], a.position[2] - desired[i][2]],
+            );
+            a.position[1] = if a.settlement == 0 {
+                // Road travellers must stay on bridge decks after avoidance.
+                crate::geometry::walk_height(world, a.position[0], a.position[2])
+            } else {
+                resident_ground(world, &mut self.ground, a.position[0], a.position[2])
+            };
+            if let Some(c) = self.communities.get(&a.settlement) {
+                let key = (
+                    (a.position[0] / 16.).floor() as i32,
+                    (a.position[2] / 16.).floor() as i32,
+                );
+                if let Some(ids) = c.layout.parcels.get(&key) {
+                    for &id in ids {
+                        let b = &c.layout.buildings[id];
+                        if b.inside(a.position[0], a.position[2], 0.) {
+                            a.position[1] = a.position[1].max(b.floor);
+                        }
+                    }
+                }
+            }
+        }
+    }
     pub fn home_occupied(&self, id: u32) -> bool {
         self.communities.values().any(|c| {
             let Some(home) = c.layout.buildings.iter().find(|b| b.id == id) else {
@@ -720,11 +1030,13 @@ impl Life {
         let mut mesh = MeshData::default();
         let right = [yaw.cos(), yaw.sin()];
         for a in &self.actors {
-            let mut position = a.position;
-            if a.walking {
-                position[0] += a.yaw.sin() * self.pose_elapsed * 1.25;
-                position[2] -= a.yaw.cos() * self.pose_elapsed * 1.25;
-            }
+            let position =
+                self.previous_positions
+                    .get(&a.person.id)
+                    .map_or(a.position, |previous| {
+                        let t = (self.pose_elapsed / 0.075).clamp(0., 1.);
+                        std::array::from_fn(|k| previous[k] + (a.position[k] - previous[k]) * t)
+                    });
             let h = a.person.appearance.height;
             let width = h * 0.52;
             let view = (eye[0] - a.position[0]).atan2(-(eye[2] - a.position[2]));
@@ -910,6 +1222,92 @@ fn aim(eye: [f32; 3], dir: [f32; 3], p: [f32; 3], range: f32, radius: f32) -> Op
 mod tests {
     use super::*;
     #[test]
+    fn capital_crowds_have_clear_routes_and_personal_space() {
+        let world = World::new(1337);
+        let e = world
+            .settlements
+            .entries
+            .iter()
+            .filter(|e| e.kind == crate::settlements::Kind::City)
+            .min_by(|a, b| {
+                dist([a.site.x, a.site.z], [0., 0.])
+                    .total_cmp(&dist([b.site.x, b.site.z], [0., 0.]))
+            })
+            .unwrap();
+        let layout = world.settlements.layout(&world, e.site.id).unwrap();
+        let c = community(layout.clone());
+        let mut bad = 0;
+        for resident in &c.residents {
+            for route in resident
+                .routes
+                .iter()
+                .chain(std::iter::once(&resident.wander))
+            {
+                for pair in route.points.windows(2) {
+                    if !c.walk_space.segment_clear(pair[0], pair[1]) {
+                        bad += 1;
+                        if bad < 5 {
+                            println!("blocked {} {:?}", resident.person.name, pair);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(bad, 0, "routes cut through solid fixtures");
+        let eye = [e.site.x, world.height(e.site.x, e.site.z) + 1.7, e.site.z];
+        let mut life = Life::new();
+        for hour in [8., 12., 17.5, 20.5] {
+            life.clock = hour * 120.;
+            life.invalidate();
+            for _ in 0..100 {
+                life.update(&world, eye, 0.08);
+            }
+            let mut overlap = 0;
+            let mut obstructed = 0;
+            for (i, a) in life.actors.iter().enumerate() {
+                if !c.walk_space.clear(a.position) {
+                    obstructed += 1;
+                }
+                for b in &layout.buildings {
+                    if b.inside(a.position[0], a.position[2], 0.) {
+                        assert!(
+                            a.position[1] >= b.floor - 0.01,
+                            "crowd adjustment sank a resident below the floor"
+                        );
+                    }
+                }
+                for b in &life.actors[..i] {
+                    if dist(
+                        [a.position[0], a.position[2]],
+                        [b.position[0], b.position[2]],
+                    ) < 0.60
+                        && (a.position[1] - b.position[1]).abs() < 1.2
+                    {
+                        overlap += 1;
+                        if overlap < 6 {
+                            println!(
+                                "overlap {} {:?} {} with {} {:?} {} at {:?}",
+                                a.person.name,
+                                a.walking,
+                                a.activity,
+                                b.person.name,
+                                b.walking,
+                                b.activity,
+                                a.position
+                            );
+                        }
+                    }
+                }
+            }
+            println!(
+                "capital {hour}: {} actors, {overlap} overlaps, {obstructed} inside solids",
+                life.actors.len()
+            );
+            assert_eq!(obstructed, 0);
+            assert_eq!(overlap, 0);
+        }
+    }
+    #[test]
     fn identities_schedules_dialogue_and_pause_share_actual_world_facts() {
         let world = World::new(1337);
         let e = world
@@ -941,6 +1339,60 @@ mod tests {
             }
         }
         let eye = [e.site.x, world.height(e.site.x, e.site.z) + 1.7, e.site.z];
+        let c = community(l.clone());
+        for resident in &c.residents {
+            for route in resident
+                .routes
+                .iter()
+                .chain(std::iter::once(&resident.wander))
+            {
+                for pair in route.points.windows(2) {
+                    assert!(
+                        c.walk_space.segment_clear(pair[0], pair[1]),
+                        "route through building/furniture for {}: {:?}",
+                        resident.person.name,
+                        pair
+                    );
+                }
+            }
+        }
+        for hour in [8., 12., 17.5, 20.5] {
+            let mut crowd = Life::new();
+            crowd.clock = hour * 120.;
+            crowd.invalidate();
+            for _ in 0..20 {
+                crowd.update(&world, eye, 0.08);
+            }
+            let mut close = 0;
+            let mut pairs = 0;
+            for (i, a) in crowd.actors.iter().enumerate() {
+                if a.settlement != l.entry.site.id {
+                    continue;
+                }
+                assert!(
+                    c.walk_space.clear(a.position),
+                    "actor in solid geometry: {}",
+                    a.person.name
+                );
+                for b in &crowd.actors[..i] {
+                    let distance = dist(
+                        [a.position[0], a.position[2]],
+                        [b.position[0], b.position[2]],
+                    );
+                    if distance < 1.5 {
+                        pairs += 1;
+                    }
+                    if distance < 0.60 && (a.position[1] - b.position[1]).abs() < 1.2 {
+                        close += 1;
+                    }
+                }
+            }
+            println!(
+                "crowd {hour}: {} actors, {close} overlaps / {pairs} neighbors",
+                crowd.actors.len()
+            );
+            assert_eq!(close, 0, "overlapping residents at {hour}");
+        }
         let mut a = Life::new();
         a.update(&world, eye, 0.1);
         assert!(!a.actors.is_empty());

@@ -130,6 +130,20 @@ impl Building {
         let p = self.local(x, z);
         p[0].abs() < self.half[0] + margin && p[1].abs() < self.half[1] + margin
     }
+    /// Separating-axis test includes eaves and a narrow maintenance gap.
+    pub fn overlaps_plot(&self, other: &Building, margin: f32) -> bool {
+        let (sa, ca) = self.yaw.sin_cos();
+        let (sb, cb) = other.yaw.sin_cos();
+        let axes = [[ca, -sa], [sa, ca], [cb, -sb], [sb, cb]];
+        axes.into_iter().all(|axis| {
+            let projected = |(s, c): (f32, f32), half: [f32; 2]| {
+                (axis[0] * c - axis[1] * s).abs() * half[0]
+                    + (axis[0] * s + axis[1] * c).abs() * half[1]
+            };
+            let gap = ((other.x - self.x) * axis[0] + (other.z - self.z) * axis[1]).abs();
+            gap < projected((sa, ca), self.half) + projected((sb, cb), other.half) + margin
+        })
+    }
     pub fn entrance(&self) -> [f32; 3] {
         self.point(0., 0., -self.half[1] - 1.1)
     }
@@ -139,7 +153,7 @@ impl Building {
             self.usage,
             Use::Home | Use::Inn | Use::Barracks | Use::Guild | Use::Arcane
         )
-        .then_some(self.half[1] * 0.22)
+        .then_some((self.half[1] * 0.22).max(1.18))
     }
     pub fn wall_material(&self) -> (f32, [f32; 3]) {
         match self.id % 5 {
@@ -160,6 +174,15 @@ impl Building {
             self.point(-self.half[0] + 1.0, 0.72, self.hearth_z())
         };
         [p[0], p[1], p[2], 7.5]
+    }
+    /// Keep the left window in the front living bay, away from the hearth/flue.
+    /// The analytic indoor-light probe uses the same half-depth placement.
+    pub fn window_z(&self, side: f32) -> f32 {
+        if side < 0. {
+            -self.half[1] * 0.5
+        } else {
+            0.
+        }
     }
     pub fn hearth_z(&self) -> f32 {
         self.partition().map_or(self.half[1] - 0.8, |p| p - 1.45)
@@ -228,16 +251,27 @@ impl Layout {
             return vec![];
         }
         let mut prev = vec![usize::MAX; self.nodes.len()];
-        let mut q = std::collections::VecDeque::from([start]);
+        let mut cost = vec![f32::INFINITY; self.nodes.len()];
+        let mut q = std::collections::BinaryHeap::new();
+        cost[start] = 0.;
+        q.push(std::cmp::Reverse((0u32, start)));
         prev[start] = start;
-        while let Some(a) = q.pop_front() {
+        while let Some(std::cmp::Reverse((bits, a))) = q.pop() {
+            let distance = f32::from_bits(bits);
+            if distance > cost[a] {
+                continue;
+            }
             if a == end {
                 break;
             }
             for &b in &self.links[a] {
-                if prev[b] == usize::MAX {
+                let p = self.nodes[a];
+                let v = self.nodes[b];
+                let next = distance + dist([p[0], p[2]], [v[0], v[2]]);
+                if next < cost[b] {
+                    cost[b] = next;
                     prev[b] = a;
-                    q.push_back(b);
+                    q.push(std::cmp::Reverse((next.to_bits(), b)));
                 }
             }
         }
@@ -449,6 +483,24 @@ fn link(l: &mut Layout, a: usize, b: usize) {
     l.links[a].push(b);
     l.links[b].push(a);
 }
+// Seeded, continuous ward deformation. Apply to lanes and parcels together:
+// unlike per-building jitter it preserves the street-facing layout.
+fn ward_point(id: u32, center: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
+    let phase = r(id, 902) * TAU;
+    let turn = r(id, 903) * TAU + 0.22 * (radius / 58. + phase).sin();
+    let a = angle + turn;
+    let radius = radius * (1. + 0.10 * (angle * 2. + phase).sin())
+        + 3.0 * (angle * 3. + radius / 80. + phase).sin() * (radius / 40.).min(1.);
+    [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+}
+fn ward_axis_distance(id: u32, center: [f32; 2], p: [f32; 2], radius: f32) -> f32 {
+    (0..4)
+        .map(|axis| {
+            let q = ward_point(id, center, radius, axis as f32 * PI * 0.5);
+            dist(p, q)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
 fn generate(world: &World, e: Entry) -> Layout {
     let mut l = Layout {
         entry: e.clone(),
@@ -482,14 +534,11 @@ fn generate(world: &World, e: Entry) -> Layout {
         for slot in 0..count {
             let a = slot as f32 / count as f32 * TAU + r(id, ring as i32 + 110) * 0.4;
             let radial = radius + 2. * (a * 3. + r(id, 4) * TAU).sin();
-            let path_p = [
-                center[0] + (radial - 10.) * a.cos(),
-                center[1] + (radial - 10.) * a.sin(),
-            ];
+            let path_p = ward_point(id, center, radial - 10., a);
             let node = add_node(world, &mut l, path_p);
             current.push(node);
             ring_points.push(path_p);
-            let p = [center[0] + radial * a.cos(), center[1] + radial * a.sin()];
+            let p = ward_point(id, center, radial, a);
             if l.buildings.len() >= wanted {
                 continue;
             }
@@ -529,7 +578,7 @@ fn generate(world: &World, e: Entry) -> Layout {
             } else {
                 [3.4 + r(bid, 4) * 0.9, 4.2 + r(bid, 5) * 1.0]
             };
-            let yaw = PI * 0.5 - a;
+            let yaw = (p[0] - path_p[0]).atan2(p[1] - path_p[1]);
             let mut b = Building {
                 id: bid,
                 name: String::new(),
@@ -571,8 +620,7 @@ fn generate(world: &World, e: Entry) -> Layout {
             }
             if !dry
                 || hi - lo > 4.
-                || (e.kind != Kind::Camp
-                    && (p[0] - center[0]).abs().min((p[1] - center[1]).abs()) < 10.)
+                || (e.kind != Kind::Camp && ward_axis_distance(id, center, p, radial) < 11.)
             {
                 continue;
             }
@@ -585,6 +633,9 @@ fn generate(world: &World, e: Entry) -> Layout {
                     segment_rect(a, c, [half[0] + 5., half[1] + 5.])
                 })
             }) {
+                continue;
+            }
+            if l.buildings.iter().any(|other| b.overlaps_plot(other, 1.3)) {
                 continue;
             }
             b.floor = hi + 0.16;
@@ -633,10 +684,7 @@ fn generate(world: &World, e: Entry) -> Layout {
         let mut spokes = vec![];
         for axis in 0..4 {
             let a = axis as f32 * PI * 0.5;
-            let p = [
-                center[0] + (radius - 10.) * a.cos(),
-                center[1] + (radius - 10.) * a.sin(),
-            ];
+            let p = ward_point(id, center, radius - 10., a);
             let n = add_node(world, &mut l, p);
             let near = *current
                 .iter()
@@ -700,7 +748,13 @@ fn generate(world: &World, e: Entry) -> Layout {
             let a = (i as f32 + 0.5) / count as f32 * TAU;
             let x = center[0] + radius * a.cos();
             let z = center[1] + radius * a.sin();
-            if (x - center[0]).abs().min((z - center[1]).abs()) < 9. {
+            let gate_angle = r(id, 903) * TAU + 0.22 * (radius / 58. + r(id, 902) * TAU).sin();
+            let local = a - gate_angle;
+            if (radius * local.sin())
+                .abs()
+                .min((radius * local.cos()).abs())
+                < 13.
+            {
                 continue;
             }
             let roads = world.road_routes_near(x, z, 12.);
@@ -931,6 +985,8 @@ fn validate_navigation(world: &World, l: &mut Layout) {
     }
     let seen = connected(l);
     l.buildings.retain(|b| seen[b.room_node]);
+    curve_navigation(world, l);
+    let seen = connected(l);
     l.streets.clear();
     for (a, links) in l.links.iter().enumerate() {
         for &b in links {
@@ -954,9 +1010,80 @@ fn validate_navigation(world: &World, l: &mut Layout) {
                 {
                     1.05
                 } else {
-                    2.0
+                    let center = [l.entry.site.x, l.entry.site.z];
+                    if dist([p[0], p[2]], center).min(dist([q[0], q[2]], center)) < 55. {
+                        2.6
+                    } else {
+                        1.7
+                    }
                 },
             });
+        }
+    }
+}
+
+/// Curve both the drawn street and the navigation graph along the same sampled
+/// corridor. Candidate bends must remain dry, gentle and outside every house.
+fn curve_navigation(world: &World, l: &mut Layout) {
+    let edges: Vec<_> = l
+        .links
+        .iter()
+        .enumerate()
+        .flat_map(|(a, links)| links.iter().filter(move |&&b| b > a).map(move |&b| (a, b)))
+        .collect();
+    for (a, b) in edges {
+        if l.buildings.iter().any(|h| {
+            [h.room_node, h.porch_node].contains(&a) || [h.room_node, h.porch_node].contains(&b)
+        }) {
+            continue;
+        }
+        let p = l.nodes[a];
+        let q = l.nodes[b];
+        let length = dist([p[0], p[2]], [q[0], q[2]]);
+        if length < 8. {
+            continue;
+        }
+        let normal = [-(q[2] - p[2]) / length, (q[0] - p[0]) / length];
+        let steps = (length / 4.).ceil() as usize;
+        let preferred = if hash(l.entry.site.id, a as i32, b as i32) % 2 == 0 {
+            1.
+        } else {
+            -1.
+        };
+        let first = l.nodes.len();
+        let mut chosen = None;
+        for bend in [preferred, -preferred, 0.35 * preferred, 0.] {
+            l.nodes.truncate(first);
+            l.links.truncate(first);
+            let mut chain = vec![a];
+            for i in 1..steps {
+                let t = i as f32 / steps as f32;
+                let offset = (PI * t).sin().powi(2) * (length * 0.13).min(3.2) * bend;
+                let n = add_node(
+                    world,
+                    l,
+                    [
+                        p[0] + (q[0] - p[0]) * t + normal[0] * offset,
+                        p[2] + (q[2] - p[2]) * t + normal[1] * offset,
+                    ],
+                );
+                chain.push(n);
+            }
+            chain.push(b);
+            if chain.windows(2).all(|s| clear_edge(world, l, s[0], s[1])) {
+                chosen = Some(chain);
+                break;
+            }
+        }
+        if let Some(chain) = chosen {
+            l.links[a].retain(|&n| n != b);
+            l.links[b].retain(|&n| n != a);
+            for pair in chain.windows(2) {
+                link(l, pair[0], pair[1]);
+            }
+        } else {
+            l.nodes.truncate(first);
+            l.links.truncate(first);
         }
     }
 }
@@ -1019,6 +1146,31 @@ mod tests {
                 .buildings
                 .iter()
                 .all(|b| !l.path(0, b.room_node).is_empty()));
+            for (i, b) in l.buildings.iter().enumerate() {
+                assert!(
+                    l.buildings[..i].iter().all(|a| !b.overlaps_plot(a, 1.29)),
+                    "overlapping plots in {kind:?}"
+                );
+            }
+            if matches!(kind, Kind::Town | Kind::City) {
+                assert!(
+                    l.streets.iter().any(|s| s.width > 2.5)
+                        && l.streets.iter().any(|s| s.width < 1.1)
+                );
+                let diagonal = l
+                    .streets
+                    .iter()
+                    .filter(|s| {
+                        let a = s.points[0];
+                        let b = s.points[1];
+                        (a[0] - b[0]).abs() > 0.5 && (a[1] - b[1]).abs() > 0.5
+                    })
+                    .count();
+                assert!(
+                    diagonal * 2 > l.streets.len(),
+                    "streets collapsed into cardinal axes"
+                );
+            }
             for b in l.buildings.iter().filter(|b| b.door).take(3) {
                 let p = b.point(0., 0., -b.half[1]);
                 assert!(crate::settlement_mesh::blocked(&world, p[0], b.floor, p[2]));

@@ -18,7 +18,7 @@ fn probe_aperture(q:vec3<f32>,d:vec3<f32>,a:vec4<f32>,b:vec4<f32>,c:vec4<f32>)->
     let t=select(vec3<f32>(1e8),raw,abs(d)>vec3<f32>(0.00001));
     let travel=max(min(min(t.x,t.y),t.z),0.0);let hit=q+d*travel;
     if probe_partition(q,d,travel,c)<0.5||t.y<min(t.x,t.z){return 0.0;}
-    if t.x<t.z{return probe_window(hit.z,hit.y);}
+    if t.x<t.z{return probe_window(hit.z-select(-b.y*0.5,0.0,hit.x>0.0),hit.y);}
     if hit.z>=0.0{return probe_window(hit.x,hit.y);}
     if !(abs(hit.x)<0.84&&hit.y>0.0&&hit.y<2.53){return 0.0;}
     let angle=c.x*1.6022123;let cs=cos(angle);let sn=sin(angle);let relative=q-vec3<f32>(-0.86,0.0,-b.y);
