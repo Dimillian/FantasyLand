@@ -1,4 +1,5 @@
-import { paintPortrait } from './portrait.js?v=violet-lightning-1';
+import { Soundscape } from './soundscape.mjs?v=soundscape-2';
+import { paintPortrait } from './portrait.js?v=soundscape-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
@@ -21,6 +22,7 @@ try {
     saved = { seed: previous.seed, quality: previous.quality, sensitivity: previous.sensitivity };
   }
 } catch (_) { /* Storage is optional. */ }
+const soundscape = new Soundscape(saved.audio);
 const urlSeed = new URL(location.href).searchParams.get('seed');
 const seed = clamp(Math.floor(Number(urlSeed || saved.seed) || DEFAULT_SEED), 1, 4294967295);
 let otherViewActive = false, renderChannel = null, renderOwner = '', renderClaim = 0, renderSeen = 0;
@@ -81,6 +83,19 @@ updateFilterControls();
 updateAaControls();
 updateLookSummary();
 
+for (const name of ['master','ambience','footsteps','wildlife']) {
+  const control=$(`audio-${name}`), output=$(`audio-${name}-value`);
+  control.value=String(Math.round(soundscape.volumes[name]*100));
+  output.textContent=`${control.value}%`;
+  control.addEventListener('input',()=>{
+    soundscape.setVolume(name,Number(control.value)/100);
+    soundscape.setActive(started && !document.hidden && !otherViewActive && soundscape.volumes.master>0);
+    if(started) soundscape.unlock();
+    output.textContent=`${Math.round(soundscape.volumes[name]*100)}%`;
+    saveProgress();
+  });
+}
+
 function toast(message, duration = 3500) {
   $('toast').textContent = message;
   $('toast').classList.add('visible');
@@ -93,7 +108,7 @@ function saveProgress() {
   if (benchmark || motionCapture || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, lightingMode, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, audio:soundscape.volumes, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, lightingMode, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -338,6 +353,7 @@ function lockFailed(epoch = lockEpoch) {
 }
 
 function captureMouse(event) {
+  if (started && !otherViewActive && !document.hidden) soundscape.unlock();
   if (!started || modal || fatal || benchmark || motionCapture || matchMedia('(pointer: coarse)').matches) return;
   canvas.focus({ preventScroll: true });
   focusedLook = true;
@@ -701,7 +717,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nLighting ${['Classic','Ambient depth','','Detailed shadows','','','','Full indirect'][lightingMode] ?? 'Custom'}${lightingMode === 7 ? (streamReady ? ` · probes ${Math.round((state.giReadyFraction ?? 0)*100)}% ready` : ' · ambient fallback while generator is unavailable') : ''}\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nLighting ${['Classic','Ambient depth','','Detailed shadows','','','','Full indirect'][lightingMode] ?? 'Custom'}${lightingMode === 7 ? (streamReady ? ` · probes ${Math.round((state.giReadyFraction ?? 0)*100)}% ready` : ' · ambient fallback while generator is unavailable') : ''}\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nAudio ${soundscape.status} · ${soundscape.voices.size} voices · ${soundscape.thunder.pending.length} thunder queued\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -727,6 +743,7 @@ function initRenderCoordination() {
         && (data.stamp>renderClaim || (data.stamp===renderClaim && data.id>renderOwner))) {
         renderClaim=data.stamp;renderOwner=data.id;renderSeen=performance.now();
         otherViewActive=true;lastFrame=0;
+        soundscape.setActive(false);
         canvas.setAttribute('data-render-active','false');
         releaseMouse();
         if(benchmark)finishBenchmark(true);
@@ -742,6 +759,7 @@ function initRenderCoordination() {
     },1000);
     window.addEventListener('focus',claimRenderer);
     window.addEventListener('pagehide',()=>{
+      soundscape.setActive(false);
       if(!otherViewActive)renderChannel?.postMessage({type:'release',id:renderId});
 
     });
@@ -763,7 +781,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=violet-lightning-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=soundscape-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -800,6 +818,7 @@ function pumpStreaming() {
 }
 
 function renderFrame(now) {
+  soundscape.setActive(started && !document.hidden && !otherViewActive && !fatal && !benchmark && !motionCapture && soundscape.volumes.master>0);
   if (fatal) return;
   // Hidden previews must not keep submitting GPU work or advancing the world.
   // Keep one RAF chain: the browser resumes it when this tab becomes visible.
@@ -824,7 +843,11 @@ function renderFrame(now) {
     pumpStreaming();
     game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
-    if (now-lastHUD > 100) state = game.state();
+    if (now-lastHUD > 100) {
+      state = game.state();
+      soundscape.update(state,{moving,dialogue:modal==='dialogue'});
+      $('sound-status').textContent = soundscape.failed ? 'Audio unavailable in this browser.' : soundscape.loading ? 'Preparing the soundscape…' : !soundscape.ctx ? 'Sound starts when you enter the world.' : soundscape.volumes.master===0 ? 'Muted' : 'Wind · wildlife · water · footsteps';
+    }
     if (benchmark?.phase === "sample") benchmark.cpu.push(performance.now()-frameStart);
     if (!initialReady && (!game.is_ready || game.is_ready())) {
       initialReady = true;
@@ -842,6 +865,7 @@ function renderFrame(now) {
 
 function showFatal(error) {
   fatal = true;
+  soundscape.setActive(false);
   closeModal();
   console.error(error);
   clearMovement();
@@ -864,8 +888,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=violet-lightning-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=violet-lightning-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=soundscape-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=soundscape-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -886,12 +910,14 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'violet-lightning-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'soundscape-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
 
 function startExploring(event) {
+  soundscape.setActive(!document.hidden && !otherViewActive && soundscape.volumes.master>0);
+  soundscape.unlock();
   if (!game || !initialReady || fatal) return;
   started = true;
   $('intro').classList.add('hidden');
@@ -1295,7 +1321,7 @@ mapCanvas.addEventListener('wheel', (event) => {
 }, { passive: false });
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { resize(); if (modal === 'map') scheduleMapData(); }, 100); });
 window.addEventListener('blur', releaseMouse);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && streamWorker && streamDeadline) streamDeadline=performance.now()+120000; if (document.hidden) { if (motionCapture) finishMotionCapture(true); if (benchmark) finishBenchmark(true); adaptive.reset(performance.now()); releaseMouse(); saveProgress(); } lastFrame = 0; });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && streamWorker && streamDeadline) streamDeadline=performance.now()+120000; if (document.hidden) { soundscape.setActive(false); if (motionCapture) finishMotionCapture(true); if (benchmark) finishBenchmark(true); adaptive.reset(performance.now()); releaseMouse(); saveProgress(); } lastFrame = 0; });
 window.addEventListener('pagehide', saveProgress);
 
 // Short real-browser motion evidence. Encoding never runs during FPS checks.

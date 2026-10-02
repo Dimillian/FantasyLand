@@ -12,3 +12,5 @@ if [ -x "$PWD/.tools/wasm-bindgen-0.2.128-aarch64-apple-darwin/wasm-bindgen" ]; 
 else
   wasm-bindgen --target web --out-dir dist/pkg --out-name fantasy_land "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/fantasy_land.wasm"
 fi
+
+node scripts/build-audio.mjs

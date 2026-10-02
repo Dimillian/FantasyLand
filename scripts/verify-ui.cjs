@@ -4,7 +4,8 @@ const assert = require('assert/strict');
 const html = fs.readFileSync(require('path').join(__dirname, '../dist/index.html'), 'utf8');
 const adaptiveSource = fs.readFileSync(require('path').join(__dirname, '../dist/adaptive-resolution.js'), 'utf8').replace('export class', 'class');
 const portraitSource = fs.readFileSync(require('path').join(__dirname, '../dist/portrait.js'), 'utf8').replace('export function', 'function');
-const source = portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '');
+const soundStub = `class Soundscape { constructor(saved={}){this.volumes={master:.75,ambience:.8,footsteps:.45,wildlife:.75,...saved};this.voices=new Set();this.thunder={pending:[]};} setVolume(k,v){this.volumes[k]=v;} setActive(){} unlock(){} update(){} }`;
+const source = soundStub + '\n' + portraitSource + '\n' + adaptiveSource + '\n' + fs.readFileSync(require('path').join(__dirname, '../dist/app.js'), 'utf8').replace(/boot\(\);\s*$/, '').replace(/import \{ AdaptiveResolution \}[^\n]+\n/, '').replace(/import \{ paintPortrait \}[^\n]+\n/, '').replace(/import \{ Soundscape \}[^\n]+\n/, '');
 class Element {
   constructor(id='') { this.id=id; this.listeners={}; this.attributes={}; this.style={}; this.classes=new Set(); this.classList={add:(...names)=>names.forEach(name=>this.classes.add(name)),remove:(...names)=>names.forEach(name=>this.classes.delete(name)),toggle:(name,force)=>{const add=force ?? !this.classes.has(name); if(add)this.classes.add(name);else this.classes.delete(name);return add;},contains:name=>this.classes.has(name)}; this.clientWidth=800; this.clientHeight=500; this.width=800; this.height=500; this.tagName='DIV'; this.value=''; this.children=[]; this._text=''; }
   addEventListener(name, callback) { (this.listeners[name] ||= []).push(callback); }
@@ -89,6 +90,16 @@ function filterHarness(snapshot, destinations = [], href = 'https://test.invalid
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,lightingCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
+async function verifyAudioSettings() {
+  const h=filterHarness({seed:42,x:12,z:34,audio:{master:.4,ambience:.7,footsteps:.25,wildlife:.6}});
+  await h.run('boot()');
+  h.run('initialReady=true;');assert.equal(h.ids['audio-footsteps'].value,'25');
+  h.ids['audio-footsteps'].value='45';h.ids['audio-footsteps'].fire('input');
+  assert.equal(h.saved().audio.footsteps,.45);assert.equal(h.saved().audio.master,.4);
+  const restored=filterHarness(h.saved());assert.equal(restored.ids['audio-footsteps'].value,'45');
+  assert.equal(filterHarness({seed:42,x:12,z:34}).ids['audio-footsteps'].value,'45');
+  console.log('PASS: separate audio levels, softened footstep default and saved/reloaded preferences.');
+}
 async function verifyInteriorTours() {
   const h=filterHarness({seed:42,x:12,z:34});await h.run('boot()');h.run('initialReady=true;');
   h.ids['study-select'].value='interior:inn';h.ids['study-form'].fire('submit');
@@ -632,4 +643,4 @@ assert.equal(run('otherViewActive'),false,'stale claims cannot steal the rendere
 console.log('Single-view rendering passed: pause, input takeover, stale claims and progress protection.');
 
 }
-main().then(verifyStreamingLifecycle).catch(error=>{console.error(error);process.exitCode=1;});
+main().then(verifyAudioSettings).then(verifyStreamingLifecycle).catch(error=>{console.error(error);process.exitCode=1;});

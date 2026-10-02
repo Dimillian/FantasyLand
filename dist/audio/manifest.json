@@ -1,0 +1,590 @@
+{
+  "version": 1,
+  "sampleRate": 22050,
+  "sounds": {
+    "air": {
+      "file": "air.wav",
+      "loop": true,
+      "seconds": 8.000045351473922,
+      "peak": 0.29200664162635803,
+      "rms": 0.0582684852965303,
+      "bytes": 352846
+    },
+    "leaves": {
+      "file": "leaves.wav",
+      "loop": true,
+      "seconds": 8.370022675736962,
+      "peak": 0.2468874156475067,
+      "rms": 0.06697698296884838,
+      "bytes": 369162
+    },
+    "needles": {
+      "file": "needles.wav",
+      "loop": true,
+      "seconds": 8.740045351473922,
+      "peak": 0.29596054553985596,
+      "rms": 0.062156802850846155,
+      "bytes": 385480
+    },
+    "rain": {
+      "file": "rain.wav",
+      "loop": true,
+      "seconds": 9.110022675736962,
+      "peak": 0.32811424136161804,
+      "rms": 0.11841125193341591,
+      "bytes": 401796
+    },
+    "roof": {
+      "file": "roof.wav",
+      "loop": true,
+      "seconds": 9.480045351473922,
+      "peak": 0.36460548639297485,
+      "rms": 0.08605458288136361,
+      "bytes": 418114
+    },
+    "stream": {
+      "file": "stream.wav",
+      "loop": true,
+      "seconds": 9.85002267573696,
+      "peak": 0.37693843245506287,
+      "rms": 0.09903675950485255,
+      "bytes": 434430
+    },
+    "surf": {
+      "file": "surf.wav",
+      "loop": true,
+      "seconds": 10.22,
+      "peak": 0.3921268582344055,
+      "rms": 0.06531923296711382,
+      "bytes": 450746
+    },
+    "fire": {
+      "file": "fire.wav",
+      "loop": true,
+      "seconds": 10.59002267573696,
+      "peak": 0.5249446034431458,
+      "rms": 0.05691425002347924,
+      "bytes": 467064
+    },
+    "insects": {
+      "file": "insects.wav",
+      "loop": true,
+      "seconds": 10.960045351473923,
+      "peak": 0.03749726712703705,
+      "rms": 0.006273020297762567,
+      "bytes": 483382
+    },
+    "snow-wind": {
+      "file": "snow-wind.wav",
+      "loop": true,
+      "seconds": 11.330022675736961,
+      "peak": 0.3022187054157257,
+      "rms": 0.07100003277638262,
+      "bytes": 499698
+    },
+    "step-grass-0": {
+      "file": "step-grass-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.26060885190963745,
+      "rms": 0.06250657618283632,
+      "bytes": 14156
+    },
+    "step-grass-1": {
+      "file": "step-grass-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3393613398075104,
+      "rms": 0.06281677414261545,
+      "bytes": 14156
+    },
+    "step-grass-2": {
+      "file": "step-grass-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3261828124523163,
+      "rms": 0.06210384715471826,
+      "bytes": 14156
+    },
+    "step-grass-3": {
+      "file": "step-grass-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3392374813556671,
+      "rms": 0.06382519040743728,
+      "bytes": 14156
+    },
+    "step-leaves-0": {
+      "file": "step-leaves-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3392869234085083,
+      "rms": 0.04996467612323838,
+      "bytes": 14156
+    },
+    "step-leaves-1": {
+      "file": "step-leaves-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3227176368236542,
+      "rms": 0.0490665507271571,
+      "bytes": 14156
+    },
+    "step-leaves-2": {
+      "file": "step-leaves-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.35627251863479614,
+      "rms": 0.047608498070910596,
+      "bytes": 14156
+    },
+    "step-leaves-3": {
+      "file": "step-leaves-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3470401167869568,
+      "rms": 0.049924248659652296,
+      "bytes": 14156
+    },
+    "step-mud-0": {
+      "file": "step-mud-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.43019843101501465,
+      "rms": 0.07062221011670226,
+      "bytes": 14156
+    },
+    "step-mud-1": {
+      "file": "step-mud-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3310042917728424,
+      "rms": 0.06324167723887482,
+      "bytes": 14156
+    },
+    "step-mud-2": {
+      "file": "step-mud-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.34793177247047424,
+      "rms": 0.06490947744879988,
+      "bytes": 14156
+    },
+    "step-mud-3": {
+      "file": "step-mud-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.2937769591808319,
+      "rms": 0.062451941474746135,
+      "bytes": 14156
+    },
+    "step-gravel-0": {
+      "file": "step-gravel-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.44302883744239807,
+      "rms": 0.04436294075985922,
+      "bytes": 14156
+    },
+    "step-gravel-1": {
+      "file": "step-gravel-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4069080352783203,
+      "rms": 0.044222158437403895,
+      "bytes": 14156
+    },
+    "step-gravel-2": {
+      "file": "step-gravel-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.47648873925209045,
+      "rms": 0.0449565840057054,
+      "bytes": 14156
+    },
+    "step-gravel-3": {
+      "file": "step-gravel-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4390639066696167,
+      "rms": 0.04533428195821553,
+      "bytes": 14156
+    },
+    "step-stone-0": {
+      "file": "step-stone-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.26539987325668335,
+      "rms": 0.020953596078354293,
+      "bytes": 14156
+    },
+    "step-stone-1": {
+      "file": "step-stone-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.35487738251686096,
+      "rms": 0.025583312303115627,
+      "bytes": 14156
+    },
+    "step-stone-2": {
+      "file": "step-stone-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.2943093478679657,
+      "rms": 0.024320412890010367,
+      "bytes": 14156
+    },
+    "step-stone-3": {
+      "file": "step-stone-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3050162196159363,
+      "rms": 0.024804311084905002,
+      "bytes": 14156
+    },
+    "step-wood-0": {
+      "file": "step-wood-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.22161078453063965,
+      "rms": 0.03041742644348284,
+      "bytes": 14156
+    },
+    "step-wood-1": {
+      "file": "step-wood-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.22147519886493683,
+      "rms": 0.03041465516454712,
+      "bytes": 14156
+    },
+    "step-wood-2": {
+      "file": "step-wood-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.22182656824588776,
+      "rms": 0.03042012886684854,
+      "bytes": 14156
+    },
+    "step-wood-3": {
+      "file": "step-wood-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.22166334092617035,
+      "rms": 0.030417913930891567,
+      "bytes": 14156
+    },
+    "step-sand-0": {
+      "file": "step-sand-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.38381674885749817,
+      "rms": 0.05068730971923281,
+      "bytes": 14156
+    },
+    "step-sand-1": {
+      "file": "step-sand-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3683772385120392,
+      "rms": 0.04990549721224842,
+      "bytes": 14156
+    },
+    "step-sand-2": {
+      "file": "step-sand-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3536420464515686,
+      "rms": 0.04854941595964786,
+      "bytes": 14156
+    },
+    "step-sand-3": {
+      "file": "step-sand-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3477589786052704,
+      "rms": 0.051489333892217076,
+      "bytes": 14156
+    },
+    "step-snow-0": {
+      "file": "step-snow-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.35887452960014343,
+      "rms": 0.0375507898860134,
+      "bytes": 14156
+    },
+    "step-snow-1": {
+      "file": "step-snow-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3880012631416321,
+      "rms": 0.038826289630702976,
+      "bytes": 14156
+    },
+    "step-snow-2": {
+      "file": "step-snow-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3183566629886627,
+      "rms": 0.03692302762675811,
+      "bytes": 14156
+    },
+    "step-snow-3": {
+      "file": "step-snow-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3525363802909851,
+      "rms": 0.03903915630297632,
+      "bytes": 14156
+    },
+    "step-water-0": {
+      "file": "step-water-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4302515387535095,
+      "rms": 0.06108485177885893,
+      "bytes": 14156
+    },
+    "step-water-1": {
+      "file": "step-water-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4134688675403595,
+      "rms": 0.06218336233431717,
+      "bytes": 14156
+    },
+    "step-water-2": {
+      "file": "step-water-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4373147189617157,
+      "rms": 0.059971568090346615,
+      "bytes": 14156
+    },
+    "step-water-3": {
+      "file": "step-water-3.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.4665651321411133,
+      "rms": 0.06399010365845569,
+      "bytes": 14156
+    },
+    "bird-forest-0": {
+      "file": "bird-forest-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19877520203590393,
+      "rms": 0.04552855754383959,
+      "bytes": 66194
+    },
+    "bird-forest-1": {
+      "file": "bird-forest-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19945764541625977,
+      "rms": 0.046656079705267264,
+      "bytes": 66194
+    },
+    "bird-forest-2": {
+      "file": "bird-forest-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.1993188112974167,
+      "rms": 0.04493687352314132,
+      "bytes": 66194
+    },
+    "bird-meadow-0": {
+      "file": "bird-meadow-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19956821203231812,
+      "rms": 0.04554701243439594,
+      "bytes": 66194
+    },
+    "bird-meadow-1": {
+      "file": "bird-meadow-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19951079785823822,
+      "rms": 0.046668459147055905,
+      "bytes": 66194
+    },
+    "bird-meadow-2": {
+      "file": "bird-meadow-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.1995837390422821,
+      "rms": 0.044941760125538376,
+      "bytes": 66194
+    },
+    "bird-tropical-0": {
+      "file": "bird-tropical-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19961407780647278,
+      "rms": 0.04649075948719049,
+      "bytes": 66194
+    },
+    "bird-tropical-1": {
+      "file": "bird-tropical-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19985830783843994,
+      "rms": 0.04576749479047708,
+      "bytes": 66194
+    },
+    "bird-tropical-2": {
+      "file": "bird-tropical-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.19959750771522522,
+      "rms": 0.04571744815187315,
+      "bytes": 66194
+    },
+    "owl-0": {
+      "file": "owl-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.22655151784420013,
+      "rms": 0.07959711729544927,
+      "bytes": 66194
+    },
+    "owl-1": {
+      "file": "owl-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.22655420005321503,
+      "rms": 0.079597118296948,
+      "bytes": 66194
+    },
+    "owl-2": {
+      "file": "owl-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.22653710842132568,
+      "rms": 0.07959711736306159,
+      "bytes": 66194
+    },
+    "frog-0": {
+      "file": "frog-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.28509363532066345,
+      "rms": 0.04587154662035892,
+      "bytes": 66194
+    },
+    "frog-1": {
+      "file": "frog-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.2762095034122467,
+      "rms": 0.04577563469224464,
+      "bytes": 66194
+    },
+    "frog-2": {
+      "file": "frog-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.282870888710022,
+      "rms": 0.04571747724105892,
+      "bytes": 66194
+    },
+    "crow-0": {
+      "file": "crow-0.wav",
+      "loop": false,
+      "seconds": 0.7,
+      "peak": 0.2114233523607254,
+      "rms": 0.050925486150712226,
+      "bytes": 30914
+    },
+    "crow-1": {
+      "file": "crow-1.wav",
+      "loop": false,
+      "seconds": 0.7,
+      "peak": 0.20547473430633545,
+      "rms": 0.05078368583414553,
+      "bytes": 30914
+    },
+    "crow-2": {
+      "file": "crow-2.wav",
+      "loop": false,
+      "seconds": 0.7,
+      "peak": 0.20835962891578674,
+      "rms": 0.05052915191590601,
+      "bytes": 30914
+    },
+    "gull-0": {
+      "file": "gull-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.21699641644954681,
+      "rms": 0.08322978318947409,
+      "bytes": 66194
+    },
+    "gull-1": {
+      "file": "gull-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.21670208871364594,
+      "rms": 0.08317532928973496,
+      "bytes": 66194
+    },
+    "gull-2": {
+      "file": "gull-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.21715816855430603,
+      "rms": 0.08321723722990285,
+      "bytes": 66194
+    },
+    "creak-0": {
+      "file": "creak-0.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.052392344921827316,
+      "rms": 0.020131765884226546,
+      "bytes": 66194
+    },
+    "creak-1": {
+      "file": "creak-1.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.052392344921827316,
+      "rms": 0.020131765884226546,
+      "bytes": 66194
+    },
+    "creak-2": {
+      "file": "creak-2.wav",
+      "loop": false,
+      "seconds": 1.5,
+      "peak": 0.052392344921827316,
+      "rms": 0.020131765884226546,
+      "bytes": 66194
+    },
+    "thunder-0": {
+      "file": "thunder-0.wav",
+      "loop": false,
+      "seconds": 8,
+      "peak": 0.5166774988174438,
+      "rms": 0.06508033418102269,
+      "bytes": 352844
+    },
+    "thunder-1": {
+      "file": "thunder-1.wav",
+      "loop": false,
+      "seconds": 8,
+      "peak": 0.5495029091835022,
+      "rms": 0.06559971911304066,
+      "bytes": 352844
+    },
+    "thunder-2": {
+      "file": "thunder-2.wav",
+      "loop": false,
+      "seconds": 8,
+      "peak": 0.511795699596405,
+      "rms": 0.06555691956146145,
+      "bytes": 352844
+    }
+  }
+}

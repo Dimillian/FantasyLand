@@ -30,6 +30,7 @@ pub mod renderer;
 pub mod settlement_mesh;
 pub mod settlements;
 mod shadow;
+pub mod soundscape;
 pub mod streaming;
 pub mod traversal;
 mod vertex;
@@ -52,6 +53,7 @@ pub struct Game {
     gpu_drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
     hour: f32,
     life: citizens::Life,
+    audio_probe: std::cell::RefCell<soundscape::Probe>,
 }
 
 #[derive(Serialize)]
@@ -86,6 +88,7 @@ struct GameState {
     cover_instances: u32,
     mesh_megabytes: f32,
     weather: weather::WeatherState,
+    audio: soundscape::Environment,
     reflection_draws: u32,
     gpu_timings: Vec<gpu_profile::PassTime>,
     gpu_render_ms: Option<f32>,
@@ -117,6 +120,7 @@ impl Game {
             gpu_drain: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hour: 9.0,
             life: citizens::Life::new(),
+            audio_probe: Default::default(),
         })
     }
     pub fn set_lighting_mode(&mut self, mask: u32) {
@@ -307,6 +311,13 @@ impl Game {
             cover_instances: self.renderer.cover_drawn_instances(),
             mesh_megabytes: self.renderer.mesh_bytes() as f32 / 1_000_000.0,
             weather: *self.renderer.weather_state(),
+            audio: self.audio_probe.borrow_mut().sample(
+                &self.world,
+                p,
+                &sample,
+                self.renderer.weather_state(),
+                self.life.clock,
+            ),
             reflection_draws: self.renderer.reflection_draws(),
             gpu_timings: self.renderer.gpu_timings(),
             gpu_render_ms: self.renderer.gpu_render_ms(),
