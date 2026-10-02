@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {mixFor,StepClock,ThunderQueue} from '../dist/soundscape-model.mjs';
+import {mixFor,StepClock,ThunderQueue,thunderDelay} from '../dist/soundscape-model.mjs';
 import {Soundscape} from '../dist/soundscape.mjs';
 const state={x:0,y:0,z:0,yaw:0,walked:0,grounded:true,speed:4,dayTime:10,biome:'Temperate forest',forest:'Oak woodland',weather:{windX:3,windZ:1,rain:0,snow:0},audio:{forest:.8,indoor:0,floor:'grass',water:[30,0,0,.8],waterKind:'river',fire:[0,0,0,0]}};
 const fair=mixFor(state),storm=mixFor({...state,weather:{windX:30,rain:1,snow:0}}),inside=mixFor({...state,audio:{...state.audio,indoor:1}});
@@ -21,16 +21,30 @@ assert.equal(steps.update({...state,walked:3,x:3,grounded:false}),null);
 assert(steps.update({...state,walked:3,x:3}).landing);
 assert.equal(steps.update({...state,walked:20,x:200}),null);
 assert.equal(steps.update({...state,walked:24,x:204},false),null);
-const thunder=new ThunderQueue(),flash={...state,weather:{lightning:1},audio:{lightningEvent:[8,.1,.9,0],thunderSource:[3430,0,0]}};
+const thunder=new ThunderQueue(),flash={...state,weather:{lightning:1,stormStrength:1,mode:5},audio:{lightningEvent:[8,.1,.9,0],thunderSource:[3430,0,0]}};
 assert.deepEqual(thunder.update(flash,0),[]);assert.equal(thunder.pending.length,1);
-thunder.update(flash,.1);assert.equal(thunder.pending.length,1);assert.equal(thunder.update(flash,9.9).length,0);
-assert.equal(thunder.update(flash,10).length,1);assert.equal(thunder.update(flash,11).length,0);
+thunder.update(flash,.1);assert.equal(thunder.pending.length,1);assert.equal(thunder.update(flash,.12).length,0);
+assert.equal(thunder.update(flash,.2).length,1);assert.equal(thunder.update(flash,11).length,0);
 thunder.update({...flash,audio:{...flash.audio,lightningEvent:[9,.1,.9,0]}},12);
 thunder.update({...flash,x:2000},13);assert.equal(thunder.pending.length,0);
+// Weather overrides clear even while smoothed rain/severity still look stormy.
+for(const mode of [1,2,3,6,7,8]){
+ const q=new ThunderQueue();q.update(flash,0);assert.equal(q.pending.length,1);
+ assert.deepEqual(q.update({...flash,weather:{...flash.weather,mode}},.1),[]);
+ assert.equal(q.pending.length,0);assert(q.invalidated);
+ assert.deepEqual(q.update({...flash,weather:{...flash.weather,mode}},30),[]);
+}
+const arrival=new ThunderQueue();arrival.update({...state,weather:{mode:1,stormStrength:0}},0);arrival.update(flash,.1);assert.equal(arrival.pending.length,1,'A fresh rendered strike is retained when entering storm mode');
+const front=new ThunderQueue();front.update({...flash,weather:{...flash.weather,mode:0}},0);
+front.update({...flash,weather:{mode:0,stormStrength:.1,lightning:0}},.1);assert.equal(front.pending.length,0);
+assert(thunderDelay(21000)<=.85);assert(thunderDelay(2000)<thunderDelay(15000));
+// No duplicate on the return stroke, paused envelope, or continuing frame packets.
+const frames=new ThunderQueue();frames.update(flash,0);frames.update({...flash,audio:{...flash.audio,lightningEvent:[8,.36,.9,0]}},.08);
+assert.equal(frames.pending.length,1);assert.equal(frames.update(flash,1).length,1);assert.equal(frames.update(flash,2).length,0);
 console.log('PASS biome, weather, indoor mixes; movement cadence; delayed/unique/teleport-safe thunder');
 
 // Graph lifecycle / voice budget against the actual player class.
-class Param{value=0;setTargetAtTime(v){this.value=v;}}
+class Param{value=0;cancelScheduledValues(){}setTargetAtTime(v){this.value=v;}}
 class Node{constructor(){for(const k of ['gain','pan','frequency','Q','threshold','knee','ratio','attack','release','playbackRate'])this[k]=new Param();}connect(){return this;}disconnect(){this.disconnected=true;}start(){this.started=true;}stop(){this.onended?.();}}
 class Context{currentTime=0;sampleRate=48000;state='suspended';destination=new Node();createGain(){return new Node();}createDynamicsCompressor(){return new Node();}createBiquadFilter(){return new Node();}createConvolver(){return new Node();}createBufferSource(){return new Node();}createStereoPanner(){return new Node();}createBuffer(ch,n,rate){const channels=Array.from({length:ch},()=>new Float32Array(n));return {length:n,numberOfChannels:ch,duration:n/rate,getChannelData:i=>channels[i]};}async resume(){this.state='running';}async suspend(){this.state='suspended';}}
 globalThis.AudioContext=Context;
@@ -42,6 +56,21 @@ assert.equal(audio.voices.size,18);audio.setActive(false);assert.equal(audio.voi
 await new Promise(resolve=>setTimeout(resolve,280));assert.equal(audio.ctx.state,'suspended');
 audio.setActive(true);assert.equal(audio.ctx.state,'running');audio.setVolume('master',2);assert.equal(audio.master.gain.value,1);
 audio.setActive(false);audio.setActive(true);await new Promise(resolve=>setTimeout(resolve,280));assert.equal(audio.ctx.state,'running');
+audio.buffers.set('thunder-0',{duration:7});audio.buffers.set('thunder-cloud-0',{duration:7});audio.pick=prefix=>`${prefix}-0`;
+audio.ctx.currentTime=3;
+// The real player consumes a render-frame packet even between HUD updates.
+const packet=[100,.04,.9,0,1,1,5,0,0,0,0,3430,0,0];
+audio.updateLightningFrame(packet);assert.equal(audio.thunder.pending.length,1);
+audio.ctx.currentTime=3.2;audio.updateLightningFrame(packet);assert.equal([...audio.voices].filter(v=>v.tag==='thunder').length,1);
+audio.play('test','footsteps',.2);audio.ctx.currentTime=3.3;
+const clearPacket=[...packet];clearPacket[6]=1;audio.updateLightningFrame(clearPacket);
+assert.equal(audio.thunder.pending.length,0);assert.equal([...audio.voices].filter(v=>v.tag==='thunder').length,0);
+assert.equal(audio.voices.size,1,'Clearing thunder must preserve unrelated sounds');
+// In-cloud events select the diffuse roll, and explicit UI cancellation removes it.
+audio.ctx.currentTime=4;audio.updateLightningFrame([...packet.slice(0,6),5,...packet.slice(7)]);
+audio.ctx.currentTime=4.1;const cloudPacket=[...packet];cloudPacket[0]=101;cloudPacket[2]=.2;
+audio.updateLightningFrame(cloudPacket);audio.ctx.currentTime=4.3;audio.updateLightningFrame(cloudPacket);
+assert.equal([...audio.voices].filter(v=>v.tag==='thunder').length,1);audio.cancelThunder();assert.equal(audio.voices.size,1);
 console.log('PASS unlock, saved volumes, mute, voice cap, cleanup and suspend/resume race');
 const manifest=JSON.parse(readFileSync(new URL('../dist/audio/manifest.json',import.meta.url)));
 for(const [id,m] of Object.entries(manifest.sounds)){

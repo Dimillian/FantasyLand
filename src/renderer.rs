@@ -1333,6 +1333,11 @@ impl Renderer {
             w.set_paused(paused);
         }
     }
+    pub fn lightning_audio_event(&self) -> [f32; 4] {
+        self.weather_system
+            .as_ref()
+            .map_or([0.0; 4], |w| w.lightning_event())
+    }
     pub fn weather_state(&self) -> &crate::weather::WeatherState {
         &self.weather_state
     }

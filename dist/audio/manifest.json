@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "sampleRate": 22050,
   "sounds": {
     "air": {
@@ -565,26 +565,50 @@
     "thunder-0": {
       "file": "thunder-0.wav",
       "loop": false,
-      "seconds": 8,
-      "peak": 0.5166774988174438,
-      "rms": 0.06508033418102269,
-      "bytes": 352844
+      "seconds": 7,
+      "peak": 0.6090803742408752,
+      "rms": 0.06455124816069954,
+      "bytes": 308744
     },
     "thunder-1": {
       "file": "thunder-1.wav",
       "loop": false,
-      "seconds": 8,
-      "peak": 0.5495029091835022,
-      "rms": 0.06559971911304066,
-      "bytes": 352844
+      "seconds": 7,
+      "peak": 0.6426690220832825,
+      "rms": 0.06839732326752569,
+      "bytes": 308744
     },
     "thunder-2": {
       "file": "thunder-2.wav",
       "loop": false,
-      "seconds": 8,
-      "peak": 0.511795699596405,
-      "rms": 0.06555691956146145,
-      "bytes": 352844
+      "seconds": 7,
+      "peak": 0.6445313692092896,
+      "rms": 0.07056190708182096,
+      "bytes": 308744
+    },
+    "thunder-cloud-0": {
+      "file": "thunder-cloud-0.wav",
+      "loop": false,
+      "seconds": 7,
+      "peak": 0.44637855887413025,
+      "rms": 0.057520732212988285,
+      "bytes": 308744
+    },
+    "thunder-cloud-1": {
+      "file": "thunder-cloud-1.wav",
+      "loop": false,
+      "seconds": 7,
+      "peak": 0.4440741539001465,
+      "rms": 0.05962656240246693,
+      "bytes": 308744
+    },
+    "thunder-cloud-2": {
+      "file": "thunder-cloud-2.wav",
+      "loop": false,
+      "seconds": 7,
+      "peak": 0.41750049591064453,
+      "rms": 0.06014476712400936,
+      "bytes": 308744
     }
   }
 }

@@ -21,10 +21,16 @@ export function synth(kind,seconds,seed=1){
     if(kind==='fire')v=low*.70+mid*.14+(r()<.0015?(r()-.5)*.9:0);
     if(kind==='insects')v=Math.sin(t*5300*tau)*.027*Math.pow(.5+.5*Math.sin(t*41),8)*(.30+breath*.7)+Math.sin(t*4200*tau)*.012*Math.pow(.5+.5*Math.sin(t*34),12);
     if(kind==='snow-wind')v=low*1.3+(mid-low)*.12*breath+Math.sin(tau*t*(310+Math.sin(t*.8)*9))*.009*breath;
-    if(kind==='thunder'){
-      const rumble=Math.sin(t*41+Math.sin(t*7)*4)*.07+Math.sin(t*79+Math.sin(t*3)*6)*.045;
-      const env=(1-Math.exp(-t*13))*Math.exp(-t*.45)*(1+.4*Math.sin(t*5.1)+.2*Math.sin(t*11.3));
-      v=(slow*5+low*1.5+rumble)*env+mid*.3*Math.exp(-t*12);
+    if(kind==='thunder'||kind==='thunder-cloud'){
+      const cloud=kind==='thunder-cloud';
+      // A broad-band electrical crack, then separate expanding pressure rolls.
+      // Cloud discharges have a softer attack and more diffuse low-frequency body.
+      const crack=((white-mid)*.46+mid*.95)*Math.exp(-t*27)+(mid-low)*.48*Math.exp(-t*9);
+      const roll=(.55+.40*Math.sin(t*4.7+pitch)**2+.22*Math.sin(t*9.3)**2);
+      const body=(slow*5.8+low*1.9+mid*.12)*roll;
+      const pressure=Math.sin(t*48+Math.sin(t*5)*3)*.055+Math.sin(t*83+Math.sin(t*2)*4)*.035;
+      const env=(1-Math.exp(-t*(cloud?8:24)))*Math.exp(-t*.55);
+      v=crack*(cloud?.12:1.1)+(body+pressure)*env;
     }
     if(step){
       const impact=Math.sin(tau*(110*pitch*t-75*t*t))*.17*Math.exp(-t*46);
@@ -55,7 +61,7 @@ export function synth(kind,seconds,seed=1){
     if(kind==='crow'){const env=Math.sin(Math.PI*u)**2*Math.pow(.5+.5*Math.sin(t*24),.4);phase+=tau*(560-220*u)*pitch/RATE;v=(Math.sin(phase)+Math.sin(phase*2)*.45+Math.sin(phase*3)*.20+white*.25)*env*.13;}
     if(kind==='creak'){phase+=tau*(130+Math.sin(t*7)*55)/RATE;v=(Math.sin(phase)+Math.sin(phase*2)*.4)*Math.sin(Math.PI*u)**2*.04;}
     // Gentle onset/tail for all one-shots. Loop seams are treated separately.
-    if(step||bird||['thunder','owl','frog','crow','creak'].includes(kind))v*=Math.min(t/.006,1,(seconds-t)/.06);
+    if(step||bird||['thunder','thunder-cloud','owl','frog','crow','creak'].includes(kind))v*=Math.min(t/.006,1,(seconds-t)/.06);
     a[i]=Math.tanh(v*1.35)*.80;
   }
   return a;

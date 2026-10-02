@@ -198,6 +198,34 @@ impl Game {
             )
             .map_err(|e| JsValue::from_str(&e))
     }
+    /// Small audio packet matching the weather/event uniforms of the rendered
+    /// frame. Avoids repeating full world/acoustic probes at frame frequency.
+    pub fn lightning_audio_frame(&self) -> Vec<f32> {
+        let w = self.renderer.weather_state();
+        let event = self.renderer.lightning_audio_event();
+        let p = self.player.eye().to_array();
+        let source = if w.lightning > 0.035 {
+            soundscape::thunder_source(p, event)
+        } else {
+            [0.0; 3]
+        };
+        vec![
+            event[0],
+            event[1],
+            event[2],
+            event[3],
+            w.lightning,
+            w.storm_strength,
+            w.mode as f32,
+            p[0],
+            p[1],
+            p[2],
+            self.player.yaw,
+            source[0],
+            source[1],
+            source[2],
+        ]
+    }
     pub fn teleport(&mut self, x: f32, z: f32) {
         self.life.talking = None;
         self.life.invalidate();

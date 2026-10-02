@@ -39,16 +39,28 @@ export class StepClock {
     return {landing:false,pan:this.left?-.12:.12};
   }
 }
-// Schedule on the sound clock, not the accelerated world/weather clock.
+// Cinematic propagation: retain a distance cue without separating a flash and
+// its sound by the 6–60 seconds implied by our exaggerated horizon scale.
+export function thunderAllowed(w={}) {
+  return [0,4,5].includes(w.mode??0) && (w.stormStrength??0)>=.28;
+}
+export const thunderDelay=distance=>clamp(distance/22000,.08,.85);
 export class ThunderQueue {
   constructor(){this.reset();}
-  reset(){this.seen=null;this.pending=[];this.position=null;}
+  reset(){this.seen=null;this.pending=[];this.position=null;this.mode=null;this.invalidated=false;}
+  clear(eventId=this.seen){this.pending=[];this.seen=eventId;}
   update(s,now){
-    if(this.position&&Math.hypot(s.x-this.position[0],s.z-this.position[1])>150){this.pending=[];this.seen=s.audio?.lightningEvent?.[0];}
-    this.position=[s.x||0,s.z||0];const a=s.audio||{},e=a.lightningEvent;
-    if(e&&s.weather?.lightning>.035&&e[1]>=0&&e[1]<.7&&e[0]!==this.seen){
-      this.seen=e[0];const source=a.thunderSource||[s.x+6000,2000,s.z];const d=Math.hypot(source[0]-s.x,source[1]-(s.y||0),source[2]-s.z);
-      if(this.pending.length<8)this.pending.push({at:now+d/343,source,distance:d,cloud:e[2]<.62,id:e[0]});
+    const a=s.audio||{},e=a.lightningEvent,w=s.weather||{},mode=w.mode??0;
+    const unavailable=!thunderAllowed(w),moved=this.position&&Math.hypot(s.x-this.position[0],s.z-this.position[1])>150;
+    const changed=this.mode!==null&&this.mode!==mode;
+    this.invalidated=unavailable||changed||!!moved;
+    this.mode=mode;this.position=[s.x||0,s.z||0];
+    if(unavailable||moved){this.clear(e?.[0]);return [];}
+    if(changed)this.clear();
+    if(e&&w.lightning>.035&&e[1]>=0&&e[1]<.7&&e[0]!==this.seen){
+      this.seen=e[0];const source=a.thunderSource||[s.x+6000,2000,s.z];
+      const d=Math.hypot(source[0]-s.x,source[1]-(s.y||0),source[2]-s.z);
+      if(this.pending.length<4)this.pending.push({at:now+thunderDelay(d),source,distance:d,cloud:e[2]<.62,id:e[0]});
     }
     const ready=this.pending.filter(v=>v.at<=now);this.pending=this.pending.filter(v=>v.at>now);return ready;
   }

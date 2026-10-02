@@ -129,6 +129,17 @@ export class Game {
         return ret;
     }
     /**
+     * Small audio packet matching the weather/event uniforms of the rendered
+     * frame. Avoids repeating full world/acoustic probes at frame frequency.
+     * @returns {Float32Array}
+     */
+    lightning_audio_frame() {
+        const ret = wasm.game_lightning_audio_frame(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * @param {number} dx
      * @param {number} dy
      */
@@ -1639,7 +1650,7 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 71, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__59);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -1682,8 +1693,8 @@ function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bin
     wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58(arg0, arg1, arg2);
+function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__59(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__59(arg0, arg1, arg2);
 }
 
 function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_(arg0, arg1, arg2) {

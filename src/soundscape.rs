@@ -158,7 +158,7 @@ fn hash21(p: [f32; 2]) -> f32 {
     }
     fract((q[0] + q[1]) * q[2])
 }
-fn thunder_source(pos: [f32; 3], event: [f32; 4]) -> [f32; 3] {
+pub(crate) fn thunder_source(pos: [f32; 3], event: [f32; 4]) -> [f32; 3] {
     let c = [(pos[0] / 14000.0).floor(), (pos[2] / 14000.0).floor()];
     let mut best = f32::MAX;
     let mut source = [pos[0] + 6000.0, 2000.0, pos[2]];

@@ -22,6 +22,11 @@ export class Game {
     interaction_label(): string;
     is_ready(): boolean;
     landscape_destinations(): any;
+    /**
+     * Small audio packet matching the weather/event uniforms of the rendered
+     * frame. Avoids repeating full world/acoustic probes at frame frequency.
+     */
+    lightning_audio_frame(): Float32Array;
     look(dx: number, dy: number): void;
     map_data(cx: number, cz: number, span: number, res: number): Uint8Array;
     natural_destinations(): any;
@@ -101,6 +106,7 @@ export interface InitOutput {
     readonly game_interaction_label: (a: number) => [number, number];
     readonly game_is_ready: (a: number) => number;
     readonly game_landscape_destinations: (a: number) => any;
+    readonly game_lightning_audio_frame: (a: number) => [number, number];
     readonly game_look: (a: number, b: number, c: number) => void;
     readonly game_map_data: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly game_natural_destinations: (a: number) => any;
@@ -146,7 +152,7 @@ export interface InitOutput {
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__59: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

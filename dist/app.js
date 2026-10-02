@@ -1,5 +1,5 @@
-import { Soundscape } from './soundscape.mjs?v=soundscape-2';
-import { paintPortrait } from './portrait.js?v=soundscape-1';
+import { Soundscape } from './soundscape.mjs?v=thunder-sync-1';
+import { paintPortrait } from './portrait.js?v=thunder-sync-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
@@ -781,7 +781,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=soundscape-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=thunder-sync-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -843,9 +843,10 @@ function renderFrame(now) {
     pumpStreaming();
     game.tick(dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
+    if(soundscape.ready && soundscape.active && game.lightning_audio_frame) soundscape.updateLightningFrame(game.lightning_audio_frame());
     if (now-lastHUD > 100) {
       state = game.state();
-      soundscape.update(state,{moving,dialogue:modal==='dialogue'});
+      soundscape.update(state,{moving,dialogue:modal==='dialogue',lightningPerFrame:true});
       $('sound-status').textContent = soundscape.failed ? 'Audio unavailable in this browser.' : soundscape.loading ? 'Preparing the soundscape…' : !soundscape.ctx ? 'Sound starts when you enter the world.' : soundscape.volumes.master===0 ? 'Muted' : 'Wind · wildlife · water · footsteps';
     }
     if (benchmark?.phase === "sample") benchmark.cpu.push(performance.now()-frameStart);
@@ -888,8 +889,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=soundscape-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=soundscape-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=thunder-sync-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=thunder-sync-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -910,7 +911,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'soundscape-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'thunder-sync-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -981,6 +982,7 @@ $('sun-shadows').addEventListener('change', (event) => {
 $('weather-mode').addEventListener('change', (event) => {
   const mode = Number(event.target.value);
   weatherMode = Number.isInteger(mode) && mode >= 0 && mode <= 8 ? mode : 0;
+  soundscape.cancelThunder();
   game?.set_weather_mode(weatherMode);
   updateWeatherControls(); saveProgress();
 });
