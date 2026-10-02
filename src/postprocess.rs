@@ -5,8 +5,10 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Settings {
-    controls: [f32; 2], // mode, strength
-    output: [f32; 2],   // presentation width/height
+    controls: [f32; 2],   // mode, strength
+    output: [f32; 2],     // presentation width/height
+    weather: [f32; 4],    // cloud, rain, snow, fog
+    atmosphere: [f32; 4], // wind speed, outdoor exposure, lightning, reserved
 }
 struct Target {
     _texture: wgpu::Texture,
@@ -401,6 +403,8 @@ impl PostProcess {
         encoder: &mut wgpu::CommandEncoder,
         output: &wgpu::TextureView,
         size: [u32; 2],
+        weather: [f32; 4],
+        atmosphere: [f32; 4],
         profile: &crate::gpu_profile::GpuProfile,
     ) {
         queue.write_buffer(
@@ -409,6 +413,8 @@ impl PostProcess {
             bytemuck::bytes_of(&Settings {
                 controls: [self.mode as f32, self.strength],
                 output: [size[0] as f32, size[1] as f32],
+                weather,
+                atmosphere,
             }),
         );
         if matches!(self.mode, 1 | 2) && self.strength > 0.0 {

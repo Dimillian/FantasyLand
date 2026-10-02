@@ -21,6 +21,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1337);
     let check = std::env::args().nth(3);
+    if check.as_deref() == Some("weather-studies") {
+        render_checks::weather_studies(seed, &dir);
+        return;
+    }
     if check.as_deref() == Some("wind-motion") {
         render_checks::wind_motion(seed, &dir);
         return;

@@ -217,3 +217,85 @@ pub fn wind_motion(seed: u32, dir: &str) {
     fs::write(format!("{dir}/motion.json"),serde_json::to_string_pretty(&serde_json::json!({"scene":id,"weather":r.weather_state(),"frames":96,"fps":12,"seconds":8,"eye":f.eye,"yaw":f.yaw,"pitch":f.pitch,"lighting":7,"nativeCompleted":stats(&completed),"note":"Fixed camera, 720p, 400% cover. Capture pacing is not browser FPS."})).unwrap()).unwrap();
     println!("Wind motion captured: {id}, weather {mode}, 8 seconds");
 }
+
+/// Same-camera weather contact sheet inputs; native GPU output, no image edits.
+/// verify output/weather 1337 weather-studies [meadow|forest|inn]
+pub fn weather_studies(seed: u32, dir: &str) {
+    let id = std::env::args().nth(4).unwrap_or_else(|| "meadow".into());
+    let world = World::new(seed);
+    let mut f = fixture(&world, &id);
+    f.hour = 11.0;
+    let eye = Vec3::from_array(f.eye);
+    let mut r = pollster::block_on(Renderer::headless(1280, 720)).unwrap();
+    r.set_quality(1);
+    r.set_render_resolution(720);
+    r.set_antialiasing(1);
+    r.set_ground_cover_density(4.0);
+    r.set_lighting_mode(7);
+    r.set_filter(1, 1.0);
+    r.update_chunks(&world, eye, true);
+    while r.pending_count() > 0 {
+        r.update_chunks(&world, eye, false);
+    }
+    // Rooms, window glass and fire emitters are populated with nearby life.
+    // Match the game loop even when the fixture camera has no visible actors.
+    let mut life = Life::new();
+    life.clock = f.hour as f64 * 120.0;
+    life.update(&world, f.eye, 0.1);
+    r.update_people(&world, &life, eye, f.yaw);
+    let mut reports = Vec::new();
+    for (name, mode) in [
+        ("fair", 1),
+        ("cloudy", 2),
+        ("overcast", 8),
+        ("rain", 3),
+        ("storm", 4),
+        ("tempest", 5),
+        ("snow", 6),
+        ("blizzard", 7),
+    ] {
+        r.set_weather_paused(false);
+        r.set_weather_mode(mode);
+        for _ in 0..800 {
+            r.update_weather(&world, eye, f.hour, 0.05);
+            r.advance_time(0.05);
+        }
+        while r.weather_state().lightning > 0.001 {
+            r.update_weather(&world, eye, f.hour, 0.025);
+            r.advance_time(0.025);
+        }
+        r.set_weather_paused(true);
+        for _ in 0..24 {
+            r.render(eye, f.yaw, f.pitch, f.hour).unwrap();
+            r.device.poll(wgpu::PollType::Wait).unwrap();
+        }
+        png(&format!("{dir}/{name}.png"), &r.capture_rgba().unwrap());
+        let mut completed = Vec::new();
+        for _ in 0..30 {
+            r.advance_time(1.0 / 60.0);
+            let t = Instant::now();
+            r.render(eye, f.yaw, f.pitch, f.hour).unwrap();
+            r.device.poll(wgpu::PollType::Wait).unwrap();
+            completed.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        reports.push(serde_json::json!({"name":name,"weather":r.weather_state(),"nativeCompleted":stats(&completed),"gpuPasses":r.gpu_timings()}));
+        if mode == 5 {
+            r.set_weather_paused(false);
+            let mut found = false;
+            for _ in 0..2400 {
+                r.update_weather(&world, eye, f.hour, 1.0 / 60.0);
+                r.advance_time(1.0 / 60.0);
+                if r.weather_state().lightning > 0.85 {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found, "tempest should produce a visible lightning stroke");
+            r.render(eye, f.yaw, f.pitch, f.hour).unwrap();
+            r.device.poll(wgpu::PollType::Wait).unwrap();
+            png(&format!("{dir}/lightning.png"), &r.capture_rgba().unwrap());
+        }
+        println!("Weather captured: {name}");
+    }
+    fs::write(format!("{dir}/weather.json"),serde_json::to_string_pretty(&serde_json::json!({"fixture":f,"reports":reports,"note":"Native completed GPU frames, not browser FPS. Sequential fronts retain wetness/snow history."})).unwrap()).unwrap();
+}

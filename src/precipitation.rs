@@ -6,6 +6,32 @@
 
 const ADVECTION_PERIOD: f64 = 4096.0;
 
+// Keep the snow base in sync with vs_precip. Only active precipitation is drawn.
+pub const RAIN_CAPACITY: u32 = 40960;
+pub const SNOW_CAPACITY: u32 = 20480;
+
+/// Fractional last layers fade in the shader, so smooth weather fronts do not
+/// pop whole layers into existence. Budgets stay bounded during mixed fronts.
+pub fn layer_count(intensity: f32, snow: bool) -> f32 {
+    let t = intensity.clamp(0.0, 1.0);
+    if t < 0.01 {
+        return 0.0;
+    }
+    if snow {
+        4.0 + 16.0 * t * t
+    } else {
+        8.0 + 32.0 * t * t
+    }
+}
+
+pub fn instance_count(intensity: f32, snow: bool) -> u32 {
+    (layer_count(intensity, snow).ceil() as u32 * 1024).min(if snow {
+        SNOW_CAPACITY
+    } else {
+        RAIN_CAPACITY
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PrecipitationMotion {
     rain: [f64; 2],
@@ -19,13 +45,13 @@ pub fn drift_velocity(wind: [f32; 2], snow: bool) -> [f32; 2] {
         return [0.0; 2];
     }
     let speed = wind[0].hypot(wind[1]);
-    let bounded_speed = speed.min(26.0);
-    let t = ((bounded_speed - 8.0) / 14.0).clamp(0.0, 1.0);
+    let bounded_speed = speed.min(32.0);
+    let t = ((bounded_speed - 8.0) / 24.0).clamp(0.0, 1.0);
     let storm = t * t * (3.0 - 2.0 * t);
     let response = if snow {
-        0.07 + (0.16 - 0.07) * storm
+        0.07 + (0.38 - 0.07) * storm
     } else {
-        0.025 + (0.14 - 0.025) * storm
+        0.025 + (0.28 - 0.025) * storm
     };
     let factor = response * bounded_speed / speed.max(0.00001);
     [wind[0] * factor, wind[1] * factor]
@@ -62,6 +88,22 @@ impl PrecipitationMotion {
 mod tests {
     use super::*;
 
+    #[test]
+    fn precipitation_budget_scales_and_is_bounded() {
+        for snow in [false, true] {
+            assert_eq!(instance_count(0.0, snow), 0);
+            let cap = if snow { SNOW_CAPACITY } else { RAIN_CAPACITY };
+            let mut previous = 0;
+            for step in 1..=100 {
+                let count = instance_count(step as f32 / 100.0, snow);
+                assert!(count >= previous && count <= cap);
+                previous = count;
+            }
+            assert_eq!(previous, cap);
+        }
+        assert!(instance_count(0.62, false) < instance_count(0.86, false));
+    }
+
     fn wrapped_delta(a: f32, b: f32) -> f32 {
         (b - a + 2048.0).rem_euclid(4096.0) - 2048.0
     }
@@ -71,7 +113,7 @@ mod tests {
         for wind_speed in [0.0, 2.5, 5.0, 8.0, 14.0, 24.0, 26000.0] {
             let drift = drift_velocity([wind_speed, 0.0], false);
             let angle = (drift[0].abs() / 25.0).atan().to_degrees();
-            assert!(angle < 8.3, "rain slant {angle} at wind {wind_speed}");
+            assert!(angle < 20.0, "rain slant {angle} at wind {wind_speed}");
             if wind_speed <= 8.0 {
                 assert!(angle < 0.46, "ordinary rain slant {angle}");
             }

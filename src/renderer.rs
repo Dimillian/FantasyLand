@@ -2856,7 +2856,15 @@ impl Renderer {
             if weather.rain > 0.01 || weather.snow > 0.01 {
                 pass.set_pipeline(&self.precip_pipeline);
                 pass.set_bind_group(0, &self.uniform_group, &[]);
-                pass.draw(0..6, 0..20480);
+                let rain = crate::precipitation::instance_count(weather.rain, false);
+                let snow = crate::precipitation::instance_count(weather.snow, true);
+                if rain > 0 {
+                    pass.draw(0..6, 0..rain);
+                }
+                if snow > 0 {
+                    let base = crate::precipitation::RAIN_CAPACITY;
+                    pass.draw(0..6, base..base + snow);
+                }
             }
         }
         self.rays.set_cascade_state(self.cascades.state());
@@ -2900,11 +2908,33 @@ impl Renderer {
         );
         self.rays
             .encode(&mut encoder, &self.scene_view, &self.gpu_profile);
+        // Attenuate the outdoor grade smoothly at doorways. Firelight retains
+        // its warmth inside, while the view through windows still has weather.
+        let mut weather_exposure = 1.0_f32;
+        for i in 0..12 {
+            let a = self.rooms_a[i];
+            let b = self.rooms_b[i];
+            if a[3] <= 0.0 || eye.y < a[1] || eye.y > a[1] + a[3] {
+                continue;
+            }
+            let dx = eye.x - a[0];
+            let dz = eye.z - a[2];
+            let inset =
+                (b[0] - (dx * b[2] - dz * b[3]).abs()).min(b[1] - (dx * b[3] + dz * b[2]).abs());
+            weather_exposure = weather_exposure.min(1.0 - inset.clamp(0.0, 1.0) * 0.85);
+        }
         self.post.render(
             &self.queue,
             &mut encoder,
             output,
             [self.width, self.height],
+            weather.weather,
+            [
+                weather.wind_x.hypot(weather.wind_z),
+                weather_exposure,
+                weather.lightning,
+                0.0,
+            ],
             &self.gpu_profile,
         );
         self.gpu_profile.resolve(&mut encoder);

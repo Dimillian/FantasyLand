@@ -111,9 +111,9 @@ fn reflected_environment(world: vec3<f32>, normal: vec3<f32>, view: vec3<f32>, r
 // never multiplies the new velocity by the total age of the application.
 fn precipitation_drift(snow: bool) -> vec2<f32> {
     let speed = length(u.storm.xy);
-    let bounded_speed = min(speed, 26.0);
-    let storm = smoothstep(8.0, 22.0, bounded_speed);
-    let response = select(mix(0.025, 0.14, storm), mix(0.07, 0.16, storm), snow);
+    let bounded_speed = min(speed, 32.0);
+    let storm = smoothstep(8.0, 32.0, bounded_speed);
+    let response = select(mix(0.025, 0.28, storm), mix(0.07, 0.38, storm), snow);
     return u.storm.xy * (response * bounded_speed / max(speed, 0.00001));
 }
 
@@ -124,8 +124,8 @@ struct PrecipOut {
     @location(2) data: vec2<f32>,
 };
 @vertex fn vs_precip(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> PrecipOut {
-    let snow = instance >= 12288u;
-    let local = select(instance, instance - 12288u, snow);
+    let snow = instance >= 40960u;
+    let local = select(instance, instance - 40960u, snow);
     let advection = select(u.precipitation_offset.xy, u.precipitation_offset.zw, snow);
     // Inverse advection selects stable emitters surrounding the camera. Moving
     // the camera only exchanges emitters at the distant edge of this lattice.
@@ -143,10 +143,10 @@ struct PrecipOut {
     let speed = select(25.0 + random2 * 8.0, 1.5 + random2 * 1.7, snow);
     let time = u.params.x;
     var xz = cell * 4.0 + vec2<f32>(random, random2) * 4.0 + advection;
-    let phase = fract((u.camera.y + 88.0 + time * speed - random * 176.0 - layer * 23.3) / 176.0);
+    let phase = fract((u.camera.y + 64.0 + time * speed - random * 128.0 - layer * 23.3) / 128.0);
     // This expression cancels continuous camera altitude changes. The vertical
-    // repeat switches only beyond the 78 m visibility limit; x/z never reset.
-    let y = u.camera.y + 88.0 - phase * 176.0;
+    // repeat switches only beyond the 60 m visibility limit; x/z never reset.
+    let y = u.camera.y + 64.0 - phase * 128.0;
     xz += select(vec2<f32>(0.0), vec2<f32>(sin(time * 1.2 + random * 17.0) * 0.26,
         cos(time * 0.83 + random2 * 19.0) * 0.22), snow);
     let center = vec3<f32>(xz.x, y, xz.y);
@@ -161,18 +161,23 @@ struct PrecipOut {
     let width = max(physical_width,pixel_width * select(0.36,0.48,snow));
     // Streaks follow the very same velocity integrated into drop positions.
     // Ordinary rain is within half a degree of gravity; even tempest drift is
-    // bounded to roughly eight degrees. Snow remains a fluttering billboard.
+    // bounded to roughly twenty degrees. Snow remains a fluttering billboard.
     let drift = precipitation_drift(snow);
     let velocity = vec3<f32>(drift.x, -speed, drift.y);
-    let streak = select(velocity * (0.015 + random * 0.009), up * width, snow);
+    let spindrift = smoothstep(10.0,30.0,length(u.storm.xy));
+    let streak = select(velocity * (0.020 + random * 0.012),
+        up * width + vec3<f32>(drift.x,0.0,drift.y)*0.012*spindrift, snow);
     let p = center + right * q.x * width + streak * q.y;
     var out: PrecipOut;
     out.clip = u.view_projection * vec4<f32>(p - u.camera.xyz, 1.0);
     if random > density || density < 0.01 { out.clip = vec4<f32>(2.0,2.0,2.0,1.0); }
-    out.world = p; out.uv = q; out.data = vec2<f32>(select(0.0,1.0,snow), density);
+    out.world = p; out.uv = q; out.data = vec2<f32>(select(0.0,1.0,snow),
+        clamp(select(8.0 + 32.0*density*density, 4.0 + 16.0*density*density, snow) - layer, 0.0, 1.0));
     return out;
 }
 @fragment fn fs_precip(v: PrecipOut) -> @location(0) vec4<f32> {
+    // Exact room bounds close small holes in the coarse overhead shelter map.
+    if room_at(v.world) >= 0 { discard; }
     let shelter = open_sky(v.world);
     if shelter < 0.3 { discard; }
     let snow = v.data.x;
@@ -181,7 +186,7 @@ struct PrecipOut {
     // New horizontal emitters appear outside this fade, including when wind
     // advects the inverse lattice past the camera or its offsets wrap.
     let field_fade = 1.0 - smoothstep(43.0,58.0,length(v.world.xz - u.camera.xz));
-    let fade = smoothstep(0.7,3.0,distance) * (1.0 - smoothstep(45.0,78.0,distance)) * field_fade;
-    let color = mix(vec3<f32>(0.40,0.49,0.60),vec3<f32>(0.80,0.88,1.0),snow) * (0.20 + daylight() * 0.80 + u.storm.w * 2.0);
-    return vec4<f32>(color, shape * fade * shelter * mix(0.42,0.83,snow));
+    let fade = smoothstep(0.7,3.0,distance) * (1.0 - smoothstep(40.0,60.0,distance)) * field_fade;
+    let color = mix(vec3<f32>(0.57,0.67,0.78),vec3<f32>(0.80,0.88,1.0),snow) * (0.20 + daylight() * 0.80 + u.storm.w * 2.0);
+    return vec4<f32>(color, shape * fade * shelter * mix(0.58,0.87,snow) * v.data.y);
 }

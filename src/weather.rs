@@ -449,12 +449,12 @@ fn forecast(
     let (cloud, rain, snow, fog, wind, gust, severity) = match mode {
         WeatherMode::Clear => (0.10, 0.0, 0.0, 0.025, 2.5, 0.13, 0.0),
         WeatherMode::Cloudy => (0.58, 0.0, 0.0, 0.08, 5.0, 0.24, 0.0),
-        WeatherMode::Overcast => (0.98, 0.0, 0.0, 0.20, 7.0, 0.30, 0.0),
-        WeatherMode::Rain => (0.92, 0.62, 0.0, 0.35, 8.0, 0.38, 0.10),
-        WeatherMode::Storm => (0.98, 0.86, 0.0, 0.50, 14.0, 0.72, 0.64),
-        WeatherMode::Tempest => (1.0, 1.0, 0.0, 0.78, 24.0, 1.0, 1.0),
+        WeatherMode::Overcast => (0.98, 0.0, 0.0, 0.26, 7.0, 0.30, 0.0),
+        WeatherMode::Rain => (0.96, 0.70, 0.0, 0.40, 8.0, 0.38, 0.10),
+        WeatherMode::Storm => (0.99, 0.90, 0.0, 0.62, 20.0, 0.72, 0.64),
+        WeatherMode::Tempest => (1.0, 1.0, 0.0, 0.90, 32.0, 1.0, 1.0),
         WeatherMode::Snow => (0.88, 0.0, 0.70, 0.35, 5.0, 0.26, 0.0),
-        WeatherMode::Blizzard => (1.0, 0.0, 1.0, 0.94, 20.0, 0.94, 0.05),
+        WeatherMode::Blizzard => (1.0, 0.0, 1.0, 0.98, 30.0, 0.94, 0.05),
         WeatherMode::Auto => unreachable!(),
     };
     let swirl = (seconds * 0.011 + x as f64 * 0.000025 + z as f64 * 0.000019).sin() as f32;
@@ -463,6 +463,8 @@ fn forecast(
     f.rain = rain;
     f.snow = snow;
     f.fog = fog;
+    let squall = (seconds * 0.47 + x as f64 * 0.0004 + z as f64 * 0.0003).sin() as f32;
+    let wind = wind * (1.0 - gust * 0.20 + squall * gust * 0.20);
     f.wind = [angle.cos() * wind, angle.sin() * wind];
     f.gust = (gust * (0.82 + swirl * 0.12)).clamp(0.0, 1.0);
     f.severity = severity;
@@ -540,17 +542,17 @@ fn lightning(seed: u32, seconds: f64, severity: f32) -> f32 {
     if severity < 0.28 {
         return 0.0;
     }
-    let interval = 11.0;
+    let interval = 8.0; // Keep lightning_radiance event IDs in world.wgsl in sync.
     let id = (seconds / interval).floor() as i32;
     let r = rand01(hash(seed ^ 0xA51E, id, 23));
-    if r > 0.18 + severity * 0.72 {
+    if r > 0.12 + severity * 0.86 {
         return 0.0;
     }
     let phase = (seconds - id as f64 * interval) as f32;
-    let strike = 1.3 + rand01(hash(seed ^ 0x52F1, id, 7)) * 7.0;
+    let strike = 1.3 + rand01(hash(seed ^ 0x52F1, id, 7)) * 5.0;
     let t = phase - strike;
-    let first = smooth(0.0, 0.025, t) * (1.0 - smooth(0.08, 0.22, t));
-    let after = smooth(0.23, 0.245, t) * (1.0 - smooth(0.29, 0.41, t)) * 0.55;
+    let first = smooth(0.0, 0.025, t) * (1.0 - smooth(0.10, 0.28, t));
+    let after = smooth(0.30, 0.34, t) * (1.0 - smooth(0.41, 0.64, t)) * 0.65;
     (first + after).clamp(0.0, 1.0) * severity
 }
 
@@ -717,6 +719,36 @@ mod tests {
         assert!(flashes > 0);
         assert_eq!(WeatherMode::from_index(900), WeatherMode::Auto);
     }
+    #[test]
+    fn severe_weather_has_gusts_and_lightning_has_dark_intervals() {
+        let c = climate();
+        for seconds in [0.0, 2.0, 7.0, 19.0, 43.0] {
+            let rain = forecast(67, 0., 100., 0., 12., seconds, c, WeatherMode::Rain);
+            let storm = forecast(67, 0., 100., 0., 12., seconds, c, WeatherMode::Storm);
+            let tempest = forecast(67, 0., 100., 0., 12., seconds, c, WeatherMode::Tempest);
+            assert!(rain.rain < storm.rain && storm.rain < tempest.rain);
+            assert!(rain.fog < storm.fog && storm.fog < tempest.fog);
+            let speed = |f: Forecast| f.wind[0].hypot(f.wind[1]);
+            assert!(speed(rain) < speed(storm) && speed(storm) < speed(tempest));
+            assert!(speed(tempest) <= 32.01);
+        }
+        // One short, double-stroke event per fixed interval, with several
+        // seconds of darkness; increased drama must not become continuous flash.
+        for seed in [1, 67, 1337] {
+            let mut bright = 0;
+            for frame in 0..(120 * 60) {
+                let seconds = frame as f64 / 60.0;
+                let flash = lightning(seed, seconds, 1.0);
+                assert!((0.0..=1.0).contains(&flash));
+                if flash > 0.1 {
+                    bright += 1;
+                }
+                assert_eq!(lightning(seed, seconds, 0.1), 0.0);
+            }
+            assert!(bright > 100 && bright < 120 * 60 / 8);
+        }
+    }
+
     #[test]
     fn stateful_overrides_crossfade_pause_and_keep_surface_history_at_its_location() {
         let world = World::new(1337);

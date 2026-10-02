@@ -172,7 +172,11 @@ fn horizon_color(direction: vec3<f32>) -> vec3<f32> {
 
 fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     let day = daylight();
-    let zenith = mix(vec3<f32>(0.008, 0.015, 0.035), vec3<f32>(0.105, 0.295, 0.57), day);
+    let fair_zenith = mix(vec3<f32>(0.008, 0.015, 0.035), vec3<f32>(0.105, 0.295, 0.57), day);
+    let overcast = smoothstep(0.60,1.0,u.weather.x);
+    let storm_zenith = mix(vec3<f32>(0.017,0.025,0.042),vec3<f32>(0.19,0.245,0.30),day);
+    let zenith = mix(fair_zenith,storm_zenith,overcast*0.90)
+        + vec3<f32>(0.22,0.30,0.44)*u.storm.w;
     let height = max(direction.y, 0.0);
     var color = mix(horizon_color(direction), zenith, pow(clamp(height, 0.0, 1.0), 0.43));
     // Purple upper twilight and a compact amber forward scatter preserve depth.
@@ -180,7 +184,7 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     let sunward = max(dot(direction, u.solenne.xyz), 0.0);
     let glow = pow(sunward, 14.0) * 0.095 + pow(sunward, 100.0) * 0.09;
     let glow_color = mix(vec3<f32>(1.0, 0.43, 0.15), vec3<f32>(1.0, 0.88, 0.60), smoothstep(0.04, 0.5, solar_elevation()));
-    color += glow_color * glow * smoothstep(-0.13, 0.04, solar_elevation());
+    color += glow_color * glow * smoothstep(-0.13, 0.04, solar_elevation()) * (1.0-overcast*0.94);
     let moonward = max(dot(direction, u.aster.xyz), 0.0);
     color += vec3<f32>(0.055, 0.080, 0.15) * pow(moonward, 32.0) * u.ambient.w * smoothstep(0.0, 0.10, u.aster.y);
     return color;
@@ -576,7 +580,7 @@ fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, 
     // Illuminate linear albedo. Gamma-converting the product would darken
     // forest shelter and moonlight twice, obscuring otherwise walkable ground.
     return albedo * illumination * mix(0.72,0.85,daylight())
-        + albedo * vec3<f32>(0.48,0.64,0.95) * u.storm.w * sky_access;
+        + albedo * vec3<f32>(0.90,1.18,1.70) * u.storm.w * sky_access;
 
 }
 
@@ -605,7 +609,20 @@ fn atmospheric_color(color: vec3<f32>, world: vec3<f32>, distance: f32) -> vec3<
     optical_depth += valley_air * min(distance / 11000.0, 0.8) * (0.10 + mountain * 0.24);
     // Precipitation occupies a volume, not a camera-facing grey overlay. Clear
     // weather retains the existing long visibility; blizzard snowfall closes it.
-    optical_depth += distance * (u.weather.w * 0.0015 + u.weather.y * 0.00018 + u.weather.z * 0.0014);
+    let squall = smoothstep(10.0,30.0,length(u.storm.xy));
+    // Broad advected bands of spray / spindrift, sampled in world space. The
+    // accumulated precipitation offset keeps gust changes continuous.
+    var curtain = 1.0;
+    if squall * max(u.weather.y,u.weather.z) > 0.05 {
+        let drift = mix(u.precipitation_offset.xy,u.precipitation_offset.zw,u.weather.z);
+        let mid = mix(u.camera.xz,world.xz,0.45);
+        // Integer periodic sine frequencies match the 4096 m advection wrap.
+        curtain = 0.80 + 0.35*sin(dot(mid-drift,vec2<f32>(0.026077674,0.019941750)))
+            * sin(dot(mid-drift,vec2<f32>(-0.010737865,0.015339808)));
+    }
+    let rain_extinction = u.weather.y*(0.00045+squall*0.0048*curtain);
+    let snow_extinction = u.weather.z*(0.0020+squall*0.0090*curtain);
+    optical_depth += distance * (u.weather.w * 0.0015 + rain_extinction + snow_extinction);
     var result = mix(color, pow(max(horizon_color(direction),vec3<f32>(0.0)),vec3<f32>(2.2)), clamp(1.0 - exp(-optical_depth), 0.0, 0.995));
 
     // Humid air between trunks gives a forest depth without hiding the close
@@ -838,7 +855,10 @@ fn weather_cloud_field(world_xz: vec2<f32>, high: bool) -> vec3<f32> {
     // the middle of a tempest. Ordinary cloudy weather still has broken edges.
     let deck = smoothstep(0.87, 1.0, u.weather.x) * select(0.985, 0.80, high);
     density = mix(density, max(density, deck), deck);
-    let thickness = smoothstep(threshold + 0.025, threshold + 0.30, field);
+    // Fully covered skies retain broad, soft billows rather than clamping most
+    // of the sheet black and leaving thin luminous seams between them.
+    let thickness = mix(smoothstep(threshold + 0.025, threshold + 0.30, field),
+        smoothstep(0.16,0.82,field),deck);
     let light_offset = normalize(u.light.xz + vec2<f32>(0.001)) * 0.25;
     let neighbor = noise((p + warp + light_offset) * 1.05);
     let facing = clamp((field - neighbor) * 2.8 + 0.5, 0.0, 1.0);
@@ -867,7 +887,9 @@ fn shared_sky_weather(ray: vec3<f32>, base_color: vec3<f32>) -> vec3<f32> {
     let alignment = max(dot(ray, normalize(u.light.xyz)), 0.0);
     let edge_light = pow(alignment, 12.0);
     let lit_day = mix(vec3<f32>(0.90, 0.58, 0.34), vec3<f32>(0.86, 0.87, 0.82), smoothstep(0.04, 0.55, solar_elevation()));
-    let cloud_lit = mix(vec3<f32>(0.085, 0.13, 0.215), lit_day, day);
+    let rain_weight = smoothstep(0.35,1.0,u.weather.y);
+    let lit_weather = mix(lit_day,vec3<f32>(0.40,0.47,0.53),rain_weight*0.86);
+    let cloud_lit = mix(vec3<f32>(0.085, 0.13, 0.215), lit_weather, day);
     let shade_day = mix(vec3<f32>(0.34, 0.43, 0.51), vec3<f32>(0.17, 0.215, 0.27), severity);
     let cloud_shade = mix(vec3<f32>(0.018, 0.031, 0.057), shade_day, day);
     let shading = clamp(low.y * 0.84 + (1.0 - low.z) * 0.16 + severity * 0.13, 0.0, 1.0);
@@ -1011,7 +1033,7 @@ fn lightning_segment(ray: vec3<f32>, world_a: vec3<f32>, world_b: vec3<f32>, aa:
 
 fn lightning_radiance(ray: vec3<f32>, aa: f32) -> vec3<f32> {
     if u.storm.w <= 0.0001 { return vec3<f32>(0.0); }
-    let event = floor(u.surface.w / 11.0);
+    let event = floor(u.surface.w / 8.0);
     let cell_size = 14000.0;
     let local_cell = floor(u.camera.xz / cell_size);
     let bolt_top = weather_cloud_base(false) - 60.0;

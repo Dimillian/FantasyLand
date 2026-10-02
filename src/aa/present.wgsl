@@ -1,6 +1,6 @@
 @group(0) @binding(0) var scene:texture_2d<f32>;
 @group(0) @binding(1) var linear_sampler:sampler;
-struct Settings { controls:vec2<f32>, output:vec2<f32> };
+struct Settings { controls:vec2<f32>, output:vec2<f32>, weather:vec4<f32>, atmosphere:vec4<f32> };
 @group(0) @binding(2) var<uniform> settings:Settings;
 struct Out { @builtin(position) clip:vec4<f32>, @location(0) uv:vec2<f32> };
 @vertex fn vs_main(@builtin(vertex_index) i:u32)->Out {
