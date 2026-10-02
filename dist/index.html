@@ -1,90 +1,2193 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#17201a" />
-  <meta name="description" content="Explore a vast procedural fantasy wilderness built with Rust, WebAssembly and WebGPU." />
-  <title>FantasyLand — The Wilderness</title>
-  <link rel="stylesheet" href="./style.css?v=codex-ui-1" />
-  <link rel="stylesheet" href="./codex.css?v=codex-ui-1"/>
-</head>
-<body class="intro-open">
-  <canvas id="world" aria-label="First-person world. Click to capture your mouse and explore." tabindex="0"></canvas>
-  <div class="edge-shade" aria-hidden="true"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#17201a" />
+    <meta
+      name="description"
+      content="Explore a vast procedural fantasy wilderness built with Rust, WebAssembly and WebGPU."
+    />
+    <title>FantasyLand — The Endless Marches</title>
+    <link rel="stylesheet" href="./style.css?v=map-controls-1" />
+    <link rel="stylesheet" href="./codex.css?v=map-controls-1" />
+    <link rel="stylesheet" href="./hud.css?v=map-controls-1" />
+  </head>
+  <body class="intro-open">
+    <canvas
+      id="world"
+      aria-label="First-person world. Click to capture your mouse and explore."
+      tabindex="0"
+    ></canvas>
+    <div class="edge-shade" aria-hidden="true"></div>
 
-  <header class="top-hud">
-    <div class="place"><span class="overline">THE ENDLESS MARCHES</span><strong id="place-name">The wilderness</strong><span id="biome-label">Surveying the land…</span><span id="weather-hud" class="weather-hud">Reading the sky…</span></div>
-    <div class="compass" aria-label="Compass"><div id="compass-track"></div><span class="compass-pointer">⌄</span><span id="heading-label">N · 000°</span></div>
-    <div class="world-clock"><span aria-hidden="true">☼</span><span id="clock">09:00</span><span class="overline">DAY I</span></div>
-  </header>
+    <header class="top-hud navigation-hud" aria-label="Navigation">
+      <div class="navigation-location">
+        <strong id="place-name">The wilderness</strong>
+        <span id="weather-hud" aria-label="Temperature">—</span>
+      </div>
+      <div id="compass" class="navigation-compass" role="img" aria-label="Compass, facing north">
+        <div id="compass-track" aria-hidden="true"></div>
+        <span class="compass-needle" aria-hidden="true"></span>
+        <span id="compass-pin" class="compass-pin hidden" aria-hidden="true">◆</span>
+      </div>
+      <div id="pinned-location" class="pinned-location hidden">
+        <span aria-hidden="true">◇</span>
+        <span id="journey-target"></span>
+        <span id="journey-distance"></span>
+      </div>
+    </header>
 
-  <div id="crosshair" aria-hidden="true">+</div>
-  <div id="destination-marker" class="destination-marker hidden"><span aria-hidden="true">◇</span><span id="marker-distance"></span></div>
-  <div id="toast" role="status" aria-live="polite"></div>
-  <button id="focus-hint" class="focus-hint hidden" aria-label="Capture mouse and resume looking around"><span aria-hidden="true">↳</span> <span id="focus-hint-text">Click the world to look around</span><small>WASD move · Shift run · Space jump</small></button>
+    <div id="crosshair" aria-hidden="true">+</div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <button
+      id="focus-hint"
+      class="focus-hint hidden"
+      aria-label="Capture mouse and resume looking around"
+    >
+      <span aria-hidden="true">↳</span>
+      <span id="focus-hint-text">Click the world to look around</span>
+      <small>WASD move · Shift run · Space jump</small>
+    </button>
 
-  <footer class="bottom-hud">
-    <div class="vitals" aria-label="Character status">
-      <div class="stat health"><span>HP</span><div class="stat-track" role="progressbar" aria-label="Health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" id="health-meter"><i id="health-fill"></i></div><span id="health-value">100</span></div>
-      <div class="stat mana"><span>MP</span><div class="stat-track" role="progressbar" aria-label="Mana" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" id="mana-meter"><i id="mana-fill"></i></div><span id="mana-value">100</span></div>
-      <div class="stat stamina"><span>ST</span><div class="stat-track" role="progressbar" aria-label="Stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" id="stamina-meter"><i id="stamina-fill"></i></div><span id="stamina-value">100</span></div>
+    <footer class="bottom-hud">
+      <div class="hud-vitals" aria-label="Character status">
+        <div class="hud-stat health" id="health-stat">
+          <span>HP</span>
+          <div
+            class="hud-stat-track"
+            role="progressbar"
+            aria-label="Health"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="100"
+            id="health-meter"
+          >
+            <i id="health-fill"></i>
+          </div>
+          <span id="health-value">100</span>
+        </div>
+        <div class="hud-stat mana" id="mana-stat">
+          <span>MP</span>
+          <div
+            class="hud-stat-track"
+            role="progressbar"
+            aria-label="Mana"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="100"
+            id="mana-meter"
+          >
+            <i id="mana-fill"></i>
+          </div>
+          <span id="mana-value">100</span>
+        </div>
+        <div class="hud-stat stamina" id="stamina-stat">
+          <span>ST</span>
+          <div
+            class="hud-stat-track"
+            role="progressbar"
+            aria-label="Stamina"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="100"
+            id="stamina-meter"
+          >
+            <i id="stamina-fill"></i>
+          </div>
+          <span id="stamina-value">100</span>
+        </div>
+      </div>
+      <div class="hud-menu">
+        <nav id="quick-menu" class="quick-menu hidden" aria-label="Quick menu">
+          <button id="character-button" aria-label="Open character sheet (C)">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            <span>Character</span>
+            <kbd>C</kbd>
+          </button>
+          <button id="bag-button" aria-label="Open inventory (I)">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            <span>Inventory</span>
+            <kbd>I</kbd>
+          </button>
+          <button id="equipment-button" aria-label="Open equipment">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            <span>Equipment</span>
+          </button>
+          <button id="skills-button" aria-label="Open skills (K)">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            <span>Skills</span>
+            <kbd>K</kbd>
+          </button>
+          <button id="map-button" aria-label="Open atlas (M or Tab)">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            <span>Atlas</span>
+            <kbd>M</kbd>
+          </button>
+          <div class="quick-menu-rule"></div>
+          <button id="hud-options-button" aria-label="Open options">
+            <span class="icon-host" data-icon="settings" aria-hidden="true"></span>
+            <span>Options</span>
+          </button>
+          <button id="pause-button" aria-label="Open game menu (Escape)">
+            <span class="icon-host" data-icon="menu" aria-hidden="true"></span>
+            <span>Pause</span>
+            <kbd>Esc</kbd>
+          </button>
+          <div class="quick-menu-clock"><span id="clock">09:00</span></div>
+        </nav>
+        <button
+          id="quick-menu-toggle"
+          class="quick-menu-toggle"
+          aria-expanded="false"
+          aria-controls="quick-menu"
+          aria-keyshortcuts="Q"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" /></svg>
+          <span>Menu</span>
+          <kbd>Q</kbd>
+        </button>
+      </div>
+    </footer>
+
+    <div id="touch-controls" class="touch-controls" aria-label="Touch movement controls">
+      <button data-move="forward" aria-label="Walk forward">▲</button>
+      <button data-move="left" aria-label="Walk left">◀</button>
+      <button data-move="back" aria-label="Walk backward">▼</button>
+      <button data-move="right" aria-label="Walk right">▶</button>
+      <button data-move="sprint" aria-label="Sprint">RUN</button>
+      <button id="touch-jump" aria-label="Jump">↑</button>
     </div>
-    <div class="journey"><span id="journey-target">A road of your own</span><span id="journey-distance">Walk to the horizon.</span></div>
-    <nav class="shortcuts" aria-label="Game menus">
-      <button id="bag-button" title="Bag (I)" aria-label="Open bag (I)"><span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7V5a5 5 0 0 1 10 0v2M5 7h14l2 14H3L5 7Z"/><path d="M8 11h8"/></svg></span><span>BAG</span><kbd>I</kbd></button>
-      <button id="character-button" title="Character (C)" aria-label="Open character sheet (C)"><span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 22v-4a8 8 0 0 1 16 0v4M8 18v4m8-4v4"/></svg></span><span>CHARACTER</span><kbd>C</kbd></button>
-      <button id="skills-button" title="Skills (K)" aria-label="Open skills (K)"><span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5L12 2Z"/></svg></span><span>SKILLS</span><kbd>K</kbd></button>
-      <button id="map-button" title="Atlas (M or Tab)" aria-label="Open atlas (M or Tab)"><span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2V5Zm6-2v16m6-14v16"/></svg></span><span>MAP</span><kbd>M</kbd></button>
-      <button id="settings-button" class="settings-shortcut" title="Settings (O)" aria-label="Open settings (O)"><span class="shortcut-icon" aria-hidden="true">≡</span><kbd>O</kbd></button>
-    </nav>
-  </footer>
+    <pre id="diagnostics" class="hidden" aria-label="Performance diagnostics"></pre>
 
-  <div id="touch-controls" class="touch-controls" aria-label="Touch movement controls"><button data-move="forward" aria-label="Walk forward">▲</button><button data-move="left" aria-label="Walk left">◀</button><button data-move="back" aria-label="Walk backward">▼</button><button data-move="right" aria-label="Walk right">▶</button><button data-move="sprint" aria-label="Sprint">RUN</button><button id="touch-jump" aria-label="Jump">↑</button></div>
-  <pre id="diagnostics" class="hidden" aria-label="Performance diagnostics"></pre>
+    <section id="intro" class="intro" aria-labelledby="intro-title">
+      <div class="intro-content">
+        <p class="overline">THE ENDLESS MARCHES</p>
+        <h1 id="intro-title">FANTASYLAND</h1>
+        <div class="loading-track" id="loading-track"><i></i></div>
+        <p id="loading-label" role="status">Surveying the land…</p>
+        <button id="start-button" class="enter-button hidden">
+          [ ENTER THE WILDERNESS ]
+          <span>↵</span>
+        </button>
+        <p class="intro-controls">
+          WASD move
+          <span>·</span>
+          Mouse look
+          <span>·</span>
+          M atlas
+        </p>
+        <p class="prototype-note">
+          EXPLORATION BUILD
+          <span>·</span>
+          SEED
+          <span id="intro-seed">1337</span>
+        </p>
+        <div id="load-error" class="load-error hidden">
+          <p id="load-error-message"></p>
+          <button id="retry-button" class="plain-button">Retry</button>
+        </div>
+      </div>
+    </section>
 
-  <section id="intro" class="intro" aria-labelledby="intro-title">
-    <div class="intro-content"><p class="overline">THE ENDLESS MARCHES</p><h1 id="intro-title">FANTASYLAND</h1><p class="intro-line">Find your road. Walk to the horizon.</p><div class="loading-track" id="loading-track"><i></i></div><p id="loading-label" role="status">Surveying the land…</p><button id="start-button" class="enter-button hidden">[ ENTER THE WILDERNESS ] <span>↵</span></button><p class="intro-controls">WASD move <span>·</span> Mouse look <span>·</span> M atlas</p><p class="prototype-note">EXPLORATION BUILD <span>·</span> SEED <span id="intro-seed">1337</span></p><div id="load-error" class="load-error hidden"><p id="load-error-message"></p><button id="retry-button" class="plain-button">Retry</button></div></div>
-  </section>
+    <section
+      id="map-modal"
+      class="overlay hidden"
+      aria-labelledby="map-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="atlas">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="map" aria-hidden="true"></span>
+            <h2 id="map-title">Atlas</h2>
+          </div>
+          <button class="close-button" data-close aria-label="Close atlas">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <nav class="game-tabs" aria-label="Adventurer screens">
+          <button type="button" data-screen="character">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            Character
+            <kbd>C</kbd>
+          </button>
+          <button type="button" data-screen="bag">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            Inventory
+            <kbd>I</kbd>
+          </button>
+          <button type="button" data-screen="equipment">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            Equipment
+          </button>
+          <button type="button" data-screen="skills">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            Skills
+            <kbd>K</kbd>
+          </button>
+          <button type="button" data-screen="map" aria-current="page">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+        </nav>
+        <div class="map-body">
+          <div id="map-canvas-wrap" class="map-canvas-wrap">
+            <canvas
+              id="map-canvas"
+              tabindex="0"
+              aria-label="World atlas. Drag or arrow keys to pan. Scroll or plus and minus to zoom. Click or Enter to select. Brackets cycle places. Home centers on you. End fits the world."
+            ></canvas>
+            <div class="map-position">
+              <span id="map-view-label">THE SURROUNDING WILDS</span>
+              <span id="map-coordinates">0 E · 0 N</span>
+            </div>
+            <div class="map-north" aria-hidden="true">
+              N
+              <br />
+              <span>↑</span>
+            </div>
+            <div class="map-scale">
+              <div id="map-scale-line"></div>
+              <span id="map-scale-text">1 km</span>
+            </div>
+            <div class="map-tools" role="group" aria-label="Map controls">
+              <button
+                id="zoom-in"
+                type="button"
+                aria-label="Zoom in"
+                data-tip-title="Zoom in"
+                data-tip-text="+ or scroll up"
+              >
+                <svg class="map-control-icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M4 10h12M10 4v12" />
+                </svg>
+              </button>
+              <button
+                id="zoom-out"
+                type="button"
+                aria-label="Zoom out"
+                data-tip-title="Zoom out"
+                data-tip-text="− or scroll down"
+              >
+                <svg class="map-control-icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M4 10h12" />
+                </svg>
+              </button>
+              <span class="map-tools-divider" aria-hidden="true"></span>
+              <button
+                id="center-map"
+                type="button"
+                aria-label="Center atlas on you"
+                data-tip-title="Center on you"
+                data-tip-text="Home"
+              >
+                <svg class="map-control-icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <circle cx="10" cy="10" r="4" />
+                  <path d="M10 2v3M10 15v3M2 10h3M15 10h3" />
+                  <circle class="map-control-dot" cx="10" cy="10" r="1" />
+                </svg>
+              </button>
+              <button
+                id="fit-map"
+                type="button"
+                aria-label="Fit the whole world in the atlas"
+                data-tip-title="Fit whole world"
+                data-tip-text="End"
+              >
+                <svg class="map-control-icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M7 3H3v4M13 3h4v4M17 13v4h-4M7 17H3v-4" />
+                </svg>
+              </button>
+            </div>
+            <span id="map-updating" class="map-updating hidden">SURVEYING…</span>
+          </div>
+          <aside class="map-sidebar">
+            <div class="map-selection">
+              <span class="overline">DESTINATION</span>
+              <h3
+                id="selection-name"
+                tabindex="0"
+                data-tip-title="Destination"
+                data-tip-source="selection-detail"
+              >
+                The open road
+              </h3>
+              <p id="selection-detail" class="tooltip-source">
+                Select a place or a point on the map.
+              </p>
+              <p id="selection-distance"></p>
+              <button id="set-waypoint" class="plain-button primary" disabled>
+                Set waypoint
+                <span>◇</span>
+              </button>
+              <button id="fast-travel" class="plain-button" disabled>
+                Fast travel
+                <span class="icon-host" data-icon="arrow" aria-hidden="true"></span>
+              </button>
+              <button id="clear-waypoint" class="text-button hidden">Clear waypoint</button>
+            </div>
+            <div class="map-legend">
+              <span class="overline">READING THE LAND</span>
+              <span>
+                <i style="--swatch: #708349"></i>
+                Meadows
+              </span>
+              <span>
+                <i style="--swatch: #344f32"></i>
+                Woodland
+              </span>
+              <span>
+                <i style="--swatch: #898261"></i>
+                Highlands
+              </span>
+              <span>
+                <i style="--swatch: #cebc80"></i>
+                Drylands
+              </span>
+              <span>
+                <i style="--swatch: #29536e"></i>
+                Ocean & rivers
+              </span>
+              <span>
+                <i style="--swatch: #c6ad76"></i>
+                Sandy shores
+              </span>
+              <span>
+                <i style="--swatch: #84867a"></i>
+                Sea cliffs
+              </span>
+              <span>
+                <b>▪</b>
+                Settlement
+                <b>◇</b>
+                Landmark
+              </span>
+              <span>
+                <i class="route-key route-main" aria-hidden="true"></i>
+                Main road
+              </span>
+              <span>
+                <i class="route-key route-lane" aria-hidden="true"></i>
+                Country lane
+              </span>
+              <span>
+                <i class="route-key route-trail" aria-hidden="true"></i>
+                Foot trail
+              </span>
+            </div>
+          </aside>
+        </div>
+        <footer class="map-footer">
+          <span>
+            Drag / arrows: pan · Scroll / + −: zoom · Click / Enter: select · [ ]: places · Home:
+            you
+          </span>
+          <span id="map-seed">SEED 1337 · 384 × 384 KM</span>
+        </footer>
+      </div>
+    </section>
 
-  <section id="map-modal" class="overlay hidden" aria-labelledby="map-title" aria-modal="true" role="dialog">
-    <div class="atlas">
-      <header class="modal-header"><div><p class="overline">THE ENDLESS MARCHES</p><h2 id="map-title">Atlas</h2></div><p class="atlas-description">One world. Every road walkable.</p><button class="close-button" data-close aria-label="Close atlas">[×]</button></header>
-      <div class="map-body"><div id="map-canvas-wrap" class="map-canvas-wrap"><canvas id="map-canvas" tabindex="0" aria-label="World atlas. Drag or arrow keys to pan. Scroll or plus and minus to zoom. Click or Enter to select. Brackets cycle places. Home centers on you. End fits the world." ></canvas><div class="map-position"><span id="map-view-label">THE SURROUNDING WILDS</span><span id="map-coordinates">0 E · 0 N</span></div><div class="map-north" aria-hidden="true">N<br/><span>↑</span></div><div class="map-scale"><div id="map-scale-line"></div><span id="map-scale-text">1 km</span></div><div class="map-tools"><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="center-map" aria-label="Center atlas on you" title="Center on you">⌖</button><button id="fit-map" aria-label="Fit the whole world in the atlas" title="Fit whole world">⤢</button></div><span id="map-updating" class="map-updating hidden">SURVEYING…</span></div>
-        <aside class="map-sidebar"><div class="map-selection"><span class="overline">DESTINATION</span><h3 id="selection-name">The open road</h3><p id="selection-detail">Select a place or a point on the map.</p><p id="selection-distance"></p><button id="set-waypoint" class="plain-button primary" disabled>Set waypoint <span>◇</span></button><button id="fast-travel" class="plain-button" disabled>Fast travel <span>→</span></button><button id="clear-waypoint" class="text-button hidden">Clear waypoint</button><p class="quiet travel-note">All destinations are unlocked for this exploration build.</p></div><div class="map-legend"><span class="overline">READING THE LAND</span><span><i style="--swatch:#708349"></i>Meadows</span><span><i style="--swatch:#344f32"></i>Woodland</span><span><i style="--swatch:#898261"></i>Highlands</span><span><i style="--swatch:#cebc80"></i>Drylands</span><span><i style="--swatch:#29536e"></i>Ocean & rivers</span><span><i style="--swatch:#c6ad76"></i>Sandy shores</span><span><i style="--swatch:#84867a"></i>Sea cliffs</span><span><b>▪</b>Settlement <b>◇</b>Landmark</span><span><i class="route-key route-main" aria-hidden="true"></i>Main road</span><span><i class="route-key route-lane" aria-hidden="true"></i>Country lane</span><span><i class="route-key route-trail" aria-hidden="true"></i>Foot trail</span></div></aside></div>
-      <footer class="map-footer"><span>Drag / arrows: pan · Scroll / + −: zoom · Click / Enter: select · [ ]: places · Home: you</span><span id="map-seed">SEED 1337 · 384 × 384 KM</span></footer>
-    </div>
-  </section>
+    <section
+      id="bag-modal"
+      class="overlay hidden"
+      aria-labelledby="bag-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet adventurer-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="bag" aria-hidden="true"></span>
+            <h2 id="bag-title">Inventory</h2>
+          </div>
+          <button class="close-button" data-close aria-label="Close inventory">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <nav class="game-tabs" aria-label="Adventurer screens">
+          <button type="button" data-screen="character">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            Character
+            <kbd>C</kbd>
+          </button>
+          <button type="button" data-screen="bag" aria-current="page">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            Inventory
+            <kbd>I</kbd>
+          </button>
+          <button type="button" data-screen="equipment">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            Equipment
+          </button>
+          <button type="button" data-screen="skills">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            Skills
+            <kbd>K</kbd>
+          </button>
+          <button type="button" data-screen="map">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+        </nav>
+        <div class="sheet-content">
+          <div class="section-heading">
+            <h3>Backpack</h3>
+            <button
+              class="preview-badge"
+              data-tip-title="UI preview"
+              data-tip-text="Sample values. Items and progression are not yet active."
+            >
+              Preview
+            </button>
+          </div>
+          <div class="inventory-layout">
+            <div class="pack-panel">
+              <div class="pack-count">0 / 48</div>
+              <div
+                class="inventory-grid"
+                role="grid"
+                aria-label="Backpack preview, empty slots"
+                aria-rowcount="6"
+                aria-colcount="8"
+              >
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="1"
+                    tabindex="0"
+                    aria-label="Empty slot 1"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 2"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 3"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 4"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 5"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 6"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 7"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="1"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 8"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="1"
+                    tabindex="-1"
+                    aria-label="Empty slot 9"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 10"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 11"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 12"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 13"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 14"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 15"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="2"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 16"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="1"
+                    tabindex="-1"
+                    aria-label="Empty slot 17"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 18"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 19"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 20"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 21"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 22"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 23"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="3"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 24"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="1"
+                    tabindex="-1"
+                    aria-label="Empty slot 25"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 26"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 27"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 28"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 29"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 30"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 31"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="4"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 32"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="1"
+                    tabindex="-1"
+                    aria-label="Empty slot 33"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 34"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 35"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 36"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 37"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 38"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 39"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="5"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 40"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+                <div class="inventory-grid-row" role="row">
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="1"
+                    tabindex="-1"
+                    aria-label="Empty slot 41"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="2"
+                    tabindex="-1"
+                    aria-label="Empty slot 42"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="3"
+                    tabindex="-1"
+                    aria-label="Empty slot 43"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="4"
+                    tabindex="-1"
+                    aria-label="Empty slot 44"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="5"
+                    tabindex="-1"
+                    aria-label="Empty slot 45"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="6"
+                    tabindex="-1"
+                    aria-label="Empty slot 46"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="7"
+                    tabindex="-1"
+                    aria-label="Empty slot 47"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                  <div
+                    class="inventory-slot"
+                    role="gridcell"
+                    aria-rowindex="6"
+                    aria-colindex="8"
+                    tabindex="-1"
+                    aria-label="Empty slot 48"
+                    data-tip-title="Empty slot"
+                    data-tip-text="Inventory preview"
+                    data-tip-icon="bag"
+                  ></div>
+                </div>
+              </div>
+              <button
+                id="bag-open-map"
+                class="pack-atlas"
+                data-tip-title="Traveler’s atlas"
+                data-tip-text="Open the world map. [M]"
+              >
+                <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+                Atlas
+                <kbd>M</kbd>
+              </button>
+            </div>
+            <aside class="item-detail">
+              <div class="empty-emblem">
+                <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+              </div>
+              <h3>Empty</h3>
+            </aside>
+          </div>
+        </div>
+        <footer class="command-footer">
+          <span>THE ENDLESS MARCHES</span>
+          <span>
+            <kbd>ESC</kbd>
+            Close
+          </span>
+        </footer>
+      </div>
+    </section>
+    <section
+      id="character-modal"
+      class="overlay hidden"
+      aria-labelledby="character-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet adventurer-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="character" aria-hidden="true"></span>
+            <h2 id="character-title">Character</h2>
+          </div>
+          <button
+            class="preview-badge"
+            data-tip-title="UI preview"
+            data-tip-text="Sample values. Items and progression are not yet active."
+          >
+            Preview
+          </button>
+          <button class="close-button" data-close aria-label="Close character">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <nav class="game-tabs" aria-label="Adventurer screens">
+          <button type="button" data-screen="character" aria-current="page">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            Character
+            <kbd>C</kbd>
+          </button>
+          <button type="button" data-screen="bag">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            Inventory
+            <kbd>I</kbd>
+          </button>
+          <button type="button" data-screen="equipment">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            Equipment
+          </button>
+          <button type="button" data-screen="skills">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            Skills
+            <kbd>K</kbd>
+          </button>
+          <button type="button" data-screen="map">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+        </nav>
+        <div class="sheet-content">
+          <div class="character-layout">
+            <aside class="identity-card">
+              <svg class="wayfarer-figure" viewBox="0 0 160 240" fill="none" aria-hidden="true">
+                <path
+                  d="M80 16 48 38 44 80 27 96 16 160 35 170 42 144 39 192 62 195 65 225 48 232 48 239 78 239 80 193 85 239 115 239 112 230 98 224 100 195 123 191 117 143 130 173 145 166 131 99 113 81 111 39Z"
+                  fill="#35443e"
+                  stroke="#708378"
+                />
+                <path d="M80 16 57 44 54 78 79 94 105 78 102 44Z" fill="#46574b" />
+                <path d="M62 46 95 46 91 73 80 82 66 73Z" fill="#172321" />
+                <path
+                  d="m43 99 37 19 34-19M80 118v65M41 183l39 10 43-10M40 142l76-30"
+                  stroke="#94a387"
+                />
+                <path d="m119 72 5 137" stroke="#b39d73" stroke-width="4" />
+                <path d="m112 79 16-1" stroke="#b39d73" stroke-width="3" />
+              </svg>
+              <h3>Wayfarer</h3>
+            </aside>
+            <div class="character-details">
+              <div class="section-heading"><h3>Vitals</h3></div>
+              <dl class="vital-cards">
+                <div class="health">
+                  <dt>Health</dt>
+                  <dd id="character-health">100 / 100</dd>
+                  <i></i>
+                </div>
+                <div class="mana">
+                  <dt>Mana</dt>
+                  <dd id="character-mana">100 / 100</dd>
+                  <i></i>
+                </div>
+                <div class="stamina">
+                  <dt>Stamina</dt>
+                  <dd id="character-stamina">100 / 100</dd>
+                  <i></i>
+                </div>
+              </dl>
+              <div class="section-heading"><h3>Attributes</h3></div>
+              <dl class="attribute-grid">
+                <div>
+                  <dt>Strength</dt>
+                  <dd>—</dd>
+                </div>
+                <div>
+                  <dt>Endurance</dt>
+                  <dd>—</dd>
+                </div>
+                <div>
+                  <dt>Agility</dt>
+                  <dd>—</dd>
+                </div>
+                <div>
+                  <dt>Intellect</dt>
+                  <dd>—</dd>
+                </div>
+                <div>
+                  <dt>Willpower</dt>
+                  <dd>—</dd>
+                </div>
+                <div>
+                  <dt>Presence</dt>
+                  <dd>—</dd>
+                </div>
+              </dl>
+              <div class="section-heading"><h3>Your journey</h3></div>
+              <dl class="character-stats journey-stats">
+                <div>
+                  <dt>Location</dt>
+                  <dd id="character-place">—</dd>
+                </div>
+                <div>
+                  <dt>Landscape</dt>
+                  <dd id="character-biome">—</dd>
+                </div>
+                <div>
+                  <dt>Distance walked</dt>
+                  <dd id="character-walked">—</dd>
+                </div>
+                <div>
+                  <dt>Time of day</dt>
+                  <dd id="character-time">—</dd>
+                </div>
+                <div>
+                  <dt>Coordinates</dt>
+                  <dd id="character-position">—</dd>
+                </div>
+                <div>
+                  <dt>Altitude</dt>
+                  <dd id="character-altitude">—</dd>
+                </div>
+                <div>
+                  <dt>World seed</dt>
+                  <dd id="character-seed">—</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </div>
+        <footer class="command-footer">
+          <span>THE ENDLESS MARCHES</span>
+          <span>
+            <kbd>ESC</kbd>
+            Close
+          </span>
+        </footer>
+      </div>
+    </section>
+    <section
+      id="equipment-modal"
+      class="overlay hidden"
+      aria-labelledby="equipment-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet adventurer-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="armor" aria-hidden="true"></span>
+            <h2 id="equipment-title">Equipment</h2>
+          </div>
+          <button
+            class="preview-badge"
+            data-tip-title="UI preview"
+            data-tip-text="Sample values. Items and progression are not yet active."
+          >
+            Preview
+          </button>
+          <button class="close-button" data-close aria-label="Close equipment">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <nav class="game-tabs" aria-label="Adventurer screens">
+          <button type="button" data-screen="character">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            Character
+            <kbd>C</kbd>
+          </button>
+          <button type="button" data-screen="bag">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            Inventory
+            <kbd>I</kbd>
+          </button>
+          <button type="button" data-screen="equipment" aria-current="page">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            Equipment
+          </button>
+          <button type="button" data-screen="skills">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            Skills
+            <kbd>K</kbd>
+          </button>
+          <button type="button" data-screen="map">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+        </nav>
+        <div class="sheet-content">
+          <div class="section-heading">
+            <div><h3>Worn equipment</h3></div>
+          </div>
+          <div class="equipment-layout">
+            <div class="equipment-slots">
+              <button
+                class="equipment-slot"
+                aria-label="Head, empty equipment slot"
+                data-tip-title="Head"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="helmet"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="helmet" aria-hidden="true"></span>
+                </span>
+                <strong>Head</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Chest, empty equipment slot"
+                data-tip-title="Chest"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="armor"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+                </span>
+                <strong>Chest</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Hands, empty equipment slot"
+                data-tip-title="Hands"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="gloves"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="gloves" aria-hidden="true"></span>
+                </span>
+                <strong>Hands</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Feet, empty equipment slot"
+                data-tip-title="Feet"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="boots"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="boots" aria-hidden="true"></span>
+                </span>
+                <strong>Feet</strong>
+              </button>
+            </div>
+            <div class="equipment-figure" aria-hidden="true">
+              <img class="equipment-paper-doll" src="./ui/equipment-figure.svg" alt="" />
+            </div>
+            <div class="equipment-slots">
+              <button
+                class="equipment-slot"
+                aria-label="Main hand, empty equipment slot"
+                data-tip-title="Main hand"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="blade"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="blade" aria-hidden="true"></span>
+                </span>
+                <strong>Main hand</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Off hand, empty equipment slot"
+                data-tip-title="Off hand"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="shield"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="shield" aria-hidden="true"></span>
+                </span>
+                <strong>Off hand</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Accessory, empty equipment slot"
+                data-tip-title="Accessory"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="ring"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="ring" aria-hidden="true"></span>
+                </span>
+                <strong>Accessory</strong>
+              </button>
+              <button
+                class="equipment-slot"
+                aria-label="Gathering tool, empty equipment slot"
+                data-tip-title="Gathering tool"
+                data-tip-text="Empty equipment slot · preview"
+                data-tip-icon="mining"
+              >
+                <span class="slot-mark">
+                  <span class="icon-host" data-icon="mining" aria-hidden="true"></span>
+                </span>
+                <strong>Gathering tool</strong>
+              </button>
+            </div>
+          </div>
+        </div>
+        <footer class="command-footer">
+          <span>THE ENDLESS MARCHES</span>
+          <span>
+            <kbd>ESC</kbd>
+            Close
+          </span>
+        </footer>
+      </div>
+    </section>
+    <section
+      id="skills-modal"
+      class="overlay hidden"
+      aria-labelledby="skills-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet adventurer-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="book" aria-hidden="true"></span>
+            <h2 id="skills-title">Skills</h2>
+          </div>
+          <button class="close-button" data-close aria-label="Close skills">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <nav class="game-tabs" aria-label="Adventurer screens">
+          <button type="button" data-screen="character">
+            <span class="icon-host" data-icon="character" aria-hidden="true"></span>
+            Character
+            <kbd>C</kbd>
+          </button>
+          <button type="button" data-screen="bag">
+            <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
+            Inventory
+            <kbd>I</kbd>
+          </button>
+          <button type="button" data-screen="equipment">
+            <span class="icon-host" data-icon="armor" aria-hidden="true"></span>
+            Equipment
+          </button>
+          <button type="button" data-screen="skills" aria-current="page">
+            <span class="icon-host" data-icon="book" aria-hidden="true"></span>
+            Skills
+            <kbd>K</kbd>
+          </button>
+          <button type="button" data-screen="map">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+        </nav>
+        <div class="sheet-content">
+          <div class="skills-toolbar">
+            <button
+              class="preview-badge"
+              data-tip-title="UI preview"
+              data-tip-text="Sample values. Items and progression are not yet active."
+            >
+              Preview
+            </button>
+          </div>
+          <div id="skill-groups" class="skill-columns"></div>
+        </div>
+        <footer class="command-footer">
+          <button id="skills-open-map" class="text-button footer-atlas">
+            <span class="icon-host" data-icon="map" aria-hidden="true"></span>
+            Atlas
+            <kbd>M</kbd>
+          </button>
+          <span>
+            <kbd>ESC</kbd>
+            Close
+          </span>
+        </footer>
+      </div>
+    </section>
 
-  <section id="bag-modal" class="overlay side-overlay hidden" aria-labelledby="bag-title" aria-modal="true" role="dialog"><div class="sheet"><header class="modal-header"><div><p class="overline">THE WAYFARER</p><h2 id="bag-title">Bag</h2></div><button class="close-button" data-close aria-label="Close bag">[×]</button></header><div class="sheet-content"><div class="empty-bag" aria-hidden="true">[  ·  ]</div><h3>Traveling light</h3><p>Your bag is empty. Collecting, equipping, and using items will arrive with the RPG systems.</p><div class="sheet-rule"></div><span class="overline">ALREADY AT HAND</span><button id="bag-open-map" class="list-action"><span>⌑</span><div><strong>Traveler’s atlas</strong><small>Your map and navigation tool.</small></div><span>→</span></button><p class="quiet">The atlas is available throughout the exploration build.</p></div><footer class="command-footer">TAB FOCUS · ENTER CONFIRM · ESC RETURN</footer></div></section>
+    <section
+      id="options-modal"
+      class="overlay hidden"
+      aria-labelledby="options-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet options-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="settings" aria-hidden="true"></span>
+            <h2 id="options-title">Options</h2>
+          </div>
+          <button class="close-button" data-back aria-label="Back to menu">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <div class="options-layout">
+          <nav class="options-nav" aria-label="Option categories">
+            <button id="option-graphics" data-option="graphics" aria-current="page">
+              Graphics
+            </button>
+            <button id="option-audio" data-option="audio">Audio</button>
+            <button id="option-controls" data-option="controls">Controls</button>
+            <button id="option-interface" data-option="interface">Interface</button>
+          </nav>
+          <div class="sheet-content options-content">
+            <section id="options-graphics" aria-labelledby="option-graphics">
+              <div class="look-summary">
+                <strong
+                  id="look-status"
+                  tabindex="0"
+                  data-tip-title="Graphics"
+                  data-tip-source="look-description"
+                >
+                  Recommended look
+                </strong>
+                <p id="look-description" class="tooltip-source">
+                  Lush ground cover, soft edges and cinematic light.
+                </p>
+              </div>
+              <label class="setting-row">
+                <span>
+                  Resolution
+                  <small>
+                    Lower it for a lighter render.
+                    <br />
+                    <output id="render-dimensions" for="render-resolution">
+                      Actual resolution loading…
+                    </output>
+                  </small>
+                </span>
+                <select id="render-resolution" aria-describedby="render-dimensions">
+                  <option value="1" selected>Native</option>
+                  <option value="720">720p</option>
+                  <option value="540">540p</option>
+                  <option value="420">420p</option>
+                  <option value="adaptive">Adaptive</option>
+                  <option id="legacy-resolution" hidden disabled>Custom</option>
+                </select>
+              </label>
 
-  <section id="character-modal" class="overlay side-overlay hidden" aria-labelledby="character-title" aria-modal="true" role="dialog"><div class="sheet"><header class="modal-header"><div><p class="overline">THE WAYFARER</p><h2 id="character-title">Character</h2></div><button class="close-button" data-close aria-label="Close character sheet">[×]</button></header><div class="sheet-content"><p class="character-role">Wilderness explorer</p><dl class="character-stats"><div><dt>Health</dt><dd id="character-health">100 / 100</dd></div><div><dt>Mana</dt><dd id="character-mana">100 / 100</dd></div><div><dt>Stamina</dt><dd id="character-stamina">100 / 100</dd></div></dl><p class="quiet">Health and mana are reserved for future combat and magic. Stamina is active while running.</p><div class="sheet-rule"></div><span class="overline">YOUR JOURNEY</span><dl class="character-stats"><div><dt>Location</dt><dd id="character-place">—</dd></div><div><dt>Biome</dt><dd id="character-biome">—</dd></div><div><dt>Coordinates</dt><dd id="character-position">—</dd></div><div><dt>Altitude</dt><dd id="character-altitude">—</dd></div><div><dt>Distance walked</dt><dd id="character-walked">—</dd></div><div><dt>Time</dt><dd id="character-time">—</dd></div><div><dt>World seed</dt><dd id="character-seed">1337</dd></div></dl></div><footer class="command-footer">TAB FOCUS · ENTER CONFIRM · ESC RETURN</footer></div></section>
-
-  <section id="skills-modal" class="overlay side-overlay hidden" aria-labelledby="skills-title" aria-modal="true" role="dialog"><div class="sheet"><header class="modal-header"><div><p class="overline">THE WAYFARER</p><h2 id="skills-title">Skills</h2></div><button class="close-button" data-close aria-label="Close skills">[×]</button></header><div class="sheet-content"><p class="quiet">Exploration is playable. Skill levels and experience are not yet implemented.</p><div class="ability"><span>↟</span><div><h3>Wayfinding <small>AVAILABLE</small></h3><p>Read the atlas, place a waypoint, and travel between destinations.</p><button id="skills-open-map" class="text-button">Open atlas →</button></div></div><div class="ability"><span>»</span><div><h3>Movement <small>AVAILABLE</small></h3><p>Walk, run, and jump through the wilderness. Sprinting consumes stamina; walking lets it recover.</p><p class="key-line"><kbd>WASD</kbd> Move <kbd>SHIFT</kbd> Run <kbd>SPACE</kbd> Jump</p></div></div><div class="ability planned"><span>✧</span><div><h3>The adventurer’s arts <small>PLANNED</small></h3><p>Combat, spellcasting, stealth, and character progression belong to a later slice.</p></div></div></div><footer class="command-footer">TAB FOCUS · ENTER CONFIRM · ESC RETURN</footer></div></section>
-
-  <section id="settings-modal" class="overlay side-overlay hidden" aria-labelledby="settings-title" aria-modal="true" role="dialog"><div class="sheet settings-sheet"><header class="modal-header"><div><p class="overline">FIELD NOTES</p><h2 id="settings-title">Settings</h2></div><button class="close-button" data-close aria-label="Close settings">[×]</button></header><div class="sheet-content">
-        <div class="look-summary"><span class="overline">THE WILDERNESS</span><strong id="look-status">Recommended look</strong><p id="look-description">Lush ground cover, soft edges and cinematic light.</p></div>
-        <label class="setting-row"><span>Resolution<small>Lower it for a lighter render.<br/><output id="render-dimensions" for="render-resolution">Actual resolution loading…</output></small></span><select id="render-resolution" aria-describedby="render-dimensions"><option value="1" selected>Native</option><option value="720">720p</option><option value="540">540p</option><option value="420">420p</option><option value="adaptive">Adaptive</option><option id="legacy-resolution" hidden disabled>Custom</option></select></label>
-<details class="settings-disclosure" id="sound-settings"><summary>Sound &amp; ambience</summary><div class="settings-disclosure-content"><label class="setting-row"><span>Master volume<small><output id="audio-master-value" for="audio-master">75%</output></small></span><input id="audio-master" type="range" min="0" max="100" step="5" value="75" aria-label="Master volume" /></label><label class="setting-row"><span>Wind, weather &amp; water<small><output id="audio-ambience-value" for="audio-ambience">80%</output></small></span><input id="audio-ambience" type="range" min="0" max="100" step="5" value="80" aria-label="Wind, weather &amp; water" /></label><label class="setting-row"><span>Footsteps<small><output id="audio-footsteps-value" for="audio-footsteps">45%</output></small></span><input id="audio-footsteps" type="range" min="0" max="100" step="5" value="45" aria-label="Footsteps" /></label><label class="setting-row"><span>Birds &amp; wildlife<small><output id="audio-wildlife-value" for="audio-wildlife">75%</output></small></span><input id="audio-wildlife" type="range" min="0" max="100" step="5" value="75" aria-label="Birds &amp; wildlife" /></label><small id="sound-status" role="status">Sound starts when you enter the world.</small></div></details>
-<label class="setting-row"><span>Mouse sensitivity</span><input id="sensitivity" type="range" min="0.35" max="2" step="0.05" value="1" /></label>
-        <button id="restore-visual-defaults" class="text-button" type="button">Restore recommended defaults ↺</button>
-        <details class="settings-disclosure" id="advanced-settings"><summary>Advanced graphics</summary><div class="settings-disclosure-content"><label class="setting-row"><span>World quality<small>Terrain detail and draw distance.</small></span><select id="quality-select"><option value="0">Low</option><option value="1" selected>Balanced</option><option value="2">High</option></select></label><label class="setting-row"><span>Ground cover density<small id="ground-cover-density-help">Grass, flowers and ferns.<br/>400% fills suitable meadows.<br/><output id="ground-cover-density-value" for="ground-cover-density">400% · 4×</output></small></span><input id="ground-cover-density" type="range" min="0" max="400" step="25" value="400" aria-describedby="ground-cover-density-help" aria-valuetext="400 percent, 4 times density" /></label><label class="setting-row"><span>Meadow carpet<small>Continuous grass beneath the flowers.<br/>Switch off to compare with sparse cover.</small></span><select id="meadow-carpet"><option value="on" selected>On</option><option value="off">Off</option></select></label><label class="setting-row"><span>Sun &amp; moon shadows<small>Solenne and Aster cast shadows across the ground.</small></span><select id="sun-shadows"><option value="on" selected>On</option><option value="off">Off</option></select></label><label class="setting-row"><span>Lighting depth<small>Contact shading, detailed sun shadows, and bounced light.</small></span><select id="lighting-mode"><option value="0">Classic</option><option value="1">Ambient depth</option><option value="3">Ambient depth + detailed shadows</option><option value="7" selected>Full indirect lighting</option></select></label><label class="setting-row"><span>Water reflections<small id="reflections-help">Reflect the landscape on water.<br/>Available at Balanced or High quality.</small></span><select id="water-reflections" aria-describedby="reflections-help"><option value="on" selected>On</option><option value="off">Off</option></select></label><label class="setting-row"><span>Enclosure shading<small>Dim ambient light beneath rock and tree cover.</small></span><select id="enclosure-shading"><option value="on" selected>On</option><option value="off">Off</option></select></label><label class="setting-row"><span>Anti-aliasing<small id="antialiasing-help">Softens jagged edges with a light touch.</small></span><select id="antialiasing" aria-describedby="antialiasing-help"><option value="0">Off</option><option value="1" selected>FXAA · light</option><option value="2">SMAA · sharp</option></select></label><label class="setting-row"><span>Renderer filter<small id="filter-description">Soft light around bright surfaces.</small></span><select id="filter-select" aria-describedby="filter-description"><option value="1" selected>Bloom</option><option value="2">CRT</option><option value="0">Clean</option></select></label><label class="setting-row" id="filter-strength-row"><span>Filter strength<small><output id="filter-strength-value" for="filter-strength">100%</output></small></span><input id="filter-strength" type="range" min="0" max="150" step="5" value="100" /></label></div></details>
-        <details class="settings-disclosure" id="world-tools"><summary>World tools &amp; experiments</summary><div class="settings-disclosure-content"><label class="setting-row"><span>Time of day<small id="time-setting-label">09:00</small></span><input id="time-setting" type="range" min="0" max="23.75" step="0.25" value="9" /></label><div class="sky-presets" role="group" aria-label="Sky and lighting presets"><button id="sky-dawn" class="plain-button" type="button">Dawn</button><button id="sky-day" class="plain-button" type="button">Day</button><button id="sky-dusk" class="plain-button" type="button">Dusk</button><button id="sky-night" class="plain-button" type="button">Moons</button></div><p class="sky-lore">Solenne warms the day. Aster, the pale watcher, and copper Vey cross the night. Travelers call the band of stars the Ashen River.</p>
-<div class="weather-conditions" aria-label="Current weather"><span class="overline">OUTSIDE NOW</span><strong id="weather-current">Reading the sky…</strong><span id="weather-air">Conditions will appear when the world is ready.</span><span id="weather-ground"></span></div>
-<label class="setting-row"><span>Weather<small id="weather-mode-help">Moving fronts follow the local climate.</small></span><select id="weather-mode" aria-describedby="weather-mode-help"><option value="0" selected>Automatic</option><option value="1">Clear</option><option value="2">Cloudy</option><option value="8">Overcast</option><option value="3">Rain</option><option value="4">Storm</option><option value="5">Tempest</option><option value="6">Snow</option><option value="7">Blizzard</option></select></label>
-<label class="setting-row"><span>Weather speed<small id="weather-speed-help">Fronts and ground buildup.<br/><output id="weather-speed-value" for="weather-speed">1×</output></small></span><input id="weather-speed" type="range" min="0.25" max="20" step="0.25" value="1" aria-describedby="weather-speed-help" aria-valuetext="1 times speed" /></label>
-<label class="setting-row"><span>Weather clock<small>Pause fronts and ground buildup.<br/>Time of day remains independent.</small></span><select id="weather-paused"><option value="running" selected>Running</option><option value="paused">Paused</option></select></label>
-<div class="setting-row seed-row"><span><label for="landscape-destination">Explore landscape</label><small id="landscape-destination-help" role="status">Visit a generated location in this world.</small></span><form id="landscape-travel-form"><select id="landscape-destination" aria-describedby="landscape-destination-help" style="flex:1;width:auto;min-width:0"><option value="">Choose a landscape…</option></select><button id="travel-landscape" type="submit" class="plain-button" disabled>Travel →</button></form></div><div class="setting-row seed-row"><span>World seed<small>A new seed creates a new wilderness.</small></span><form id="seed-form"><input id="seed-input" type="number" min="1" max="4294967295" aria-label="World seed" value="1337"/><button type="submit" class="plain-button">Generate</button></form></div><div class="setting-row seed-row"><span>Settlements<small id="settlement-help">Visit a camp, village, fort, town or regional capital.</small></span><form id="settlement-form"><select id="settlement-select" aria-label="Settlement" style="flex:1;width:auto;min-width:0"><option value="">Choose a settlement…</option></select><button id="settlement-travel" class="plain-button" type="submit">Visit →</button></form></div><div class="setting-row seed-row"><span>Natural wonders<small id="wonders-help">Arches, stone windows, spires and ancient rock.</small></span><form id="wonders-form"><select id="wonders-select" aria-label="Natural wonder" style="flex:1;width:auto;min-width:0"><option value="">Choose a wonder…</option></select><button id="wonders-travel" class="plain-button" type="submit" disabled>Travel →</button></form></div><div class="setting-row seed-row"><span>Walking journeys<small id="walking-help">Continuous routes through the wilderness.</small></span><form id="walking-form"><select id="walking-select" aria-label="Walking journey" style="flex:1;width:auto;min-width:0"><option value="">Choose a walk…</option></select><button id="walking-start" class="plain-button" type="submit" disabled>Start →</button></form></div><div class="setting-row seed-row"><span>Lighting studies<small>Explore furnished rooms in your world, or the original landscape studies.</small></span><form id="study-form"><select id="study-select" aria-label="Lighting study"><option value="interior:inn">Interior · tavern bar</option><option value="interior:bedroom">Interior · guest chamber</option><option value="interior:home">Interior · home at dusk</option><option value="interior:arcane">Interior · arcanist’s study</option><option value="interior:smithy">Interior · smithy</option><option value="interior:temple">Interior · temple</option><option value="meadow">Windmere · wildflowers</option><option value="meadow-dawn">Windmere · dawn</option><option value="meadow-dusk">Windmere · dusk</option><option value="forest">Amberwood · morning</option><option value="lake">Silverwater · day</option><option value="moon">Silverwater · moons</option><option value="stone">Sunstone · evening</option><option value="hearth">Mistfield · firelight</option></select><button class="plain-button" type="submit">Visit →</button></form></div><div class="setting-row seed-row"><span>Performance check<small>Compare this view at 420p and 720p. Walk test runs 30 seconds per resolution from the starting road, then returns here.</small></span><button id="benchmark-walk" class="plain-button" type="button">Walk & stream test →</button><button id="benchmark-start" class="plain-button" type="button">Run comparison →</button><button id="benchmark-aa" class="plain-button" type="button">Compare all AA modes →</button><button id="motion-record" class="plain-button" type="button">Record 8-second walk →</button><a id="motion-download" class="text-button hidden" download="fantasyland-aa-walk.mp4">Save walking clip →</a><small id="motion-status" role="status">Records the current view and AA setting. Recording is separate from FPS measurements.</small><output id="benchmark-result" aria-live="polite" style="white-space:pre-line;font-size:12px;line-height:1.6"></output></div><button id="return-to-spawn" class="text-button">Return to the starting road →</button></div></details>
-<div class="field-notes"><span class="overline">CONTROLS</span><p>WASD move · Mouse look · Shift run<br/>Space jump · E talk / open doors · Esc release mouse<br/>I bag · C character · K skills<br/>M / Tab atlas · O settings · F3 diagnostics · F4 photo</p><p class="quiet">Click the world to capture the mouse. If capture is blocked, clicking still enables mouse look until Esc; turning is limited at window edges. Your seed and position are saved on this device.</p></div>
-      </div><footer class="command-footer">TAB FOCUS · ENTER CONFIRM · ESC RETURN</footer></div></section>
-  <div id="interaction-prompt" class="interaction-prompt hidden" aria-live="polite"></div>
-  <section id="dialogue-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="dialogue-name">
-    <div class="conversation-panel">
-      <header class="conversation-heading"><div class="portrait-frame"><canvas id="dialogue-portrait" width="64" height="80" aria-label="Portrait of the person you are speaking to" role="img"></canvas></div><div class="conversation-identity"><span id="dialogue-role" class="overline"></span><h2 id="dialogue-name"></h2><p id="dialogue-detail" class="quiet"></p></div><div class="conversation-seal" aria-hidden="true"><svg viewBox="0 0 40 40"><path d="M20 2 35 8v15L20 38 5 23V8Z M20 7v25 M11 14l9 5 9-5 M11 25l9-6 9 6"/><path d="M16 10h8M16 29h8"/></svg><span>THE MARCHES</span></div><button id="dialogue-close" class="close-button" type="button" aria-label="Leave conversation">[×]</button></header>
-      <div class="conversation-body"><nav class="conversation-menu" aria-label="Conversation topics"><span class="overline">INQUIRE OF…</span><div id="dialogue-topics" class="conversation-topics"></div></nav><div id="dialogue-text" class="conversation-text" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="Conversation history"></div></div>
-      <footer class="command-footer"><span>↑ ↓ CHOOSE · 1–9 / A–C ASK · ENTER CONFIRM</span><span>TAB FOCUS · ESC FAREWELL</span></footer>
-    </div>
-  </section>
-  <script type="module" src="./app.js?v=codex-ui-1"></script>
-</body>
+              <button id="restore-visual-defaults" class="text-button" type="button">
+                Restore recommended defaults ↺
+              </button>
+              <details class="settings-disclosure" id="advanced-settings">
+                <summary>Advanced graphics</summary>
+                <div class="settings-disclosure-content">
+                  <label class="setting-row">
+                    <span>
+                      World quality
+                      <small>Terrain detail and draw distance.</small>
+                    </span>
+                    <select id="quality-select">
+                      <option value="0">Low</option>
+                      <option value="1" selected>Balanced</option>
+                      <option value="2">High</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Ground cover density
+                      <small id="ground-cover-density-help">
+                        Grass, flowers and ferns.
+                        <br />
+                        400% fills suitable meadows.
+                        <br />
+                        <output id="ground-cover-density-value" for="ground-cover-density">
+                          400% · 4×
+                        </output>
+                      </small>
+                    </span>
+                    <input
+                      id="ground-cover-density"
+                      type="range"
+                      min="0"
+                      max="400"
+                      step="25"
+                      value="400"
+                      aria-describedby="ground-cover-density-help"
+                      aria-valuetext="400 percent, 4 times density"
+                    />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Meadow carpet
+                      <small>
+                        Continuous grass beneath the flowers.
+                        <br />
+                        Switch off to compare with sparse cover.
+                      </small>
+                    </span>
+                    <select id="meadow-carpet">
+                      <option value="on" selected>On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Sun &amp; moon shadows
+                      <small>Solenne and Aster cast shadows across the ground.</small>
+                    </span>
+                    <select id="sun-shadows">
+                      <option value="on" selected>On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Lighting depth
+                      <small>Contact shading, detailed sun shadows, and bounced light.</small>
+                    </span>
+                    <select id="lighting-mode">
+                      <option value="0">Classic</option>
+                      <option value="1">Ambient depth</option>
+                      <option value="3">Ambient depth + detailed shadows</option>
+                      <option value="7" selected>Full indirect lighting</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Water reflections
+                      <small id="reflections-help">
+                        Reflect the landscape on water.
+                        <br />
+                        Available at Balanced or High quality.
+                      </small>
+                    </span>
+                    <select id="water-reflections" aria-describedby="reflections-help">
+                      <option value="on" selected>On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Enclosure shading
+                      <small>Dim ambient light beneath rock and tree cover.</small>
+                    </span>
+                    <select id="enclosure-shading">
+                      <option value="on" selected>On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Anti-aliasing
+                      <small id="antialiasing-help">Softens jagged edges with a light touch.</small>
+                    </span>
+                    <select id="antialiasing" aria-describedby="antialiasing-help">
+                      <option value="0">Off</option>
+                      <option value="1" selected>FXAA · light</option>
+                      <option value="2">SMAA · sharp</option>
+                    </select>
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Renderer filter
+                      <small id="filter-description">Soft light around bright surfaces.</small>
+                    </span>
+                    <select id="filter-select" aria-describedby="filter-description">
+                      <option value="1" selected>Bloom</option>
+                      <option value="2">CRT</option>
+                      <option value="0">Clean</option>
+                    </select>
+                  </label>
+                  <label class="setting-row" id="filter-strength-row">
+                    <span>
+                      Filter strength
+                      <small>
+                        <output id="filter-strength-value" for="filter-strength">100%</output>
+                      </small>
+                    </span>
+                    <input
+                      id="filter-strength"
+                      type="range"
+                      min="0"
+                      max="150"
+                      step="5"
+                      value="100"
+                    />
+                  </label>
+                </div>
+              </details>
+            </section>
+            <section id="options-audio" aria-labelledby="option-audio" class="hidden">
+              <div id="sound-settings">
+                <div>
+                  <label class="setting-row">
+                    <span>
+                      Master volume
+                      <small><output id="audio-master-value" for="audio-master">75%</output></small>
+                    </span>
+                    <input
+                      id="audio-master"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value="75"
+                      aria-label="Master volume"
+                    />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Wind, weather &amp; water
+                      <small>
+                        <output id="audio-ambience-value" for="audio-ambience">80%</output>
+                      </small>
+                    </span>
+                    <input
+                      id="audio-ambience"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value="80"
+                      aria-label="Wind, weather &amp; water"
+                    />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Footsteps
+                      <small>
+                        <output id="audio-footsteps-value" for="audio-footsteps">45%</output>
+                      </small>
+                    </span>
+                    <input
+                      id="audio-footsteps"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value="45"
+                      aria-label="Footsteps"
+                    />
+                  </label>
+                  <label class="setting-row">
+                    <span>
+                      Birds &amp; wildlife
+                      <small>
+                        <output id="audio-wildlife-value" for="audio-wildlife">75%</output>
+                      </small>
+                    </span>
+                    <input
+                      id="audio-wildlife"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value="75"
+                      aria-label="Birds &amp; wildlife"
+                    />
+                  </label>
+                  <small id="sound-status" role="status">
+                    Sound starts when you enter the world.
+                  </small>
+                </div>
+              </div>
+            </section>
+            <section id="options-controls" aria-labelledby="option-controls" class="hidden">
+              <label class="setting-row">
+                <span>Mouse sensitivity</span>
+                <input id="sensitivity" type="range" min="0.35" max="2" step="0.05" value="1" />
+              </label>
+              <div class="section-heading"><h3>Keyboard &amp; mouse</h3></div>
+              <dl class="binding-list">
+                <div>
+                  <dt>Move</dt>
+                  <dd><kbd>W A S D / Arrows</kbd></dd>
+                </div>
+                <div>
+                  <dt>Look</dt>
+                  <dd><kbd>Mouse</kbd></dd>
+                </div>
+                <div>
+                  <dt>Sprint / Jump</dt>
+                  <dd><kbd>Shift / Space</kbd></dd>
+                </div>
+                <div>
+                  <dt>Talk / Open door</dt>
+                  <dd><kbd>E</kbd></dd>
+                </div>
+                <div>
+                  <dt>Character / Inventory / Skills</dt>
+                  <dd><kbd>C / I / K</kbd></dd>
+                </div>
+                <div>
+                  <dt>Atlas</dt>
+                  <dd><kbd>M / Tab</kbd></dd>
+                </div>
+                <div>
+                  <dt>Quick menu</dt>
+                  <dd><kbd>Q</kbd></dd>
+                </div>
+                <div>
+                  <dt>Pause / Back</dt>
+                  <dd><kbd>Escape</kbd></dd>
+                </div>
+                <div>
+                  <dt>Developer tools</dt>
+                  <dd><kbd>O</kbd></dd>
+                </div>
+                <div>
+                  <dt>Diagnostics / Photo mode</dt>
+                  <dd><kbd>F3 / F4</kbd></dd>
+                </div>
+              </dl>
+            </section>
+            <section id="options-interface" aria-labelledby="option-interface" class="hidden">
+              <label class="setting-row">
+                <span>
+                  Menu text
+                  <small>Larger text for easier reading.</small>
+                </span>
+                <select id="ui-text-size">
+                  <option value="standard">Standard</option>
+                  <option value="large">Large</option>
+                </select>
+              </label>
+              <label class="setting-row">
+                <span>
+                  HUD detail
+                  <small>Hide numeric vitals while keeping navigation and temperature.</small>
+                </span>
+                <select id="ui-hud-detail">
+                  <option value="full">Full</option>
+                  <option value="minimal">Minimal</option>
+                </select>
+              </label>
+              <label class="setting-row">
+                <span>
+                  Menu contrast
+                  <small>Use solid surfaces behind text.</small>
+                </span>
+                <select id="ui-contrast">
+                  <option value="standard">Standard</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            </section>
+          </div>
+        </div>
+        <footer class="command-footer">
+          <span>CHANGES SAVE AUTOMATICALLY</span>
+          <button data-back class="text-button">
+            <kbd>ESC</kbd>
+            Back
+          </button>
+        </footer>
+      </div>
+    </section>
+    <section
+      id="settings-modal"
+      class="overlay side-overlay hidden"
+      aria-labelledby="settings-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="sheet settings-sheet">
+        <header class="modal-header">
+          <div>
+            <span class="icon-host header-icon" data-icon="settings" aria-hidden="true"></span>
+            <h2 id="settings-title">Behind the world</h2>
+          </div>
+          <button class="close-button" data-close aria-label="Close developer tools">
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <div class="sheet-content">
+          <details class="settings-disclosure" id="world-tools" open>
+            <summary>World tools &amp; experiments</summary>
+            <div class="settings-disclosure-content">
+              <label class="setting-row">
+                <span>
+                  Time of day
+                  <output id="time-setting-label" class="setting-value" for="time-setting">
+                    09:00
+                  </output>
+                </span>
+                <input id="time-setting" type="range" min="0" max="23.75" step="0.25" value="9" />
+              </label>
+              <div class="sky-presets" role="group" aria-label="Sky and lighting presets">
+                <button id="sky-dawn" class="plain-button" type="button">Dawn</button>
+                <button id="sky-day" class="plain-button" type="button">Day</button>
+                <button id="sky-dusk" class="plain-button" type="button">Dusk</button>
+                <button id="sky-night" class="plain-button" type="button">Moons</button>
+              </div>
+              <p class="sky-lore">
+                Solenne warms the day. Aster, the pale watcher, and copper Vey cross the night.
+                Travelers call the band of stars the Ashen River.
+              </p>
+              <div class="weather-conditions" aria-label="Current weather">
+                <span class="overline">OUTSIDE NOW</span>
+                <strong id="weather-current">Reading the sky…</strong>
+                <span id="weather-air">Conditions will appear when the world is ready.</span>
+                <span id="weather-ground"></span>
+              </div>
+              <label class="setting-row">
+                <span>
+                  Weather
+                  <small id="weather-mode-help">Moving fronts follow the local climate.</small>
+                </span>
+                <select id="weather-mode" aria-describedby="weather-mode-help">
+                  <option value="0" selected>Automatic</option>
+                  <option value="1">Clear</option>
+                  <option value="2">Cloudy</option>
+                  <option value="8">Overcast</option>
+                  <option value="3">Rain</option>
+                  <option value="4">Storm</option>
+                  <option value="5">Tempest</option>
+                  <option value="6">Snow</option>
+                  <option value="7">Blizzard</option>
+                </select>
+              </label>
+              <label class="setting-row">
+                <span>
+                  Weather speed
+                  <small id="weather-speed-help">
+                    Fronts and ground buildup.
+                    <br />
+                    <output id="weather-speed-value" for="weather-speed">1×</output>
+                  </small>
+                </span>
+                <input
+                  id="weather-speed"
+                  type="range"
+                  min="0.25"
+                  max="20"
+                  step="0.25"
+                  value="1"
+                  aria-describedby="weather-speed-help"
+                  aria-valuetext="1 times speed"
+                />
+              </label>
+              <label class="setting-row">
+                <span>
+                  Weather clock
+                  <small>
+                    Pause fronts and ground buildup.
+                    <br />
+                    Time of day remains independent.
+                  </small>
+                </span>
+                <select id="weather-paused">
+                  <option value="running" selected>Running</option>
+                  <option value="paused">Paused</option>
+                </select>
+              </label>
+              <div class="setting-row seed-row">
+                <span>
+                  <label for="landscape-destination">Explore landscape</label>
+                  <small id="landscape-destination-help" role="status">
+                    Visit a generated location in this world.
+                  </small>
+                </span>
+                <form id="landscape-travel-form">
+                  <select
+                    id="landscape-destination"
+                    aria-describedby="landscape-destination-help"
+                    style="flex: 1; width: auto; min-width: 0"
+                  >
+                    <option value="">Choose a landscape…</option>
+                  </select>
+                  <button id="travel-landscape" type="submit" class="plain-button" disabled>
+                    Travel →
+                  </button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  World seed
+                  <small>A new seed creates a new wilderness.</small>
+                </span>
+                <form id="seed-form">
+                  <input
+                    id="seed-input"
+                    type="number"
+                    min="1"
+                    max="4294967295"
+                    aria-label="World seed"
+                    value="1337"
+                  />
+                  <button type="submit" class="plain-button">Generate</button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  Settlements
+                  <small id="settlement-help">
+                    Visit a camp, village, fort, town or regional capital.
+                  </small>
+                </span>
+                <form id="settlement-form">
+                  <select
+                    id="settlement-select"
+                    aria-label="Settlement"
+                    style="flex: 1; width: auto; min-width: 0"
+                  >
+                    <option value="">Choose a settlement…</option>
+                  </select>
+                  <button id="settlement-travel" class="plain-button" type="submit">Visit →</button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  Natural wonders
+                  <small id="wonders-help">Arches, stone windows, spires and ancient rock.</small>
+                </span>
+                <form id="wonders-form">
+                  <select
+                    id="wonders-select"
+                    aria-label="Natural wonder"
+                    style="flex: 1; width: auto; min-width: 0"
+                  >
+                    <option value="">Choose a wonder…</option>
+                  </select>
+                  <button id="wonders-travel" class="plain-button" type="submit" disabled>
+                    Travel →
+                  </button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  Walking journeys
+                  <small id="walking-help">Continuous routes through the wilderness.</small>
+                </span>
+                <form id="walking-form">
+                  <select
+                    id="walking-select"
+                    aria-label="Walking journey"
+                    style="flex: 1; width: auto; min-width: 0"
+                  >
+                    <option value="">Choose a walk…</option>
+                  </select>
+                  <button id="walking-start" class="plain-button" type="submit" disabled>
+                    Start →
+                  </button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  Lighting studies
+                  <small>
+                    Explore furnished rooms in your world, or the original landscape studies.
+                  </small>
+                </span>
+                <form id="study-form">
+                  <select id="study-select" aria-label="Lighting study">
+                    <option value="interior:inn">Interior · tavern bar</option>
+                    <option value="interior:bedroom">Interior · guest chamber</option>
+                    <option value="interior:home">Interior · home at dusk</option>
+                    <option value="interior:arcane">Interior · arcanist’s study</option>
+                    <option value="interior:smithy">Interior · smithy</option>
+                    <option value="interior:temple">Interior · temple</option>
+                    <option value="meadow">Windmere · wildflowers</option>
+                    <option value="meadow-dawn">Windmere · dawn</option>
+                    <option value="meadow-dusk">Windmere · dusk</option>
+                    <option value="forest">Amberwood · morning</option>
+                    <option value="lake">Silverwater · day</option>
+                    <option value="moon">Silverwater · moons</option>
+                    <option value="stone">Sunstone · evening</option>
+                    <option value="hearth">Mistfield · firelight</option>
+                  </select>
+                  <button class="plain-button" type="submit">Visit →</button>
+                </form>
+              </div>
+              <div class="setting-row seed-row">
+                <span>
+                  Performance check
+                  <small>
+                    Compare this view at 420p and 720p. Walk test runs 30 seconds per resolution
+                    from the starting road, then returns here.
+                  </small>
+                </span>
+                <button id="benchmark-walk" class="plain-button" type="button">
+                  Walk & stream test →
+                </button>
+                <button id="benchmark-start" class="plain-button" type="button">
+                  Run comparison →
+                </button>
+                <button id="benchmark-aa" class="plain-button" type="button">
+                  Compare all AA modes →
+                </button>
+                <button id="motion-record" class="plain-button" type="button">
+                  Record 8-second walk →
+                </button>
+                <a
+                  id="motion-download"
+                  class="text-button hidden"
+                  download="fantasyland-aa-walk.mp4"
+                >
+                  Save walking clip →
+                </a>
+                <small id="motion-status" role="status">
+                  Records the current view and AA setting. Recording is separate from FPS
+                  measurements.
+                </small>
+                <output
+                  id="benchmark-result"
+                  aria-live="polite"
+                  style="white-space: pre-line; font-size: 12px; line-height: 1.6"
+                ></output>
+              </div>
+              <button id="return-to-spawn" class="text-button">
+                Return to the starting road →
+              </button>
+            </div>
+          </details>
+        </div>
+        <footer class="command-footer">
+          <span>DEVELOPMENT BUILD</span>
+          <span>ESC Return</span>
+        </footer>
+      </div>
+    </section>
+    <section
+      id="pause-modal"
+      class="overlay pause-overlay hidden"
+      aria-labelledby="pause-title"
+      aria-modal="true"
+      role="dialog"
+    >
+      <div class="pause-panel">
+        <div class="pause-menu">
+          <p class="overline">THE ENDLESS MARCHES</p>
+          <h2
+            id="pause-title"
+            tabindex="0"
+            data-tip-title="Location"
+            data-tip-source="pause-location"
+          >
+            Game paused
+          </h2>
+          <p id="pause-location" class="pause-location tooltip-source">The wilderness</p>
+          <nav class="pause-actions" aria-label="Game menu">
+            <button id="resume-button" class="resume-action">
+              Resume journey
+              <span class="icon-host" data-icon="arrow" aria-hidden="true"></span>
+            </button>
+            <div class="pause-rule"></div>
+            <button data-screen="character">
+              Character
+              <kbd>C</kbd>
+            </button>
+            <button data-screen="bag">
+              Inventory &amp; equipment
+              <kbd>I</kbd>
+            </button>
+            <button data-screen="skills">
+              Skills
+              <kbd>K</kbd>
+            </button>
+            <button data-screen="map">
+              Atlas
+              <kbd>M</kbd>
+            </button>
+            <div class="pause-rule"></div>
+            <button id="options-button">
+              Options
+              <span class="icon-host" data-icon="arrow" aria-hidden="true"></span>
+            </button>
+            <button id="title-button">
+              Return to title
+              <span class="icon-host" data-icon="arrow" aria-hidden="true"></span>
+            </button>
+          </nav>
+          <div class="pause-footer">
+            <span class="pause-dot"></span>
+            WORLD PAUSED
+            <button id="settings-button" title="Developer tools (O)">
+              Developer tools
+              <kbd>O</kbd>
+            </button>
+          </div>
+        </div>
+        <div class="pause-heraldry" aria-hidden="true">
+          <img src="./ui/marches-seal.svg" alt="" />
+          <span>THE ENDLESS MARCHES</span>
+        </div>
+      </div>
+    </section>
+    <div id="interaction-prompt" class="interaction-prompt hidden" aria-live="polite"></div>
+    <section
+      id="dialogue-modal"
+      class="overlay hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dialogue-name"
+    >
+      <div class="conversation-panel">
+        <header class="conversation-heading">
+          <div class="portrait-frame">
+            <canvas
+              id="dialogue-portrait"
+              width="64"
+              height="80"
+              aria-label="Portrait of the person you are speaking to"
+              role="img"
+            ></canvas>
+          </div>
+          <div class="conversation-identity">
+            <span id="dialogue-role" class="overline"></span>
+            <h2
+              id="dialogue-name"
+              tabindex="0"
+              data-tip-title="Character"
+              data-tip-source="dialogue-detail"
+            ></h2>
+            <p id="dialogue-detail" class="quiet tooltip-source"></p>
+          </div>
+          <div class="conversation-seal" aria-hidden="true">
+            <svg viewBox="0 0 40 40">
+              <path d="M20 2 35 8v15L20 38 5 23V8Z M20 7v25 M11 14l9 5 9-5 M11 25l9-6 9 6" />
+              <path d="M16 10h8M16 29h8" />
+            </svg>
+            <span>THE MARCHES</span>
+          </div>
+          <button
+            id="dialogue-close"
+            class="close-button"
+            type="button"
+            aria-label="Leave conversation"
+          >
+            <span class="icon-host" data-icon="close" aria-hidden="true"></span>
+          </button>
+        </header>
+        <div class="conversation-body">
+          <nav class="conversation-menu" aria-label="Conversation topics">
+            <span class="overline">INQUIRE OF…</span>
+            <div id="dialogue-topics" class="conversation-topics"></div>
+          </nav>
+          <div
+            id="dialogue-text"
+            class="conversation-text"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            tabindex="0"
+            aria-label="Conversation history"
+          ></div>
+        </div>
+        <footer class="command-footer">
+          <span>↑ ↓ CHOOSE · 1–9 / A–C ASK · ENTER CONFIRM</span>
+          <span>TAB FOCUS · ESC FAREWELL</span>
+        </footer>
+      </div>
+    </section>
+    <script type="module" src="./app.js?v=compass-frame-1"></script>
+    <script type="module" src="./game-ui.js?v=map-controls-1"></script>
+  </body>
 </html>
