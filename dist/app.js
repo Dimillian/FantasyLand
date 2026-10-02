@@ -2,14 +2,13 @@ import { compassReading } from './hud-navigation.js';
 import { descriptor, worldKey, validSeed, validateSave, WorldStore } from './world-store.mjs';
 import { AtlasCache } from './atlas-cache.mjs';
 import { Soundscape } from './soundscape.mjs?v=footstep-foley-3';
-import { paintPortrait } from './portrait.js?v=worldgen-identity-1';
+import { paintPortrait } from './portrait.js?v=current-world-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
 const $ = (id) => document.getElementById(id);
 const canvas = $('world');
 const STORAGE_KEY = 'fantasyland.preferences.v1';
-const PREVIOUS_STORAGE_KEY = 'wayfarer.exploration.v3';
 const DEFAULT_SEED = 1337;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const fmtDistance = (m) => m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`;
@@ -17,23 +16,17 @@ const niceName = (s = '') => String(s).replace(/[_-]/g, ' ').replace(/\b\w/g, (c
 const wrapAngle = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
 let saved = {};
 try {
-  const current = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('wayfarer.exploration.v4');
-  if (current) saved = JSON.parse(current);
-  else {
-    // Terrain/hydrology changed in v4. Keep preferences, never old coordinates.
-    const previous = JSON.parse(localStorage.getItem(PREVIOUS_STORAGE_KEY) || '{}');
-    saved = { seed: previous.seed, quality: previous.quality, sensitivity: previous.sensitivity };
-  }
+  const current = localStorage.getItem(STORAGE_KEY);
+  if(current)saved=JSON.parse(current) || {};
 } catch (_) { /* Storage is optional. */ }
 const soundscape = new Soundscape(saved.audio);
 const urlSeed = new URL(location.href).searchParams.get('seed');
 const seed = validSeed(urlSeed, validSeed(saved.seed, DEFAULT_SEED));
 const worldIdentity = descriptor(seed);
 const worldStore = new WorldStore(localStorage);
-let playedSave = null, saveLoadError = null, importingSave = false;
-try { playedSave = worldStore.load(worldIdentity); } catch (error) { saveLoadError = error; }
-// Unversioned prototype saves stay untouched. Only preferences migrate; old
-// coordinates cannot be applied to the new mountain geography.
+let playedSave = null, importingSave = false;
+try { playedSave = worldStore.load(worldIdentity); } catch (error) { console.warn('Local saves unavailable; starting a fresh world',error); }
+// World progress comes only from a validated current-version snapshot.
 saved = {...saved, x:undefined, z:undefined, worldClock:undefined, waypoint:null, atlas:null,
   ...(playedSave ? {seed, waypoint:playedSave.waypoint, atlas:playedSave.atlas} : {})};
 const atlasCache = new AtlasCache(worldKey(worldIdentity)+':atlas2');
@@ -55,22 +48,18 @@ let uiContrast = saved.uiContrast === 'high' ? 'high' : 'standard';
 let focusedLook = false, lockPending = false, lockTimer = null, lastMouse = null;
 let pointerLockFallback = false, lockEpoch = 0;
 let quality = clamp(Number(saved.quality ?? 1), 0, 2), sensitivity = clamp(Number(saved.sensitivity ?? 1), .35, 2);
-// Existing v4 saves acquire the new visual preferences without moving the player.
 let antialiasing = [0, 1, 2].includes(Number(saved.antialiasing ?? 1)) ? Number(saved.antialiasing ?? 1) : 1;
 let adaptiveResolution = saved.adaptiveResolution === true;
 const adaptive = new AdaptiveResolution();
 let adaptivePosition = null;
 let filterMode = [0, 1, 2].includes(Number(saved.filterMode)) ? Number(saved.filterMode) : 1;
-// Removed filter saves return to visible Bloom while all world progress stays intact.
-let filterStrength = Number(saved.filterMode) === 3 ? 1 : Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
+let filterStrength = Number.isFinite(Number(saved.filterStrength ?? 1)) ? clamp(Number(saved.filterStrength ?? 1), 0, 1.5) : 1;
 const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 420, 450, 540, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 1)) ? Number(saved.renderResolution ?? 1) : 1;
-// Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
 const requestedLighting = Number(new URL(location.href).searchParams.get("lighting") ?? saved.lightingMode ?? 7);
 let lightingMode = [0,1,3,7].includes(requestedLighting) ? requestedLighting : 7;
 let meadowCarpet = saved.meadowCarpet !== false;
-// Weather preferences extend the same save; position, atlas and filters stay intact.
 let weatherMode = [0, 1, 2, 3, 4, 5, 6, 7, 8].includes(Number(saved.weatherMode ?? 0)) ? Number(saved.weatherMode ?? 0) : 0;
 let weatherSpeed = Number.isFinite(Number(saved.weatherSpeed ?? 1)) ? clamp(Number(saved.weatherSpeed ?? 1), .25, 20) : 1;
 let weatherPaused = saved.weatherPaused === true;
@@ -128,7 +117,7 @@ function toast(message, duration = 3500) {
 function saveProgress() {
   updateLookSummary();
   if (benchmark || motionCapture || otherViewActive || importingSave) return;
-  if (!game || !initialReady || saveLoadError) return;
+  if (!game || !initialReady) return;
   try {
     const snapshot=game.save_snapshot();
     const save={schema:1,updated:Date.now(),snapshot,waypoint,atlas:map.initialized?{x:map.x,z:map.z,span:map.span}:null};
@@ -621,12 +610,9 @@ function scheduleMapData(delay = 100) {
 }
 
 // All widths are CSS pixels: zoom changes geography, not road thickness.
-// An explicitly empty routes array is authoritative; only older engines fall
-// back to roads, whose unclassified lines are treated as main roads.
+// Draw the classified routes supplied by the current engine.
 function drawMapRoutes(ctx, features, span) {
-  const routes = Array.isArray(features.routes)
-    ? features.routes
-    : (features.roads || []).map((road) => ({ kind: 'main', points: road.points || road }));
+  const routes = features.routes || [];
   const scale = clamp(15000 / Math.max(span, 1), .65, 1);
   const styles = [
     { kind: 'trail', color: '#a8ad8770', width: .7, dash: [2, 4] },
@@ -939,7 +925,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=worldgen-identity-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=current-world-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {
@@ -1047,16 +1033,11 @@ function showFatal(error) {
   $('loading-label').classList.add('hidden');
   $('start-button').classList.add('hidden');
   $('load-error').classList.remove('hidden');
-  if(saveLoadError){
-    $('recover-save').classList.remove('hidden');$('export-rejected-save').classList.remove('hidden');
-    $('load-error-message').textContent=`This world's save could not be loaded. It has not been overwritten.\n${String(error?.message||error)}\nRestore the previous snapshot, or export the original to keep it safe.`;return;
-  }
   $('load-error-message').textContent = `The wilderness could not be opened.\n${String(error?.message || error)}\n\nThis prototype needs a browser with WebGPU enabled. Try an up-to-date Chrome or Edge browser.`;
 }
 
 async function boot() {
   try {
-    if (saveLoadError) throw saveLoadError;
     if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser.');
     initRenderCoordination();
     $('loading-label').textContent = 'Preparing the world engine…';
@@ -1065,8 +1046,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=worldgen-identity-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=worldgen-identity-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=current-world-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=current-world-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -1087,7 +1068,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, atlasCache, worldIdentity, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'worldgen-identity-1' };
+    window.fantasyDebug = { game, atlasCache, worldIdentity, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'current-world-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -1107,13 +1088,6 @@ function startExploring(event) {
 $('start-button').addEventListener('click', startExploring);
 $('focus-hint').addEventListener('click', captureMouse);
 $('retry-button').addEventListener('click', () => location.reload());
-$('recover-save').addEventListener('click',()=>{
-  try{worldStore.recover(worldIdentity);importingSave=true;location.reload();}catch(error){$('load-error-message').textContent=String(error.message||error);}
-});
-$('export-rejected-save').addEventListener('click',()=>{
-  const raw=worldStore.preserved(worldIdentity);if(!raw)return;
-  const url=URL.createObjectURL(new Blob([raw],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`fantasyland-preserved-${seed}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-});
 for (const type of ['map', 'bag', 'character', 'equipment', 'skills', 'settings', 'pause']) {
   $(type + '-button').setAttribute('aria-expanded', 'false');
   $(type + '-button').addEventListener('click', () => {

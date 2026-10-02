@@ -23,7 +23,7 @@ try{
   const db=await cache.database();const records=await new Promise(resolve=>{const r=db.transaction('metadata').objectStore('metadata').getAll();r.onsuccess=()=>resolve(r.result);});
   assert(records.reduce((n,r)=>n+r.size,0)<=14000,'Disk budget exceeded');
   const prefix='fantasyland.test.'+Date.now()+'.';
-  const storage={getItem:k=>localStorage.getItem(prefix+k),setItem:(k,v)=>localStorage.setItem(prefix+k,v)};
+  const storage={getItem:k=>localStorage.getItem(prefix+k),setItem:(k,v)=>localStorage.setItem(prefix+k,v),removeItem:k=>localStorage.removeItem(prefix+k)};
   const store=new WorldStore(storage);
   const save={schema:1,snapshot:{schema:1,world:descriptor(0),clock:8000,doors:[{id:5,angle:.4,target:1,hold:20}],player:{x:12,z:34,yaw:.5,pitch:.2,health:73,mana:82,stamina:90,walked:500}},atlas:{x:0,z:0,span:6000},waypoint:null};
   store.write(save);
@@ -31,6 +31,9 @@ try{
   const saved=JSON.stringify(save);save.snapshot.world.generator_version=999;
   let rejected=false;try{store.write(save);}catch{rejected=true;}
   assert(rejected&&JSON.stringify(store.load(descriptor(0)))===saved,'Invalid save replaced valid world');
-  out.textContent=`PASS — browser localStorage save/reload and invalid-version protection\nPASS — IndexedDB atlas reload, layer separation, RAM/disk budgets\nMemory atlas lookup: ${memoryMs.toFixed(2)} ms\nPersistent atlas lookup: ${diskMs.toFixed(2)} ms\nNo GPU renderer used in these storage checks.`;
+  storage.setItem(store.key(descriptor(0)),JSON.stringify(save));
+  assert(store.load(descriptor(0))===null,'Old local world must reset');
+  assert(storage.getItem(store.key(descriptor(0)))===null,'Discarded world remains in current slot');
+  out.textContent=`PASS — browser localStorage current save/reload, import validation and destructive version reset\nPASS — IndexedDB atlas reload, layer separation, RAM/disk budgets\nMemory atlas lookup: ${memoryMs.toFixed(2)} ms\nPersistent atlas lookup: ${diskMs.toFixed(2)} ms\nNo GPU renderer used in these storage checks.`;
 }catch(e){out.textContent='FAIL — '+e.stack;}
 </script>

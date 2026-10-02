@@ -1,10 +1,10 @@
 # World identity, saves, recipes and atlas cache
 
-The current persisted contract starts at generator 1, recipe revision 1, save schema 1. Seeds are unsigned 32-bit integers, including zero and 4294967295. This is the first versioned format: old `wayfarer.exploration.v4` storage is retained untouched and only visual preferences migrate. Old coordinates cannot be silently transplanted onto the new mountains.
+Only the current generator, recipe and save format are supported. Seeds are unsigned 32-bit integers, including zero and 4294967295. Development changes are allowed to be destructive: no historical generator implementations, save migrations or automatic backup/recovery paths are required.
 
-## Compatibility contract
+## Current-version policy
 
-`worldgen::WorldDescriptor` identifies reproducible geography. `World::from_descriptor` rejects unsupported versions. Main-thread and worker engines check matching descriptors. Any change that affects terrain, hydrology, placement, topology or stable entity identities requires a generator/recipe revision change. Before shipping such a change, retain the old generator implementation or supply an explicit migration; incrementing the version alone does not implement backwards compatibility. Unsupported saves are preserved and refused, never silently interpreted with different geography. An active-world pointer per seed also prevents a newer engine from silently treating an older played seed as a fresh world.
+`worldgen::WorldDescriptor` identifies reproducible geography and keys reconstructible atlas data. Main-thread and worker engines must agree on the descriptor. Changes to terrain, hydrology, placement, topology or stable entity identities require a generator/recipe revision bump so previous coordinates and cached terrain cannot be applied to different geography. A missing current-version save starts fresh even when older versions of that seed were played. Invalid or incompatible data in the current local slot is discarded on load. Importing an incompatible file is rejected; it is never converted or applied to the current world.
 
 Persistent location keys are namespaced exact logical coordinates (`settlement:i:j:slot`, `cultural:i:j:slot`, `natural:i:j:slot`). Random u32 hashes still drive appearance, not persistent location identity. Existing exact settlement/building runtime IDs remain usable for current door state. Scope all keys by WorldDescriptor when adding discoveries or location deltas.
 
@@ -12,7 +12,7 @@ Persistent location keys are namespaced exact logical coordinates (`settlement:i
 
 `savegame::Snapshot` contains identity, schema, player position/look/vitals/distance, world clock and door states. Geography, house layouts and citizen schedules regenerate from the descriptor and clock. Movement resumes on the valid walking surface rather than restoring an in-flight jump. Citizen transient avoidance motion and weather particle positions are not saved.
 
-`dist/world-store.mjs` stores one played-world slot per descriptor, separate from renderer preferences. Autosaves retain a prior snapshot. Import/export uses JSON; importing the active seed suppresses navigation autosave so it cannot overwrite the imported state. Validation occurs before writes and again in Rust before engine mutation. A failed load offers previous-snapshot recovery and export of the preserved original. Browser quota/storage failures remain visible; export works without writing localStorage. Browser storage is origin-specific and not a substitute for an exported backup.
+`dist/world-store.mjs` stores the current snapshot per seed/version, separately from renderer preferences. Saving overwrites that slot directly, without retaining previous snapshots or active-version pointers. Preferences load only from the current preference key. Import/export supports the current JSON format; importing the active seed suppresses navigation autosave so it cannot overwrite the imported state. Validation occurs before writes and again in Rust before engine mutation. Browser storage failures do not prevent starting a world; save failures remain visible and export works without localStorage. Exported files are optional manual copies, with no promise of compatibility after an engine update.
 
 Do not store a continent's rendered chunks in a save. Future gameplay systems should add versioned mutable deltas, keyed by stable location identity, rather than making generated meshes authoritative.
 
@@ -39,7 +39,7 @@ Six irregular continental mountain groups and five island groups replace the thr
 Validation commands:
 
 - `cargo test --release --lib --locked` with the bundled toolchain.
-- `node scripts/verify-world-store.mjs` (identity/seed range, separate saves, backup/recovery, invalid data, cache budgets).
+- `node scripts/verify-world-store.mjs` (identity/seed range, current saves, destructive reset, invalid imports, cache budgets).
 - `node scripts/verify-ui.cjs` (real interface orchestration against engine boundary stubs, including import/autosave ordering).
 - `node scripts/verify-wasm.mjs` (compiled generation, worker identity, query independence and geography checks).
 - `/worldgen-check.html` (isolated actual browser localStorage and IndexedDB checks).

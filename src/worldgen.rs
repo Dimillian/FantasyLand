@@ -1,6 +1,7 @@
 //! Persisted world identity and immutable recipe configuration.
 //! Any change to generated terrain, placement or identity MUST increment
-//! GENERATOR_VERSION. Never load an unsupported version as the current world.
+//! GENERATOR_VERSION. Development updates may discard old saves; only the
+//! current generator is supported.
 use serde::{Deserialize, Serialize};
 pub const GENERATOR_VERSION: u32 = 1;
 pub const RECIPE_REVISION: u32 = 1;
@@ -23,7 +24,7 @@ impl WorldDescriptor {
     }
     pub fn validate(self) -> Result<(), &'static str> {
         if self != Self::current(self.seed) {
-            return Err("This world requires a different generator/recipe version. Its save has not been changed.");
+            return Err("Unsupported world version. Start a new world with the current generator.");
         }
         Ok(())
     }

@@ -299,26 +299,6 @@ async function verifyLightingSettings() {
   console.log('PASS: Full indirect lighting defaults; all lighting modes apply immediately and survive reload; unrelated preferences/progress retained; review URL override; invalid-mode fallback; baseline reset and summary.');
 }
 
-async function verifyRemovedFilterMigration() {
-  const existing = {seed:1337,x:810,z:-160,quality:2,sensitivity:1.2,filterMode:3,filterStrength:0,asciiScale:3,asciiPalette:1,renderResolution:360,groundCoverDensity:2.25,sunShadows:false,weatherMode:5,weatherSpeed:3,weatherPaused:true,reflections:false,enclosure:false,waypoint:{x:900,z:-210,name:'The Pass'},atlas:{x:850,z:-180,span:8000}};
-  const selected=filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;saveProgress();');
-  assert.deepEqual(selected.calls,[[1,1]],'The removed filter must migrate to visible Bloom at full strength.');
-  assert.equal(selected.ids['filter-select'].value,'1'); assert.equal(selected.ids['filter-strength'].value,'100');
-  assert.equal(selected.ids['filter-strength'].disabled,false);
-  const persisted=selected.saved();
-  assert.equal(persisted.filterMode,1); assert.equal(persisted.filterStrength,1);
-  assert.ok(!('asciiScale' in persisted)); assert.ok(!('asciiPalette' in persisted));
-  for(const key of Object.keys(existing).filter(key=>!['filterMode','filterStrength','asciiScale','asciiPalette'].includes(key))) assert.deepEqual(persisted[key],existing[key],`Filter migration must preserve ${key}.`);
-  const restored=filterHarness(persisted); await restored.run('boot()');
-  assert.deepEqual(restored.calls,[[1,1]],'Migrated Bloom must survive reload.');
-  const filterOptions=html.match(/<select\b[^>]*\bid="filter-select"[^>]*>([\s\S]*?)<\/select>/)?.[1];
-  assert.deepEqual([...filterOptions.matchAll(/<option value="(\d+)"/g)].map(match=>Number(match[1])).sort(),[0,1,2]);
-  for (const invalid of [3,-1,99,'invalid']) {
-    selected.ids['filter-select'].value=String(invalid); selected.ids['filter-select'].fire('change');
-    assert.deepEqual(selected.calls.at(-1),[1,1],'Unsupported filter modes must never reach the renderer.');
-  }
-  console.log('PASS: removed-filter migration to visible Bloom; obsolete preferences discarded; player, map and other settings retained; valid filter options only; migrated reload.');
-}
 
 async function verifyGroundCoverSettings() {
   const existing = {seed:1337,x:637,z:222,quality:2,sensitivity:1.2,filterMode:2,filterStrength:0.8,renderResolution:720,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
@@ -492,8 +472,8 @@ function verifyAtlasRoutes() {
   strokes.length=0;context.routeFeatures={routes:[],roads:routes.roads};run('drawMapRoutes(routePen,routeFeatures,6000)');
   assert.equal(strokes.length,0,'An empty route list is authoritative.');
   strokes.length=0;context.routeFeatures={roads:routes.roads};run('drawMapRoutes(routePen,routeFeatures,6000)');
-  assert.equal(strokes.length,1);assert.equal(strokes[0].width,1.5);assert.deepEqual(strokes[0].dash,[]);assert.equal(strokes[0].path.length,3);
-  console.log('PASS: atlas route precedence; three thin road classes; trail dash/zoom visibility; world-coordinate projection; legacy fallback; drawing state isolation.');
+  assert.equal(strokes.length,0,'Obsolete road packets are not interpreted.');
+  console.log('PASS: atlas route precedence; three thin road classes; trail dash/zoom visibility; world-coordinate projection; current route packets only; drawing state isolation.');
 }
 
 async function verifySkyAndWalkControls() {
@@ -615,18 +595,18 @@ async function verifyCompassFrames() {
 async function main(){
   await verifyGameShell();
   await verifyCompassFrames();
-  assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),null); assert.equal(run('quality'),2); assert.equal(run('sensitivity'),1.4);
+  assert.equal(run('saved.x'),undefined); assert.equal(run('saved.waypoint'),null); assert.equal(run('quality'),1); assert.equal(run('sensitivity'),1); // Old preference keys are ignored.
   run('game=fakeGame;initialReady=true;state={x:100,z:200,stamina:75,health:100,mana:100,dayTime:9};');
   ids.world.fire('click',{clientX:10,clientY:20});
   assert.equal(calls,1);assert.equal(run('started'),true);assert.equal(run('lockPending'),true);
   document.pointerLockElement=ids.world;document.fire('pointerlockchange');
   assert.equal(run('locked'),true);
-  document.fire('mousemove',{movementX:10,movementY:-5}); assert.deepEqual(looks.at(-1),[14,-7]);
+  document.fire('mousemove',{movementX:10,movementY:-5}); assert.deepEqual(looks.at(-1),[10,-5]);
   key('Escape');assert.equal(run('focusedLook'),false);assert.equal(run('locked'),false);assert.equal(run('modal'),'pause');key('Escape');assert.equal(run('modal'),null);
   ids.world.requestPointerLock=()=>Promise.reject(new Error('Blocked by host'));
   ids.world.fire('click',{clientX:10,clientY:10}); await new Promise(setImmediate);
   assert.equal(run('focusedLook'),true);assert.equal(run('pointerLockFallback'),true);
-  document.fire('mousemove',{clientX:30,clientY:20});assert.deepEqual(looks.at(-1),[28,14]);
+  document.fire('mousemove',{clientX:30,clientY:20});assert.deepEqual(looks.at(-1),[20,10]);
   key('Escape');const count=looks.length;document.fire('mousemove',{clientX:60,clientY:30});assert.equal(looks.length,count);assert.equal(run('modal'),'pause');key('Escape');
   // Escape during a pending request must survive both late rejection and success.
   ids.world.requestPointerLock=()=>new Promise((_,reject)=>rejected=reject);
@@ -677,7 +657,6 @@ async function main(){
   await verifyFilterSettings();
   await verifyResolutionSettings();
   await verifyLightingSettings();
-  await verifyRemovedFilterMigration();
   await verifyGroundCoverSettings();
   await verifyWeatherSettings();
   await verifyLandscapeDestinations();
@@ -697,7 +676,7 @@ async function main(){
   assert.equal(run('lastFrame'),0,'Resume must not integrate the hidden time interval.');
   document.hidden=false;
   console.log('PASS: browser benchmark cancellation on hidden tab/Escape restores explicit resolution and original walk-test location.');
-  console.log('PASS: save migration; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
+  console.log('PASS: obsolete saves ignored; synchronous click capture; captured look; rejected-capture focused look; Escape; late rejection/success; retained atlas; modal Tab accessibility; cursor-anchored zoom; I/C/K panels; Space jump.');
 }
 function verifyStreamingLifecycle() {
 // Real worker coordinator: transfers are bounded and failures restore fallback.
