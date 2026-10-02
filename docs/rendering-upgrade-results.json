@@ -4,6 +4,13 @@
   "hardware": "Apple M4, 32GiB RAM, AC power",
   "candidateNativeSha256": "af9eae031a3de53aa329691fbf690c8c3642274fac552753741e5fa608cc8bc9",
   "candidateWasmSha256": "e309dec188cbf8b0f537ff6b9674726ace31c022ce99c8a6c790de0ffece69f1",
+  "mainCheckout": {
+    "rebuiltWasmSha256": "a1571b1746a95fb017f06f0648369b1f11aeb94ad85e3a7dd875bd1210832dbc",
+    "rebuiltWasmBytes": 2076043,
+    "measuredWasmSnapshot": "output/rendering-upgrade/candidate/benchmark-runtime/pkg/fantasy_land_bg.wasm",
+    "measuredNativeSnapshot": "output/rendering-upgrade/candidate/verify-benchmark",
+    "note": "The main-checkout runtime was rebuilt after transfer. Historical measurements and their original binary hashes are retained."
+  },
   "resolution": [
     1280,
     720

@@ -2,6 +2,12 @@
 
 The upgrade was implemented in an isolated `codex/rendering-upgrade` worktree
 from main `76f77ea`, then brought into the main checkout with its local evidence.
+Both local preview servers now run from the main checkout. Its WASM runtime
+was rebuilt there; the historical benchmark runtime remains preserved at
+`output/rendering-upgrade/candidate/benchmark-runtime/pkg`, and the measured
+native binary at `output/rendering-upgrade/candidate/verify-benchmark`.
+`rendering-upgrade-results.json` records the rebuilt runtime hash separately
+from the original measured hashes.
 The engine remains our Rust renderer built on wgpu/WebGPU/Metal, with procedural
 world geometry and a forward HDR scene pass. The three upgrades extend that
 renderer; they do not introduce an external game engine.
