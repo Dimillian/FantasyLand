@@ -680,6 +680,15 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     var visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
     if room>=0 {visibility*=room_aperture(v.world,light,u32(room));}
     var color = surface_lighting(pigment, pigment_linear, normal, v.material, visibility, distance, sky_access);
+    let human = v.texture >= 1000.0;
+    if human && room<0 {
+        // Costume plates contain their own small-scale form shading. A soft
+        // wrapped body response avoids turning them into black sheets when
+        // the billboard rotates, while still obeying actual scene shadows.
+        let wrap=0.32+0.68*max(dot(normal,light),0.0);
+        color=pigment_linear*(u.ambient.rgb*0.50*sky_access
+            +u.direct.rgb*u.direct.w*visibility*wrap);
+    }
     if room>=0 {
         color=pigment_linear*(u.ambient.rgb*room_ambient(v.world,u32(room))*0.62+u.direct.rgb*u.direct.w*visibility*max(dot(normal,light),0.0));
     }
@@ -708,7 +717,7 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     }
     if u.hearths[0].w > 0.0 {
         color += hearth_illumination(v.world,normal,view,pigment_linear,
-            mix(roughness,0.2,wet),pixel.metal,vegetation,room);
+            mix(roughness,0.2,wet),pixel.metal,vegetation || human,room);
     }
 
     color = atmospheric_color(max(color,vec3<f32>(0.0)), v.world, distance);

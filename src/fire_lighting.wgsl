@@ -18,8 +18,9 @@ fn hearth_illumination(world: vec3<f32>, normal: vec3<f32>, view: vec3<f32>,
         let distance = sqrt(max(distance_squared,0.0001));
         let light = delta/distance;
         let radius_fade = 1.0-smoothstep(source.w*0.45,source.w,distance);
-        let intensity = select(34.0,14.0,source.w<10.0)*radius_fade*radius_fade*hearth_flicker(source.xyz)/(1.0+distance_squared);
-        let warm = vec3<f32>(1.0,0.385,0.075)*intensity*room_fire_visibility(world,source.xyz,i32(u.hearth_rooms[i/4u][i%4u]),room);
+        let power_scale = select(select(34.0,11.0,source.w<10.0),2.8,source.w<3.5);
+        let intensity = power_scale*radius_fade*radius_fade*hearth_flicker(source.xyz)/(1.0+distance_squared);
+        let warm = vec3<f32>(1.0,0.54,0.23)*intensity*room_fire_visibility(world,source.xyz,i32(u.hearth_rooms[i/4u][i%4u]),room);
         let nl = select(max(dot(normal,light),0.0),abs(dot(normal,light))*0.78+0.14,two_sided);
         let diffuse = albedo*(1.0-metal)*nl;
         let facing_normal = select(-normal,normal,dot(normal,view)>=0.0);

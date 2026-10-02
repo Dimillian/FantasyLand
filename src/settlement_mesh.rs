@@ -37,6 +37,14 @@ pub fn block(
                 2 | 3 => [q[1], y],
                 _ => [q[0], q[1]],
             };
+            if texture == 27.0 {
+                // A hanging is one complete heraldic design, independent of
+                // its position within the house or which side faces the room.
+                v.uv = [
+                    2.0 * (q[0] - lo[0]) / (hi[0] - lo[0]).max(0.001),
+                    2.0 * (hi[1] - y) / (hi[1] - lo[1]).max(0.001),
+                ];
+            }
             v.texture = 100.0 + texture;
         }
     }
@@ -168,311 +176,9 @@ fn window_wall(mesh: &mut MeshData, b: &Building, side: bool, color: [f32; 3]) {
 }
 /// Shared solid furniture/partition recipe. Rendering and movement consume it.
 pub fn interior_parts(b: &Building, mut part: impl FnMut([f32; 3], [f32; 3], [f32; 3], f32, bool)) {
-    let [w, d] = b.half;
-    let wood = [0.36, 0.23, 0.13];
-    let iron = [0.22, 0.24, 0.23];
-    let mut add = |lo, hi, c, t, solid| part(lo, hi, c, t, solid);
-    if b.usage == Use::Tent {
-        // Low camp furniture fits beneath canvas, with an open centre passage.
-        for side in [-1.0, 1.0] {
-            let x = side * (w * 0.53);
-            add(
-                [x - 0.42, 0.02, -d + 0.85],
-                [x + 0.42, 0.16, d - 1.1],
-                [0.43, 0.36, 0.21],
-                11.0,
-                true,
-            );
-            add(
-                [x - 0.36, 0.16, d - 1.55],
-                [x + 0.36, 0.29, d - 1.16],
-                [0.64, 0.57, 0.39],
-                11.0,
-                false,
-            );
-        }
-        add(
-            [w - 1.0, 0.0, d - 0.9],
-            [w - 0.4, 0.42, d - 0.35],
-            wood,
-            21.0,
-            true,
-        );
-        add(
-            [-0.38, 0.0, d + 0.52],
-            [0.38, 0.18, d + 1.2],
-            [0.31, 0.30, 0.26],
-            17.0,
-            true,
-        );
-        add(
-            [-0.25, 0.18, d + 0.67],
-            [0.25, 0.30, d + 1.05],
-            wood,
-            4.0,
-            false,
-        );
-        return;
-    }
-    if let Some(z) = b.partition() {
-        for (x0, x1) in [(-w, -0.94), (0.94, w)] {
-            add(
-                [x0, 0.0, z - 0.1],
-                [x1, b.height, z + 0.1],
-                [0.59, 0.52, 0.38],
-                18.0,
-                true,
-            );
-        }
-        add(
-            [-0.94, 2.5, z - 0.12],
-            [0.94, b.height, z + 0.12],
-            wood,
-            4.0,
-            true,
-        );
-        for x in [-0.97, 0.90] {
-            add(
-                [x, 0.0, z - 0.16],
-                [x + 0.07, 2.56, z + 0.16],
-                wood,
-                4.0,
-                true,
-            );
-        }
-    }
-    // Living space: a hearth, dining table, chairs, cupboard, shelves and crockery.
-    let hz = b.hearth_z();
-    add(
-        [-w + 0.2, 0.0, hz - 0.7],
-        [-w + 1.75, 0.28, hz + 0.6],
-        [0.38, 0.37, 0.32],
-        17.0,
-        true,
-    );
-    for x in [-w + 0.24, -w + 1.5] {
-        add(
-            [x, 0.28, hz + 0.15],
-            [x + 0.18, 1.46, hz + 0.52],
-            [0.39, 0.37, 0.32],
-            17.0,
-            true,
-        );
-    }
-    add(
-        [-w + 0.24, 1.35, hz + 0.15],
-        [-w + 1.68, 1.58, hz + 0.55],
-        [0.35, 0.34, 0.30],
-        17.0,
-        true,
-    );
-    add(
-        [-w + 0.32, 1.58, hz + 0.20],
-        [-w + 1.6, b.height + 1.9, hz + 0.58],
-        [0.39, 0.37, 0.33],
-        17.0,
-        true,
-    );
-    add(
-        [-w + 0.6, 0.28, hz - 0.25],
-        [-w + 1.35, 0.43, hz + 0.2],
-        [0.19, 0.10, 0.04],
-        4.0,
-        true,
-    );
-    let tx = w - 1.5;
-    let tz = -d + 2.2;
-    add(
-        [tx - 0.62, 0.77, tz - 0.80],
-        [tx + 0.62, 0.91, tz + 0.8],
-        wood,
-        4.0,
-        true,
-    );
-    for x in [-0.5, 0.4] {
-        for z in [-0.67, 0.57] {
-            add(
-                [tx + x, 0.0, tz + z],
-                [tx + x + 0.11, 0.8, tz + z + 0.11],
-                wood,
-                4.0,
-                true,
-            );
-        }
-    }
-    for z in [-1.25, 1.25] {
-        let zc = tz + z;
-        add(
-            [tx - 0.35, 0.44, zc - 0.34],
-            [tx + 0.35, 0.54, zc + 0.34],
-            wood,
-            4.0,
-            true,
-        );
-        for x in [-0.30, 0.22] {
-            for dz in [-0.27, 0.2] {
-                add(
-                    [tx + x, 0.0, zc + dz],
-                    [tx + x + 0.08, 0.48, zc + dz + 0.08],
-                    wood,
-                    4.0,
-                    true,
-                );
-            }
-        }
-        let back = zc + z.signum() * 0.29;
-        add(
-            [tx - 0.35, 0.53, back - 0.05],
-            [tx + 0.35, 1.15, back + 0.05],
-            wood,
-            4.0,
-            true,
-        );
-    }
-    for n in 0..3 {
-        let x = tx - 0.38 + n as f32 * 0.34;
-        add(
-            [x, 0.91, tz - 0.2],
-            [x + 0.17, 1.07, tz - 0.02],
-            [0.61, 0.55, 0.36],
-            11.0,
-            false,
-        );
-    }
-    add(
-        [-w + 0.35, 0.0, -d + 0.35],
-        [-w + 1.75, 1.55, -d + 0.94],
-        wood,
-        21.0,
-        true,
-    );
-    for y in [0.46, 0.98, 1.50] {
-        add(
-            [-w + 0.26, y, -d + 0.30],
-            [-w + 1.84, y + 0.06, -d + 1.0],
-            wood,
-            4.0,
-            false,
-        );
-    }
-    add(
-        [-w + 1.02, 0.76, -d + 0.96],
-        [-w + 1.12, 0.92, -d + 1.02],
-        iron,
-        12.0,
-        false,
-    );
-    let bedroom = b.partition().unwrap_or(0.0);
-    // Beds stay on either side of the centre aisle, beside nightstands and chests.
-    if !matches!(
-        b.usage,
-        Use::Market | Use::Stable | Use::Smithy | Use::Temple | Use::Hall
-    ) {
-        for side in [-1.0, 1.0] {
-            let x = side * (w - 1.14);
-            let z = (bedroom + 0.52).max(d - 3.0);
-            let end = (z + 2.1).min(d - 0.3);
-            add([x - 0.68, 0.18, z], [x + 0.68, 0.4, end], wood, 4.0, true);
-            add(
-                [x - 0.62, 0.4, z + 0.06],
-                [x + 0.62, 0.64, end - 0.06],
-                [0.65, 0.58, 0.41],
-                11.0,
-                true,
-            );
-            add(
-                [x - 0.62, 0.64, z + 0.05],
-                [x + 0.62, 0.69, end - 0.56],
-                if b.id % 2 == 0 {
-                    [0.34, 0.38, 0.27]
-                } else {
-                    [0.37, 0.20, 0.17]
-                },
-                11.0,
-                false,
-            );
-            add(
-                [x - 0.49, 0.64, end - 0.5],
-                [x + 0.49, 0.79, end - 0.12],
-                [0.79, 0.72, 0.53],
-                11.0,
-                false,
-            );
-            for zz in [z, end - 0.10] {
-                add(
-                    [x - 0.72, 0.0, zz],
-                    [x + 0.72, if zz == z { 0.77 } else { 1.08 }, zz + 0.1],
-                    wood,
-                    21.0,
-                    true,
-                );
-            }
-            let nx = x - side * 1.13;
-            add(
-                [nx - 0.29, 0.0, end - 0.64],
-                [nx + 0.29, 0.63, end - 0.06],
-                wood,
-                21.0,
-                true,
-            );
-            add(
-                [nx - 0.31, 0.63, end - 0.67],
-                [nx + 0.31, 0.7, end - 0.03],
-                wood,
-                4.0,
-                true,
-            );
-            add(
-                [nx - 0.14, 0.71, end - 0.38],
-                [nx + 0.13, 0.80, end - 0.19],
-                [0.54, 0.24, 0.12],
-                11.0,
-                false,
-            );
-        }
-    }
-    // Woven runner, patched cloth, books and wall shelves add scale without cluttering routes.
-    add(
-        [-0.7, 0.006, -d + 1.1],
-        [0.7, 0.016, d - 0.6],
-        [0.37, 0.23, 0.16],
-        11.0,
-        false,
-    );
-    for y in [1.2, 1.88] {
-        add(
-            [1.18, y, d - 0.65],
-            [w - 0.35, y + 0.08, d - 0.3],
-            wood,
-            4.0,
-            false,
-        );
-        for n in 0..7 {
-            let x = 1.25 + n as f32 * (w - 1.85) / 7.0;
-            add(
-                [x, y + 0.08, d - 0.57],
-                [x + 0.22, y + 0.38 + (n % 2) as f32 * 0.08, d - 0.32],
-                [
-                    0.25 + (n % 3) as f32 * 0.09,
-                    0.22,
-                    0.17 + (n % 2) as f32 * 0.1,
-                ],
-                11.0,
-                false,
-            );
-        }
-    }
-    if b.usage == Use::Smithy {
-        add([-w + 0.4, 0.0, 1.4], [-w + 2.0, 0.7, 2.4], wood, 4.0, true);
-        add(
-            [-w + 0.3, 0.7, 1.3],
-            [-w + 2.2, 1.04, 2.5],
-            [0.28, 0.29, 0.27],
-            12.0,
-            true,
-        );
-    }
+    crate::interior_design::generate(b, |p| part(p.lo, p.hi, p.color, p.texture, p.solid));
 }
+
 fn flame(mesh: &mut MeshData, b: &Building, p: [f32; 3], size: f32) {
     let start = mesh.vertices.len();
     for axis in 0..2 {
@@ -492,10 +198,26 @@ fn flame(mesh: &mut MeshData, b: &Building, p: [f32; 3], size: f32) {
     }
     let _ = b;
 }
-fn furniture(mesh: &mut MeshData, b: &Building) {
-    interior_parts(b, |lo, hi, c, t, _| block(mesh, b, lo, hi, c, t));
-    let h = b.hearth();
-    flame(mesh, b, [h[0], h[1], h[2]], 0.27);
+fn furniture(mesh: &mut MeshData, b: &Building, lod: u32) {
+    crate::interior_design::render(mesh, b, lod);
+    if !matches!(b.usage, Use::Tent | Use::Market | Use::Stable) {
+        let p = b.lamp_local();
+        for i in 0..4 {
+            let a = i as f32 * std::f32::consts::FRAC_PI_2;
+            let at = b.point(a.cos() * 0.4, p[1] + 0.12, p[2] + a.sin() * 0.4);
+            flame(mesh, b, at, 0.043);
+        }
+        if b.partition().is_some() {
+            for side in [-1., 1.] {
+                let p = b.point(side * (b.half[0] - 2.24), 0.90, b.half[1] - 0.7);
+                flame(mesh, b, p, 0.04);
+            }
+        }
+    }
+    if !matches!(b.usage, Use::Stable | Use::Market) {
+        let h = b.hearth();
+        flame(mesh, b, [h[0], h[1], h[2]], 0.27);
+    }
     if let Some(t) = b.torch() {
         let z = -b.half[1] + 1.25;
         let w = b.half[0];
@@ -547,7 +269,7 @@ fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
         );
         block(mesh, b, [-w, -0.15, -d], [w, 0., d], [0.34, 0.25, 0.13], 4.);
         if lod < 2 {
-            furniture(mesh, b);
+            furniture(mesh, b, lod);
         }
         return;
     }
@@ -559,7 +281,22 @@ fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
         [0.32, 0.34, 0.32],
         17.,
     );
-    block(mesh, b, [-w, -0.05, -d], [w, 0., d], [0.42, 0.29, 0.17], 4.);
+    let stone_floor = matches!(
+        b.usage,
+        Use::Inn | Use::Smithy | Use::Temple | Use::Hall | Use::Barracks
+    );
+    block(
+        mesh,
+        b,
+        [-w, -0.05, -d],
+        [w, 0., d],
+        if stone_floor {
+            [0.51, 0.47, 0.37]
+        } else {
+            [0.46, 0.32, 0.19]
+        },
+        if stone_floor { 23. } else { 4. },
+    );
     if matches!(b.usage, Use::Stable | Use::Market) {
         for x in [-w, w] {
             for z in [-d, d] {
@@ -762,7 +499,7 @@ fn building(mesh: &mut MeshData, b: &Building, lod: u32) {
         );
     }
     if lod < 2 {
-        furniture(mesh, b);
+        furniture(mesh, b, lod);
     }
 }
 pub fn append_chunk(world: &World, mesh: &mut MeshData, cx: i32, cz: i32, lod: u32) {

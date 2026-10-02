@@ -10,7 +10,7 @@ assert.equal(typeof a.suitability.dryGround, 'boolean');
 for (const field of ['buildable', 'freshWater', 'shelter', 'fertility', 'crossing', 'harbor', 'habitation']) {
   assert.ok(Number.isFinite(a.suitability[field]) && a.suitability[field] >= 0 && a.suitability[field] <= 1, `${field} suitability is bounded in compiled WASM`);
 }
-for (const name of ['set_weather_mode', 'set_weather_speed', 'set_weather_paused', 'set_reflections', 'set_enclosure']) {
+for (const name of ['set_weather_mode', 'set_weather_speed', 'set_weather_paused', 'set_reflections', 'set_enclosure', 'visit_interior']) {
   assert.equal(typeof Game.prototype[name], 'function', `${name} is exposed in the actual WASM bindings`);
 }
 assert.equal(typeof Game.prototype.walking_journeys, 'function');

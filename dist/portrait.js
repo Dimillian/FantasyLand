@@ -20,7 +20,7 @@ export function paintPortrait(canvas, person) {
   for(let y=0;y<80;y++)for(let x=0;x<64;x++){const glow=Math.max(0,1-Math.hypot(x-23,y-31)/48);const joint=(y%12===0||((x+(Math.floor(y/12)%2)*9)%19===0))?.75:1;dot(x,y,[.13+glow*.09,.15+glow*.09,.14+glow*.045],joint);}
   // Mantle and linen collar, below a directional, faceted face.
   const cx=31+(seed%3)-1;
-  ellipse(cx,31,15,24,hair,.65);
+  ellipse(cx,a.body===0?31:25,a.body===2?16:14,a.body===0?24:16,hair,.65);
   polygon([[cx-9,49],[cx+9,49],[57,65],[63,79],[1,79],[7,63]],cloth,.9);
   rect(cx-5,43,10,15,skin,.66);
   polygon([[cx-9,50],[cx-1,60],[cx-6,67],[cx-15,55]],linen);
@@ -28,7 +28,7 @@ export function paintPortrait(canvas, person) {
   polygon([[7,63],[cx-14,53],[cx-5,67],[cx-6,79],[1,79]],cloth,1.25);
   polygon([[cx+14,54],[57,65],[63,79],[cx+3,79],[cx+4,64]],cloth,.62);
   ellipse(cx-11,34,3,5,skin,.78);ellipse(cx+10,34,2,5,skin,.61);
-  const jaw=a.body%2?8:10;
+  const jaw=a.body===0?7:a.body===2?11:9;
   polygon([[cx-10,21],[cx+8,21],[cx+11,30],[cx+8,42],[cx+4,48],[cx-2,50],[cx-jaw,44],[cx-11,31]],skin);
   polygon([[cx+2,24],[cx+9,24],[cx+10,35],[cx+6,45],[cx+1,48],[cx+3,37]],skin,.70);
   polygon([[cx-9,33],[cx-4,35],[cx-5,41],[cx-9,39]],skin,1.20);
@@ -40,7 +40,7 @@ export function paintPortrait(canvas, person) {
   rect(cx-4,44,7,1,[.40,.20,.14]);rect(cx-2,45,4,1,skin,1.12);
   polygon([[cx-14,27],[cx-11,15],[cx-3,11],[cx+8,14],[cx+13,22],[cx+11,30],[cx+7,23],[cx+1,20],[cx-7,24],[cx-11,36]],hair,1.05);
   for(let n=0;n<6;n++){let x=cx-10+n*4;rect(x,17+(n%3),2,3,hair,1.4);}
-  if(a.body%2===0 && seed%3===0){polygon([[cx-9,38],[cx-4,45],[cx+3,45],[cx+8,39],[cx+6,49],[cx,54],[cx-7,49]],hair,.84);rect(cx-3,44,6,1,ink);}
+  if(a.body===1 || a.body===2){polygon([[cx-9,38],[cx-4,45],[cx+3,45],[cx+8,39],[cx+6,49],[cx,54],[cx-7,49]],hair,.84);rect(cx-3,44,6,1,ink);}
   if((person.age||35)>48){rect(cx-8,36,5,1,skin,.69);rect(cx+4,36,4,1,skin,.52);rect(cx-5,27,7,1,skin,.73);}
   if(/mage|arcanist|scholar/.test(role)){
     polygon([[cx-19,27],[cx-10,12],[cx+3,4],[cx+17,27],[cx+12,31],[cx+7,19],[cx-6,19],[cx-13,31]],cloth,.8);

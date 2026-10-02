@@ -309,23 +309,49 @@ fn main() {
             let p = home.point(-side * 0.8, 1.45, -home.half[1] + 1.6);
             let (yaw, pitch) = look(p, home.point(side * home.half[0], 1.9, 0.));
             scenes.push(("window-light", p, yaw, pitch, 7.6));
-            let atlas = fantasy_land::people_sprites::generate();
-            let mut sheet = vec![0u8; 512 * 256 * 4];
-            for role in 0..16usize {
-                for y in 0..64usize {
-                    for x in 0..32usize {
-                        let src = ((role * 128 * 256) + y * 128 + x) * 4;
-                        let dst = (((role / 8) * 64 + y) * 2 * 512 + (role % 8) * 64 + x * 2) * 4;
-                        sheet[dst..dst + 4].copy_from_slice(&atlas[src..src + 4]);
-                        sheet[dst + 4..dst + 8].copy_from_slice(&atlas[src..src + 4]);
-                        sheet[dst + 512 * 4..dst + 512 * 4 + 4]
-                            .copy_from_slice(&atlas[src..src + 4]);
-                        sheet[dst + 512 * 4 + 4..dst + 512 * 4 + 8]
-                            .copy_from_slice(&atlas[src..src + 4]);
+            let p = inn.point(0., 1.67, -inn.half[1] + 2.3);
+            let (yaw, pitch) = look(p, inn.point(-inn.half[0] + 1.5, 1.25, -inn.half[1] + 3.2));
+            scenes.push(("tavern-bar", p, yaw, pitch, 20.));
+            let p = inn.point(-0.2, 1.67, 0.0);
+            let (yaw, pitch) = look(p, inn.point(inn.half[0] - 1.6, 0.85, -inn.half[1] + 2.5));
+            scenes.push(("tavern-table", p, yaw, pitch, 20.));
+            for (usage, name) in [
+                (Use::Arcane, "arcanist-study"),
+                (Use::Smithy, "smithy"),
+                (Use::Temple, "temple"),
+                (Use::Home, "home-evening"),
+            ] {
+                if let Some(b) = l.buildings.iter().find(|b| b.usage == usage) {
+                    let p = b.point(0., 1.62, -b.half[1] + 1.0);
+                    let (yaw, pitch) = look(p, b.point(-0.5, 1.1, 0.));
+                    scenes.push((name, p, yaw, pitch, 19.5));
+                }
+            }
+            let (fw, fh) = (
+                fantasy_land::people_sprites::FRAME_W,
+                fantasy_land::people_sprites::FRAME_H,
+            );
+            let (sw, sh) = (fw * 16, fh * 4);
+            let mut sheet = vec![0u8; sw * sh * 4];
+            for variant in 0..4 {
+                for role in 0..16 {
+                    let plate =
+                        fantasy_land::people_sprites::preview(role as u32, variant as u32, 0, 0);
+                    for y in 0..fh {
+                        for x in 0..fw {
+                            let src = (y * fw + x) * 4;
+                            let dst = ((variant * fh + y) * sw + role * fw + x) * 4;
+                            sheet[dst..dst + 4].copy_from_slice(&plate[src..src + 4]);
+                        }
                     }
                 }
             }
-            save_png(&format!("{dir}/citizen-sprites.png"), 512, 256, &sheet);
+            save_png(
+                &format!("{dir}/citizen-sprites.png"),
+                sw as u32,
+                sh as u32,
+                &sheet,
+            );
         }
         for (name, p, yaw, pitch, hour) in scenes {
             let eye = glam::Vec3::from_array(p);

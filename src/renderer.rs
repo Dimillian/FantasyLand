@@ -1766,14 +1766,21 @@ impl Renderer {
         let mut lights: Vec<_> = layouts
             .iter()
             .flat_map(|l| l.buildings.iter())
-            .flat_map(|b| std::iter::once(b.hearth()).chain(b.torch()))
+            .flat_map(|b| b.lights())
             .collect();
         lights.extend(geometry::campfire_emitters(world, eye.x, eye.z, 70.));
-        lights.sort_by(|a, b| {
-            Vec3::from_slice(a)
-                .distance_squared(eye)
-                .total_cmp(&Vec3::from_slice(b).distance_squared(eye))
-        });
+        // Retain the containing room's fixtures before nearby lights behind
+        // opaque walls. The existing eight-light GPU budget stays fixed.
+        let containing = buildings.iter().find(|b| b.inside(eye.x, eye.z, 0.));
+        let light_score = |p: &[f32; 4]| {
+            Vec3::from_slice(p).distance_squared(eye)
+                - if containing.is_some_and(|b| b.inside(p[0], p[2], 0.)) {
+                    10000.
+                } else {
+                    0.
+                }
+        };
+        lights.sort_by(|a, b| light_score(a).total_cmp(&light_score(b)));
         self.hearths = [[0.; 4]; 8];
         self.hearth_rooms = [[-1.; 4]; 2];
         for (i, (target, source)) in self.hearths.iter_mut().zip(lights).enumerate() {

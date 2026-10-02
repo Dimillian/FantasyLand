@@ -11,6 +11,7 @@ pub mod geometry;
 mod gpu_profile;
 pub mod habitat;
 mod horizon;
+pub mod interior_design;
 pub mod journeys;
 pub mod materials;
 pub mod meadow;
@@ -423,6 +424,59 @@ impl Game {
             self.teleport(l.entry.site.x, l.entry.site.z);
             self.face(0., 0.);
         }
+    }
+    /// Art review visits actual procedural rooms in the current seeded world.
+    pub fn visit_interior(&mut self, kind: &str) -> String {
+        use settlements::{Kind, Use};
+        let usage = match kind {
+            "inn" | "bedroom" => Use::Inn,
+            "home" => Use::Home,
+            "arcane" => Use::Arcane,
+            "smithy" => Use::Smithy,
+            "temple" => Use::Temple,
+            _ => return String::new(),
+        };
+        let origin = [self.player.position.x, self.player.position.z];
+        let mut entries: Vec<_> = self
+            .world
+            .settlements
+            .entries
+            .iter()
+            .filter(|e| e.kind == Kind::City)
+            .collect();
+        entries.sort_by(|a, b| {
+            settlements::dist(origin, [a.site.x, a.site.z])
+                .total_cmp(&settlements::dist(origin, [b.site.x, b.site.z]))
+        });
+        let ids: Vec<_> = entries.into_iter().take(6).map(|e| e.site.id).collect();
+        for id in ids {
+            if let Some(l) = self.world.settlements.layout(&self.world, id) {
+                if let Some(b) = l.buildings.iter().find(|b| b.usage == usage) {
+                    let p = if kind == "bedroom" {
+                        b.point(0., 0., b.half[1] * 0.48)
+                    } else {
+                        b.point(0., 0., -b.half[1] + 2.3)
+                    };
+                    let target = if kind == "bedroom" {
+                        b.point(b.half[0] - 1.1, 0.8, b.half[1] - 1.2)
+                    } else if kind == "inn" {
+                        b.point(-b.half[0] + 1.5, 1.25, -b.half[1] + 3.2)
+                    } else {
+                        b.point(-1.4, 1.3, -b.half[1] + 3.7)
+                    };
+                    let name = b.name.clone();
+                    self.teleport(p[0], p[2]);
+                    let direction = glam::Vec3::from_array(target) - self.player.eye();
+                    self.face(
+                        direction.x.atan2(-direction.z),
+                        (direction.y / direction.length()).asin(),
+                    );
+                    self.set_time(if kind == "home" { 17.5 } else { 20.0 });
+                    return name;
+                }
+            }
+        }
+        String::new()
     }
     pub fn settlement_inspect(&self, id: u32) -> JsValue {
         serde_wasm_bindgen::to_value(&self.world.settlements.layout(&self.world, id).as_deref())

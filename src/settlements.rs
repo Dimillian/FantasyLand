@@ -164,6 +164,34 @@ impl Building {
     pub fn hearth_z(&self) -> f32 {
         self.partition().map_or(self.half[1] - 0.8, |p| p - 1.45)
     }
+    /// Shared hanging fixture position, safely above the central walking route.
+    pub fn lamp_local(&self) -> [f32; 3] {
+        [0., (self.height - 0.65).min(3.4), -self.half[1] * 0.38]
+    }
+    pub fn lamps(&self) -> Vec<[f32; 4]> {
+        if matches!(self.usage, Use::Tent | Use::Stable | Use::Market) {
+            return vec![];
+        }
+        let q = self.lamp_local();
+        let p = self.point(q[0], q[1] + 0.08, q[2]);
+        let mut lights = vec![[p[0], p[1], p[2], 6.0]];
+        if self.partition().is_some() {
+            for side in [-1., 1.] {
+                let p = self.point(side * (self.half[0] - 2.24), 0.90, self.half[1] - 0.7);
+                lights.push([p[0], p[1], p[2], 3.0]);
+            }
+        }
+        lights
+    }
+    pub fn lights(&self) -> Vec<[f32; 4]> {
+        if matches!(self.usage, Use::Stable | Use::Market) {
+            return vec![];
+        }
+        let mut lights = vec![self.hearth()];
+        lights.extend(self.torch());
+        lights.extend(self.lamps());
+        lights
+    }
     pub fn torch(&self) -> Option<[f32; 4]> {
         if !matches!(
             self.usage,

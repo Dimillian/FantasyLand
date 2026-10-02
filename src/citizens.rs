@@ -261,8 +261,16 @@ fn identity(l: &Layout, home: usize, ordinal: usize, role: u8, work: usize) -> P
         .into(),
         household: family.into(),
         appearance: Appearance {
-            body: (seed % 2) as u8,
-            hair: (seed / 7 % 8) as u8,
+            body: if 20 + seed % 47 > 52 {
+                3
+            } else {
+                (seed % 3) as u8
+            },
+            hair: if 20 + seed % 47 > 52 {
+                4 + (seed % 2) as u8 * 2
+            } else {
+                (seed / 7 % 8) as u8
+            },
             skin: (seed / 17 % 5) as u8,
             garment: role,
             equipment: role,
@@ -271,7 +279,56 @@ fn identity(l: &Layout, home: usize, ordinal: usize, role: u8, work: usize) -> P
         },
     }
 }
+/// Reusable clear standing positions. Each spur is visible from the room's
+/// navigation anchor and checked against the same solid recipe as the player.
+fn room_activity_spots(l: &Layout) -> HashMap<usize, Vec<[f32; 3]>> {
+    let mut out = HashMap::new();
+    for b in &l.buildings {
+        let anchor = l.nodes[b.room_node];
+        let a = b.local(anchor[0], anchor[2]);
+        let mut obstacles = Vec::new();
+        settlement_mesh::interior_parts(b, |lo, hi, _, _, solid| {
+            if solid && lo[1] < 1.8 && hi[1] > 0. {
+                obstacles.push((
+                    [(lo[0] + hi[0]) * 0.5, (lo[2] + hi[2]) * 0.5],
+                    [(hi[0] - lo[0]) * 0.5 + 0.25, (hi[2] - lo[2]) * 0.5 + 0.25],
+                ));
+            }
+        });
+        let mut spots = Vec::new();
+        for iz in 0..((b.half[1] * 2. / 0.82) as i32) {
+            for ix in -6..=6 {
+                let q = [ix as f32 * 0.82, -b.half[1] + 1.75 + iz as f32 * 0.82];
+                if q[0].abs() < 0.72 || q[0].abs() > b.half[0] - 0.7 || q[1] > b.half[1] - 0.7 {
+                    continue;
+                }
+                if obstacles.iter().any(|(c, h)| {
+                    crate::settlements::segment_rect(
+                        [a[0] - c[0], a[1] - c[1]],
+                        [q[0] - c[0], q[1] - c[1]],
+                        *h,
+                    )
+                }) {
+                    continue;
+                }
+                spots.push((hash(b.id, ix, iz), b.point(q[0], 0., q[1])));
+            }
+        }
+        spots.sort_by_key(|v| v.0);
+        out.insert(
+            b.room_node,
+            if spots.is_empty() {
+                vec![anchor]
+            } else {
+                spots.into_iter().map(|p| p.1).collect()
+            },
+        );
+    }
+    out
+}
 fn community(l: Rc<Layout>) -> Community {
+    let room_spots = room_activity_spots(&l);
+    let mut room_occupancy: HashMap<usize, usize> = HashMap::new();
     let services: Vec<_> = l
         .buildings
         .iter()
@@ -376,14 +433,44 @@ fn community(l: Rc<Layout>) -> Community {
             let mut walk = l.path(work_node, nearest_street);
             let back = l.path(nearest_street, work_node);
             walk.extend(back.into_iter().skip(1));
-            let spread = |mut points: Vec<[f32; 3]>| {
-                for p in &mut points {
-                    if anchors.iter().any(|&n| *p == l.nodes[n]) {
-                        p[0] += (seed % 5) as f32 * 0.22 - 0.44;
-                        p[2] += (seed / 5 % 5) as f32 * 0.22 - 0.44;
+            let mut assigned = HashMap::new();
+            for &node in &anchors {
+                if assigned.contains_key(&node) {
+                    continue;
+                }
+                if let Some(spots) = room_spots.get(&node) {
+                    let used = room_occupancy.entry(node).or_default();
+                    assigned.insert(node, spots[*used % spots.len()]);
+                    *used += 1;
+                }
+            }
+            let spread = |points: Vec<[f32; 3]>| {
+                let last = points.len().saturating_sub(1);
+                let mut out = Vec::with_capacity(points.len() + 2);
+                for (i, mut p) in points.into_iter().enumerate() {
+                    let room = assigned
+                        .iter()
+                        .find(|(n, _)| l.nodes[**n] == p)
+                        .map(|(_, p)| *p);
+                    if let Some(spot) = room {
+                        if i == 0 {
+                            out.push(spot);
+                        }
+                        if last > 0 {
+                            out.push(p);
+                        }
+                        if i == last && i != 0 {
+                            out.push(spot);
+                        }
+                    } else {
+                        if anchors.iter().any(|&n| p == l.nodes[n]) {
+                            p[0] += (seed % 5) as f32 * 0.22 - 0.44;
+                            p[2] += (seed / 5 % 5) as f32 * 0.22 - 0.44;
+                        }
+                        out.push(p);
                     }
                 }
-                points
+                out
             };
             let wander = Route::new(spread(walk));
             let routes = std::array::from_fn(|i| {
@@ -576,7 +663,7 @@ impl Life {
                 });
                 let destination = destinations[if phase < route.length { 1 } else { 0 }].clone();
                 let seed = hash(road.id as u32, n, 831);
-                let person=Person{id:1_000_000_000+road.id*4+n as u64,name:format!("{} {}",choose(seed,&["Mara","Bram","Edric","Lena","Oren","Sera"]),choose(seed/7,&["Wayfarer","Reed","Hale","Finch","Dane"])),age:23+seed%39,role:if n==0{13}else{12},home:0,work:0,home_name:"a travelling camp".into(),work_name:"the caravan".into(),birthplace:"the border country".into(),trait_name:"watchful".into(),history:"I travel with this small company. We take provisions and letters between the towns.".into(),household:"travellers".into(),appearance:Appearance{body:(seed%2) as u8,hair:(seed%8) as u8,skin:(seed%5) as u8,garment:13,equipment:13,palette:[0.42,0.31,0.19],height:1.8}};
+                let person=Person{id:1_000_000_000+road.id*4+n as u64,name:format!("{} {}",choose(seed,&["Mara","Bram","Edric","Lena","Oren","Sera"]),choose(seed/7,&["Wayfarer","Reed","Hale","Finch","Dane"])),age:23+seed%39,role:if n==0{13}else{12},home:0,work:0,home_name:"a travelling camp".into(),work_name:"the caravan".into(),birthplace:"the border country".into(),trait_name:"watchful".into(),history:"I travel with this small company. We take provisions and letters between the towns.".into(),household:"travellers".into(),appearance:Appearance{body:(seed%4) as u8,hair:(seed%8) as u8,skin:(seed%5) as u8,garment:13,equipment:13,palette:[0.42,0.31,0.19],height:1.8}};
                 self.actors.push(Actor {
                     person,
                     position: p,
@@ -639,7 +726,7 @@ impl Life {
                 position[2] -= a.yaw.cos() * self.pose_elapsed * 1.25;
             }
             let h = a.person.appearance.height;
-            let width = h * (0.48 + a.person.appearance.body as f32 * 0.04);
+            let width = h * 0.52;
             let view = (eye[0] - a.position[0]).atan2(-(eye[2] - a.position[2]));
             let dir =
                 (((view - a.yaw + PI * 0.25).rem_euclid(TAU) / (PI * 0.5)).floor() as u32) % 4;
@@ -652,7 +739,8 @@ impl Life {
                 + dir * 16
                 + frame * 64
                 + a.person.appearance.skin as u32 * 256
-                + a.person.appearance.hair as u32 * 2048;
+                + a.person.appearance.hair as u32 * 2048
+                + a.person.appearance.body as u32 * 16384;
             let start = mesh.vertices.len() as u32;
             for (x, y, uv) in [
                 (-0.5, 0., [0., 1.]),
@@ -663,7 +751,7 @@ impl Life {
                 mesh.vertices.push(Vertex {
                     position: [
                         position[0] + right[0] * x * width,
-                        position[1] + y * h,
+                        position[1] + (y * 96.0 - 4.0) / 92.0 * h,
                         position[2] + right[1] * x * width,
                     ],
                     normal: [-yaw.sin(), 0.12, yaw.cos()],
@@ -834,6 +922,23 @@ mod tests {
             })
             .unwrap();
         let l = world.settlements.layout(&world, e.site.id).unwrap();
+        let spots = room_activity_spots(&l);
+        for building in &l.buildings {
+            let points = &spots[&building.room_node];
+            if building.usage == Use::Inn {
+                assert!(
+                    points.len() >= 6,
+                    "inn must have distinct activity positions"
+                );
+            }
+            for p in points {
+                assert!(
+                    !settlement_mesh::blocked(&world, p[0], building.floor + 0.01, p[2]),
+                    "resident standing in furniture in {}",
+                    building.name
+                );
+            }
+        }
         let eye = [e.site.x, world.height(e.site.x, e.site.z) + 1.7, e.site.z];
         let mut a = Life::new();
         a.update(&world, eye, 0.1);

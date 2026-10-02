@@ -4,7 +4,7 @@
 //! Every layer tiles except the five alpha-cutout plant illustrations.
 
 pub const SIZE: u32 = 128;
-pub const LAYERS: u32 = 23;
+pub const LAYERS: u32 = 28;
 pub const LEVELS: u32 = 8;
 pub const ALPHA_CUTOFF: f32 = 0.4;
 /// Empty top corners removed from conifer cards; shared with the mask guard.
@@ -324,6 +324,104 @@ fn opaque(layer: usize, x: usize, y: usize) -> Pixel {
                 0.65 + broad * 0.14 + grain * 0.025,
                 0.42 + ripple * 0.035,
                 0.20 + broad * 0.08,
+            )
+        }
+        23 => {
+            // Broad irregular flagstones; worn bevels and fine joints.
+            let row = (v * 4.).floor();
+            let xx = u * 3. + (row % 2.) * 0.5;
+            let fx = xx.fract();
+            let fy = (v * 4.).fract();
+            let edge = fx.min(1. - fx).min(fy.min(1. - fy));
+            let tile = hash(xx.floor() as i32, row as i32, 329);
+            let joint = edge < 0.025;
+            (
+                if joint {
+                    0.28
+                } else {
+                    0.64 + tile * 0.17 + medium * 0.035 + grain * 0.025 - edge.min(0.08) * 0.25
+                },
+                if joint {
+                    0.05
+                } else {
+                    0.3 + edge.min(0.10) * 1.6
+                },
+                0.90,
+            )
+        }
+        24 => {
+            // Woven medallion runner: borders, nested diamonds and tiny stitches.
+            let x = (u - 0.5).abs();
+            let y = (v - 0.5).abs();
+            let diamond = x * 1.1 + y * 0.85;
+            let border = x > 0.42 || y > 0.45;
+            let stitch = ((u * 32.).floor() + (v * 32.).floor()) % 2.;
+            let ornament = (diamond * 15.).fract() < 0.18;
+            (
+                if border {
+                    0.80 - stitch * 0.18
+                } else if ornament {
+                    0.92
+                } else {
+                    0.45 + grain * 0.04
+                },
+                0.16 + grain * 0.04,
+                0.97,
+            )
+        }
+        25 => {
+            // Recessed oak panels with raised rails and carved inner mouldings.
+            let x = (u * 3.).fract();
+            let y = (v * 2.).fract();
+            let e = x.min(1. - x).min(y.min(1. - y));
+            let rail = e < 0.045;
+            let recess = (e - 0.07).abs() < 0.025;
+            let grainline = ((v * 38. + broad * 0.65) * tau).sin();
+            (
+                if rail {
+                    0.72
+                } else if recess {
+                    0.32
+                } else {
+                    0.56 + grainline * 0.035 + grain * 0.025
+                },
+                if rail {
+                    0.60
+                } else if recess {
+                    0.13
+                } else {
+                    0.30
+                },
+                0.79,
+            )
+        }
+        26 => {
+            // Glazed slipware, faint throwing rings and a darker foot.
+            let rings = (v * 24. * tau).sin();
+            (
+                0.78 + broad * 0.08 + rings * 0.025 + grain * 0.012,
+                0.28 + rings * 0.009,
+                0.28 + medium * 0.09,
+            )
+        }
+        27 => {
+            // Original heraldic textile: lozenge, branching tree and woven frame.
+            let x = (u - 0.5).abs();
+            let y = (v - 0.5).abs();
+            let diamond = (x + y - 0.30).abs() < 0.025;
+            let trunk = x < 0.027 && v > 0.24 && v < 0.76;
+            let branch = (x - (0.72 - v) * 0.6).abs() < 0.023 && v > 0.27 && v < 0.69;
+            let border = x > 0.43 || y > 0.46;
+            (
+                if diamond || trunk || branch {
+                    0.94
+                } else if border {
+                    0.77
+                } else {
+                    0.37 + grain * 0.05
+                },
+                0.18 + grain * 0.025,
+                0.96,
             )
         }
         _ => unreachable!(),
@@ -760,7 +858,7 @@ impl MaterialPixels {
     }
 }
 
-/// GPU array textures are less than 3.84 MiB including every mip. They are built
+/// GPU array textures are less than 4.67 MiB including every mip. They are built
 /// once at renderer initialization and sampled by all streaming chunks.
 pub struct MaterialLibrary {
     pub layout: wgpu::BindGroupLayout,
@@ -946,8 +1044,8 @@ mod tests {
             );
             assert_eq!(first.surface[level].len(), first.albedo[level].len());
         }
-        // Twenty-three 128px albedo/surface layers, including architectural variants.
-        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 4_100_000);
+        // Twenty-eight 128px albedo/surface layers, including architectural variants.
+        assert!(first.albedo.iter().map(Vec::len).sum::<usize>() * 2 < 4_900_000);
     }
 
     #[test]

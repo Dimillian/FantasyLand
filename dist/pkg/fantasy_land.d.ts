@@ -44,6 +44,10 @@ export class Game {
     state(): any;
     teleport(x: number, z: number): void;
     tick(dt: number, forward: number, strafe: number, sprint: boolean, jump: boolean): void;
+    /**
+     * Art review visits actual procedural rooms in the current seeded world.
+     */
+    visit_interior(kind: string): string;
     visit_settlement(id: number): void;
     walking_journeys(): any;
     world_size(): number;
@@ -109,6 +113,7 @@ export interface InitOutput {
     readonly game_state: (a: number) => any;
     readonly game_teleport: (a: number, b: number, c: number) => void;
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly game_visit_interior: (a: number, b: number, c: number) => [number, number];
     readonly game_visit_settlement: (a: number, b: number) => void;
     readonly game_walking_journeys: (a: number) => any;
     readonly game_world_size: (a: number) => number;
@@ -121,7 +126,7 @@ export interface InitOutput {
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__51: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__52: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

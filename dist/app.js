@@ -1,4 +1,4 @@
-import { paintPortrait } from './portrait.js?v=codex-ui-1';
+import { paintPortrait } from './portrait.js?v=interior-rethink-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
@@ -758,7 +758,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=settlement-art-2',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=interior-rethink-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
@@ -856,8 +856,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlement-art-2');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=settlement-art-2', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=interior-rethink-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=interior-rethink-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -877,7 +877,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'settlement-art-2' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'interior-rethink-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -1407,6 +1407,13 @@ $('benchmark-aa').addEventListener('click',()=>beginBenchmark(false,true));
 $('benchmark-walk').addEventListener('click',()=>beginBenchmark(true));
 $('study-form').addEventListener('submit',event=>{
   event.preventDefault(); if(!game || benchmark)return;
+  const choice=$('study-select').value;
+  if(choice.startsWith('interior:')) {
+    const name=game.visit_interior(choice.slice(9));
+    if(!name){toast('No matching room found nearby.');return;}
+    activeJourney=null;closeModal();clearMovement();state=game.state();saveProgress();
+    toast(`${name} · walk around, or press E to talk`);return;
+  }
   if(seed!==1337){toast('These studies use seed 1337. Landscape travel works with every seed.');return;}
   const studies={meadow:[-57269,20719,0,-.20,9], 'meadow-dawn':[-57269,20719,1.7,-.10,6.5], 'meadow-dusk':[-57269,20719,1.7,-.10,17.25],hearth:[-16211.261,-12684.719,-1.4056476,-.08339161,22],forest:[-10879,58547,1.4,.08,7.5],lake:[-8909.148,-77660.938,-.2618,-.0438,9.3],moon:[-8909.148,-77660.938,-.2618,.12,23],stone:[23512.3,63468.41,-1.9067289,.27,16]};
   const v=studies[$('study-select').value]; if(!v)return;

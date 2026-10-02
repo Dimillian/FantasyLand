@@ -1,4 +1,4 @@
-// Immutable procedural material library: 23 layers, shared by every chunk.
+// Immutable procedural material library: 28 layers, shared by every chunk.
 @group(3) @binding(0) var material_color: texture_2d_array<f32>;
 @group(3) @binding(1) var material_surface: texture_2d_array<f32>;
 @group(3) @binding(2) var material_sampler: sampler;
@@ -8,13 +8,13 @@ struct PixelMaterial { pigment:vec3<f32>, normal:vec3<f32>, roughness:f32, metal
 fn pixel_material(v:VertexOut, footprint:f32,grad:SurfaceGrad, distance:f32) -> PixelMaterial {
     if v.texture >= 1000.0 {
         let code=u32(v.texture-1000.0+0.1);let role=code%16u;let direction=(code/16u)%4u;let frame=(code/64u)%4u;
-        let texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(32.0,64.0))+vec2<u32>(direction*32u,frame*64u));
-        let pixel=textureLoad(human_sprites,texel,i32(role),0);if pixel.a<0.4{discard;}
+        let texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(48.0,96.0))+vec2<u32>(direction*48u,frame*96u));
+        let pixel=textureLoad(human_sprites,texel,i32(role+((code/16384u)%4u)*16u),0);if pixel.g<0.04{discard;}
         let slot=u32(round(pixel.g*255.0/24.0));
         let skins=array<vec3<f32>,5>(vec3<f32>(0.82,0.62,0.43),vec3<f32>(0.65,0.43,0.27),vec3<f32>(0.43,0.27,0.18),vec3<f32>(0.87,0.69,0.52),vec3<f32>(0.56,0.36,0.22));
         let hairs=array<vec3<f32>,8>(vec3<f32>(0.14,0.09,0.055),vec3<f32>(0.35,0.20,0.10),vec3<f32>(0.63,0.45,0.22),vec3<f32>(0.44,0.19,0.07),vec3<f32>(0.61,0.60,0.53),vec3<f32>(0.20,0.16,0.13),vec3<f32>(0.75,0.70,0.58),vec3<f32>(0.32,0.29,0.25));
         var pigment=v.color;switch slot {case 1u:{pigment=skins[(code/256u)%8u%5u];}case 2u:{pigment=hairs[(code/2048u)%8u];}case 4u:{pigment=v.color*0.56;}case 5u:{pigment=vec3<f32>(0.30,0.18,0.095);}case 6u:{pigment=vec3<f32>(0.53,0.57,0.58);}case 7u:{pigment=vec3<f32>(0.79,0.74,0.59);}case 8u:{pigment=vec3<f32>(0.69,0.48,0.17);}default:{}}
-        return PixelMaterial(pigment*(pixel.r*0.90+0.22),normalize(v.normal),select(0.83,0.34,slot==6u),select(0.0,0.65,slot==6u),0.0,1.0);
+        return PixelMaterial(pigment*(pixel.r*0.98+0.12),normalize(v.normal),select(0.83,0.34,slot==6u),select(0.0,0.65,slot==6u),0.0,1.0);
     }
     // Tree crowns share two tiny illustrations. Do the alpha test before any
     // terrain projection or material work; distant leaves need only albedo.

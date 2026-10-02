@@ -58,6 +58,7 @@ function filterHarness(snapshot, destinations = []) {
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
   const engine = {end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},
+    visit_interior:kind=>{rendererEvents.push(['interior',kind]);playerState.x=321;playerState.z=654;return 'The Copper Lantern';},
     // Keep these separate: existing renderer boot-order assertions stay strict.
     set_weather_mode:value=>{weatherCalls.push(['mode',value]);},
     set_weather_speed:value=>{weatherCalls.push(['speed',value]);},
@@ -82,9 +83,18 @@ function filterHarness(snapshot, destinations = []) {
   };
   let readyFrames = 0;
   const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
-  const bootSource = source.replace("const { default: init, Game } = await import('./pkg/fantasy_land.js?v=settlement-art-2');", 'const { default: init, Game } = fakeModule;');
+  const bootSource = source.replace(/await import\('\.\/pkg\/fantasy_land\.js(?:\?[^']*)?'\)/, 'fakeModule');
   vm.runInContext(bootSource,filterContext);
   return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+}
+
+async function verifyInteriorTours() {
+  const h=filterHarness({seed:42,x:12,z:34});await h.run('boot()');h.run('initialReady=true;');
+  h.ids['study-select'].value='interior:inn';h.ids['study-form'].fire('submit');
+  assert.deepEqual(h.rendererEvents.filter(e=>e[0]==='interior'),[['interior','inn']]);
+  assert.equal(h.saved().x,321);assert.equal(h.saved().z,654);
+  assert.equal(h.run('modal'),null);
+  console.log('PASS: interior tours use the active world seed, visit the engine room and save the new position.');
 }
 
 async function verifyFilterSettings() {
@@ -491,6 +501,7 @@ async function main(){
   console.log('PASS: E conversation focus, factual topic response, Escape resumes life, and door interaction stays in the world.');
 
   verifyAtlasRoutes();
+  await verifyInteriorTours();
   await verifyFilterSettings();
   await verifyResolutionSettings();
   await verifyRemovedFilterMigration();
