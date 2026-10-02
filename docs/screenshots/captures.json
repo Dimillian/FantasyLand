@@ -1,0 +1,74 @@
+{
+  "capturedOn": "2026-10-02",
+  "engineCommit": "2b60e38",
+  "seed": 1337,
+  "outputPixels": [
+    1280,
+    720
+  ],
+  "processing": "None; copied directly from native engine PNG output.",
+  "shots": [
+    {
+      "file": "amberwood-morning.png",
+      "mode": "shot",
+      "camera": [
+        -10879,
+        58547,
+        1.4,
+        0.08,
+        7.5
+      ],
+      "weatherMode": 1,
+      "weatherWarmupSeconds": 30
+    },
+    {
+      "file": "meadowlands.png",
+      "mode": "shot",
+      "camera": [
+        87851,
+        55519,
+        1.1780972,
+        -0.035,
+        9.5
+      ],
+      "weatherMode": 1,
+      "weatherWarmupSeconds": 30
+    },
+    {
+      "file": "aster-and-vey.png",
+      "mode": "shot",
+      "camera": [
+        30438.885,
+        105463.4,
+        2.493867,
+        0.36,
+        19.4
+      ],
+      "weatherMode": 1,
+      "weatherWarmupSeconds": 30
+    },
+    {
+      "file": "sunstone-evening.png",
+      "mode": "shot",
+      "camera": [
+        23512.3,
+        63468.41,
+        -1.9067289,
+        0.27,
+        16
+      ],
+      "weatherMode": 1,
+      "weatherWarmupSeconds": 30
+    },
+    {
+      "file": "capital.png",
+      "mode": "settlement-art",
+      "scene": "capital"
+    },
+    {
+      "file": "inn-night.png",
+      "mode": "settlement-art",
+      "scene": "inn-night"
+    }
+  ]
+}

@@ -65,8 +65,12 @@ assert.ok(lake.outlet.every(Number.isFinite) && lake.area_km2 > 0);
 console.log('WASM regional checks passed: landscape fields, retained lake surface, outlet metadata, shadow control.');
 
 const destinations = inspect_landscapes(1337);
-assert.equal(destinations.length, 7, 'landscape tour finds all seven generated families');
-assert.equal(new Set(destinations.map(d => d.name)).size, 7);
+const landscapeFamilies = ['Ancient woodland', 'Granite highlands', 'Windswept coast', 'Wet lowlands', 'Sandstone country', 'Meadowlands', 'Alpine heights'];
+const destinationNames = new Set(destinations.map(d => d.name));
+for (const family of landscapeFamilies) {
+  assert.ok(destinationNames.has(family), `landscape tour includes ${family} alongside biome and forest destinations`);
+}
+assert.equal(destinationNames.size, destinations.length, 'tour destinations have distinct names');
 assert.ok(destinations.every(d => Number.isFinite(d.x) && Number.isFinite(d.z) && Number.isFinite(d.yaw) && Number.isFinite(d.pitch)));
 assert.equal(typeof Game.prototype.face, 'function');
-console.log('WASM landscape tour passed: seven distinct finite destinations.');
+console.log(`WASM landscape tour passed: all seven landscape families within ${destinations.length} distinct finite destinations.`);
