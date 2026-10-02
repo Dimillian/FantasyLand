@@ -3,7 +3,7 @@ use crate::{
     geometry::{self, MeshData, CHUNK_SIZE},
     horizon::{self, PATCH_SIZE},
     postprocess::PostProcess,
-    shadow::{ShadowMap, SHADOW_RADIUS, SHADOW_SIZE},
+    shadow::{ShadowMap, SHADOW_RADIUS},
     water_sim::WaterSim,
     world::World,
 };
@@ -47,6 +47,7 @@ struct Globals {
     rooms_b: [[f32; 4]; 12],
     rooms_c: [[f32; 4]; 12],
     hearth_rooms: [[f32; 4]; 2],
+    ao_params: [f32; 4],
 }
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -134,6 +135,15 @@ impl ReflectionTarget {
     }
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GiRequest {
+    pub ticket: u32,
+    pub origin: [f32; 3],
+    pub door_ids: Vec<u32>,
+    pub door_angles: Vec<f32>,
+}
+
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -141,6 +151,8 @@ pub struct Renderer {
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
     world_pipeline: wgpu::RenderPipeline,
+    world_reflection_pipeline: wgpu::RenderPipeline,
+    world_ao_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     glass_pipeline: wgpu::RenderPipeline,
     glass: Option<GpuMesh>,
@@ -154,6 +166,19 @@ pub struct Renderer {
     gpu_profile: crate::gpu_profile::GpuProfile,
     rays: crate::rays::Rays,
     shadow: ShadowMap,
+    cascades: crate::shadow::CascadedShadows,
+    ao: crate::ao::AmbientOcclusion,
+    ao_depth: wgpu::Texture,
+    ao_depth_view: wgpu::TextureView,
+    ao_depth_pipeline: wgpu::RenderPipeline,
+    gi_screen: crate::gi_screen::GiScreen,
+    lighting_mode: u32,
+    gi: crate::gi::GiGpu,
+    gi_requested: Option<crate::gi::VolumeKey>,
+    gi_ticket: u32,
+    gi_request: Option<GiRequest>,
+    gi_doors: Vec<(u32, f32)>,
+    gi_proxy_cache: crate::gi::ProxyCache,
     shadows_enabled: bool,
     shelter: ShadowMap,
     shelter_origin: Vec3,
@@ -316,29 +341,45 @@ impl Renderer {
         if let Some(s) = &surface {
             s.configure(&device, &config);
         }
+        let scene_shader_source = concat!(
+            include_str!("world.wgsl"),
+            "\n",
+            include_str!("cover.wgsl"),
+            "\n",
+            include_str!("lighting.wgsl"),
+            "\n",
+            include_str!("environment.wgsl"),
+            "\n",
+            include_str!("water_sampling.wgsl"),
+            "\n",
+            include_str!("materials.wgsl"),
+            "\n",
+            include_str!("fire_lighting.wgsl"),
+            "\n",
+            include_str!("interiors.wgsl"),
+            "\n",
+            include_str!("room_probe.wgsl"),
+            "\n",
+            include_str!("gi_common.wgsl"),
+            "\n",
+            include_str!("gi_sampling.wgsl")
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain, atmosphere and materials"),
+            source: wgpu::ShaderSource::Wgsl(scene_shader_source.into()),
+        });
+        // Separate constant source variants avoid carrying probe-ray lookup
+        // into the main foliage shader. Some native backends fail to specialize
+        // unrelated water functions through pipeline override constants.
+        let reflected_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Reflected landscape with direct GI probes"),
             source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    include_str!("world.wgsl"),
-                    "\n",
-                    include_str!("cover.wgsl"),
-                    "\n",
-                    include_str!("lighting.wgsl"),
-                    "\n",
-                    include_str!("environment.wgsl"),
-                    "\n",
-                    include_str!("water_sampling.wgsl"),
-                    "\n",
-                    include_str!("materials.wgsl"),
-                    "\n",
-                    include_str!("fire_lighting.wgsl"),
-                    "\n",
-                    include_str!("interiors.wgsl"),
-                    "\n",
-                    include_str!("room_probe.wgsl")
-                )
-                .into(),
+                scene_shader_source
+                    .replace(
+                        "const DIRECT_PROBES:bool=false;",
+                        "const DIRECT_PROBES:bool=true;",
+                    )
+                    .into(),
             ),
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -359,6 +400,25 @@ impl Renderer {
             entries: &[],
         });
         let shadow = ShadowMap::new(&device, &materials.layout, &empty_layout);
+        let cascades =
+            crate::shadow::CascadedShadows::new(&device, &materials.layout, &empty_layout);
+        let gi = crate::gi::GiGpu::new(&device);
+        let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1, 0);
+        let ao_depth = depth.clone();
+        let ao_depth_view = depth_view.clone();
+        let ao = crate::ao::AmbientOcclusion::new(
+            &device,
+            scene.width(),
+            scene.height(),
+            &ao_depth_view,
+        );
+        let gi_screen = crate::gi_screen::GiScreen::new(
+            &device,
+            scene.width(),
+            scene.height(),
+            &ao_depth_view,
+            &gi,
+        );
         let shelter = ShadowMap::with_size(&device, 512, &materials.layout, &empty_layout);
         let reflection = ReflectionTarget::new(&device, 320, 180);
         let refraction_size = scene_dimensions(
@@ -466,6 +526,76 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let uniform_group = Self::environment_group(
@@ -478,6 +608,10 @@ impl Renderer {
             &reflection_sampler,
             &refraction,
             &cloud_shadow.view,
+            &ao.output_view,
+            &gi,
+            &cascades,
+            &gi_screen,
         );
         let reflected_group = Self::environment_group(
             &device,
@@ -489,6 +623,10 @@ impl Renderer {
             &reflection_sampler,
             &refraction,
             &cloud_shadow.view,
+            &ao.output_view,
+            &gi,
+            &cascades,
+            &gi_screen,
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World"),
@@ -501,7 +639,12 @@ impl Renderer {
             push_constant_ranges: &[],
         });
         let attributes = crate::vertex::ATTRIBUTES;
-        let surface_pipeline = |entry, glass: bool| {
+        let surface_pipeline = |entry, glass: bool, equal: bool, direct_probes: bool| {
+            let shader = if direct_probes {
+                &reflected_shader
+            } else {
+                &shader
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Flat shaded wilderness"),
                 layout: Some(&pipeline_layout),
@@ -536,7 +679,11 @@ impl Renderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: !glass,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_compare: if equal {
+                        wgpu::CompareFunction::LessEqual
+                    } else {
+                        wgpu::CompareFunction::Less
+                    },
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -545,9 +692,23 @@ impl Renderer {
                 cache: None,
             })
         };
-        let world_pipeline = surface_pipeline("fs_land", false);
-        let water_pipeline = surface_pipeline("fs_water", false);
-        let glass_pipeline = surface_pipeline("fs_glass", true);
+        let ao_depth_pipeline = crate::ao::AmbientOcclusion::depth_pipeline(
+            &device,
+            &pipeline_layout,
+            &shader,
+            &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<crate::vertex::PackedVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attributes,
+            }],
+            "vs_main",
+            "fs_ao_depth",
+        );
+        let world_pipeline = surface_pipeline("fs_land", false, false, false);
+        let world_reflection_pipeline = surface_pipeline("fs_land", false, false, true);
+        let world_ao_pipeline = surface_pipeline("fs_land", false, true, false);
+        let water_pipeline = surface_pipeline("fs_water", false, false, false);
+        let glass_pipeline = surface_pipeline("fs_glass", true, false, false);
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Sky"),
             layout: Some(&pipeline_layout),
@@ -579,7 +740,7 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
-        let (scene, scene_view, depth, depth_view) = Self::targets(&device, width, height, 1, 0);
+
         let rays = crate::rays::Rays::new(
             &device,
             &depth_view,
@@ -644,6 +805,8 @@ impl Renderer {
             surface,
             config,
             world_pipeline,
+            world_reflection_pipeline,
+            world_ao_pipeline,
             water_pipeline,
             glass_pipeline,
             glass: None,
@@ -657,6 +820,19 @@ impl Renderer {
             gpu_profile,
             rays,
             shadow,
+            cascades,
+            ao,
+            ao_depth,
+            ao_depth_view,
+            ao_depth_pipeline,
+            gi_screen,
+            gi,
+            lighting_mode: 0,
+            gi_requested: None,
+            gi_ticket: 0,
+            gi_request: None,
+            gi_doors: Vec::new(),
+            gi_proxy_cache: Default::default(),
             shadows_enabled: true,
             shelter,
             shelter_origin: Vec3::ZERO,
@@ -732,6 +908,121 @@ impl Renderer {
             height,
         })
     }
+    fn resize_ao(&mut self) {
+        self.ao_depth = self.depth.clone();
+        self.ao_depth_view = self.depth_view.clone();
+        self.ao = crate::ao::AmbientOcclusion::new(
+            &self.device,
+            self.scene.width(),
+            self.scene.height(),
+            &self.ao_depth_view,
+        );
+        self.gi_screen = crate::gi_screen::GiScreen::new(
+            &self.device,
+            self.scene.width(),
+            self.scene.height(),
+            &self.ao_depth_view,
+            &self.gi,
+        );
+    }
+    pub fn set_lighting_mode(&mut self, mode: u32) {
+        self.reflection_valid = false;
+        self.lighting_mode = mode & 7;
+        if self.lighting_mode & 4 != 0 {
+            self.lighting_mode |= 1;
+        }
+        if self
+            .cascades
+            .set_enabled(&self.device, &mut self.shadow, mode & 2 != 0)
+        {
+            self.resize_reflections();
+            self.rays.set_cascade_shadow(
+                &self.device,
+                &self.depth_view,
+                &self.shadow.view,
+                &self.cascades.far.view,
+                &self.shadow.sampler,
+            );
+        }
+        self.gi_requested = None;
+        self.gi_request = None;
+        self.gi_ticket = self.gi_ticket.wrapping_add(1);
+    }
+    pub fn lighting_mode(&self) -> u32 {
+        self.lighting_mode
+    }
+    fn gi_active(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.lighting_mode & 4 != 0 && self.async_streaming
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.lighting_mode & 4 != 0
+        }
+    }
+    pub fn gi_ready_fraction(&self) -> f32 {
+        if self.gi_active() {
+            self.gi.ready_fraction()
+        } else {
+            0.0
+        }
+    }
+
+    pub fn lighting_bytes(&self) -> u64 {
+        self.ao.memory_bytes()
+            + self.gi.buffer_bytes()
+            + self.gi_screen.buffer_bytes()
+            + (self.shadow.size() as u64).pow(2) * 4
+            + (self.cascades.far.size() as u64).pow(2) * 4
+    }
+    pub fn next_gi_job(&mut self) -> Option<GiRequest> {
+        self.gi_request.take()
+    }
+    pub fn accept_gi_result(&mut self, ticket: u32, bytes: &[u8]) -> bool {
+        if ticket != self.gi_ticket || self.lighting_mode & 4 == 0 {
+            return true;
+        }
+        let Some(data) = crate::gi::decode_proxy(bytes) else {
+            return false;
+        };
+        self.gi.upload(&self.queue, data);
+        true
+    }
+    fn prepare_gi(&mut self, world: &World, eye: Vec3) {
+        if self.lighting_mode & 4 == 0 {
+            return;
+        }
+        let key = crate::gi::VolumeKey::for_eye(eye.to_array());
+        let mut doors: Vec<_> = world
+            .doors
+            .borrow()
+            .iter()
+            .filter(|(id, _)| self.room_doors.contains(id))
+            .map(|(&id, d)| (id, (d.angle * 16.).round() / 16.))
+            .collect();
+        doors.sort_by_key(|d| d.0);
+        if self.gi_requested == Some(key) && doors == self.gi_doors {
+            return;
+        }
+        self.gi_requested = Some(key);
+        self.gi_doors = doors;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let data = self.gi_proxy_cache.generate(world, key, &self.gi_doors);
+            self.gi.upload(&self.queue, data);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.gi_ticket = self.gi_ticket.wrapping_add(1);
+            self.gi_request = Some(GiRequest {
+                ticket: self.gi_ticket,
+                origin: key.origin,
+                door_ids: self.gi_doors.iter().map(|d| d.0).collect(),
+                door_angles: self.gi_doors.iter().map(|d| d.1).collect(),
+            });
+        }
+    }
     fn targets(
         device: &wgpu::Device,
         width: u32,
@@ -795,6 +1086,10 @@ impl Renderer {
         sampler: &wgpu::Sampler,
         refraction: &ReflectionTarget,
         cloud_shadow: &wgpu::TextureView,
+        ao: &wgpu::TextureView,
+        gi: &crate::gi::GiGpu,
+        cascades: &crate::shadow::CascadedShadows,
+        gi_screen: &crate::gi_screen::GiScreen,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Shared landscape environment"),
@@ -836,6 +1131,34 @@ impl Renderer {
                     binding: 8,
                     resource: wgpu::BindingResource::TextureView(cloud_shadow),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(ao),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: gi.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: gi.probe_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: cascades.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::TextureView(&cascades.far.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: wgpu::BindingResource::TextureView(&gi_screen.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(&gi_screen.depth_view),
+                },
             ],
         })
     }
@@ -857,6 +1180,10 @@ impl Renderer {
             &self.reflection_sampler,
             &self.refraction,
             &self.cloud_shadow.view,
+            &self.ao.output_view,
+            &self.gi,
+            &self.cascades,
+            &self.gi_screen,
         );
         self.reflected_group = Self::environment_group(
             &self.device,
@@ -868,6 +1195,10 @@ impl Renderer {
             &self.reflection_sampler,
             &self.refraction,
             &self.cloud_shadow.view,
+            &self.ao.output_view,
+            &self.gi,
+            &self.cascades,
+            &self.gi_screen,
         );
         self.reflection_valid = false;
     }
@@ -924,6 +1255,7 @@ impl Renderer {
             &self.shadow.sampler,
             [self.scene.width(), self.scene.height()],
         );
+        self.resize_ao();
         self.resize_reflections();
         (self.capture, self.capture_view) =
             Self::capture_target(&self.device, width, height, self.config.format);
@@ -959,6 +1291,7 @@ impl Renderer {
             &self.shadow.sampler,
             [self.scene.width(), self.scene.height()],
         );
+        self.resize_ao();
         self.resize_reflections();
     }
     pub fn set_reflections(&mut self, enabled: bool) {
@@ -1034,6 +1367,9 @@ impl Renderer {
         } else {
             4.0
         };
+    }
+    pub fn gpu_sample_id(&self) -> u32 {
+        self.gpu_profile.sample_id()
     }
     pub fn gpu_render_ms(&self) -> Option<f32> {
         self.gpu_profile.span_ms()
@@ -1260,6 +1596,7 @@ impl Renderer {
         self.atmosphere_position = Some(position);
     }
     pub fn update_chunks(&mut self, world: &World, position: Vec3, force: bool) {
+        self.prepare_gi(world, position + Vec3::Y * 1.72);
         let clock = StreamClock::new();
         self.water_sim
             .update_world(&self.queue, world, position + Vec3::Y * 1.72);
@@ -1279,6 +1616,10 @@ impl Renderer {
         if self.center != Some((cx, cz)) {
             self.in_flight.clear();
             self.cover.invalidate_requests();
+            self.gi_requested = None;
+            self.gi_request = None;
+            self.gi_ticket = self.gi_ticket.wrapping_add(1);
+            self.reflection_valid = false;
             self.horizon_center = None;
             self.center = Some((cx, cz));
             self.chunks
@@ -1850,6 +2191,9 @@ impl Renderer {
         let shadow_matrix = self
             .shadow
             .update(&self.queue, eye, sun, self.elapsed, wind, wind_dir);
+        let far_matrix = self
+            .cascades
+            .update(&self.queue, eye, sun, self.elapsed, wind, wind_dir);
         // This cached overhead view serves both local sky occlusion and shelter.
         // Unlike a screen-space effect it also covers roofs outside the view.
         let update_shelter = !self.shelter_valid
@@ -1880,6 +2224,7 @@ impl Renderer {
         }
         let update_reflection = reflection_active
             && (!self.reflection_valid
+                || (self.gi_active() && self.gi.updating())
                 || eye.distance_squared(self.reflection_eye) > 0.09
                 || (yaw - self.reflection_yaw).abs() > 0.003
                 || (pitch - self.reflection_pitch).abs() > 0.003
@@ -1922,7 +2267,7 @@ impl Renderer {
             shadow_matrix: shadow_matrix.to_cols_array_2d(),
             shadow_origin: eye.extend(1.).to_array(),
             shadow_params: [
-                1. / SHADOW_SIZE as f32,
+                1. / self.shadow.size() as f32,
                 SHADOW_RADIUS,
                 shadow_active as u32 as f32,
                 sky.shadow_strength,
@@ -1959,6 +2304,16 @@ impl Renderer {
             rooms_b: self.rooms_b,
             rooms_c: self.rooms_c,
             hearth_rooms: self.hearth_rooms,
+            ao_params: [
+                if self.lighting_mode & 1 != 0 {
+                    0.75
+                } else {
+                    0.
+                },
+                0.,
+                0.,
+                0.,
+            ],
             shelter_matrix: self.shelter_matrix.to_cols_array_2d(),
             shelter_origin: self.shelter_origin.extend(1.0).to_array(),
             shelter_params: [
@@ -1978,6 +2333,7 @@ impl Renderer {
             reflected.settings[2] = self.reflection._color.width() as f32;
             reflected.settings[3] = self.reflection._color.height() as f32;
             reflected.reflection_params[2] = 1.0;
+            reflected.ao_params[0] = 0.0;
             // The fallback bind group contains a separate texture, never the
             // attachment being rendered, even when the shader does not sample it.
             self.queue
@@ -2005,6 +2361,20 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("World frame"),
             });
+        self.gi.update(
+            &self.queue,
+            &mut encoder,
+            crate::gi::Lighting {
+                sun: sun.to_array(),
+                direct: sky.direct_color.to_array(),
+                ambient: sky.ambient_color.to_array(),
+                sun_strength: sky.direct_strength,
+                hearths: self.hearths,
+            },
+            self.gi_active(),
+            24,
+            Some(&self.gpu_profile),
+        );
         self.cover.encode_meadow(
             &self.device,
             &self.queue,
@@ -2019,7 +2389,7 @@ impl Renderer {
             },
         );
         if update_clouds {
-            self.cloud_shadow.encode(&mut encoder);
+            self.cloud_shadow.encode(&mut encoder, &self.gpu_profile);
         }
         self.water_sim.encode(
             &self.queue,
@@ -2067,6 +2437,52 @@ impl Renderer {
                     pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..mesh.count, 0, 0..1);
                 }
+            }
+        }
+        if shadow_active && self.cascades.enabled() {
+            let map = &self.cascades.far;
+            let planes = frustum_planes(far_matrix.unwrap());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Far celestial cascade"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &map.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: self.gpu_profile.pass(22),
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&map.pipeline);
+            pass.set_bind_group(0, &map.group, &[]);
+            pass.set_bind_group(1, &self.empty_group, &[]);
+            pass.set_bind_group(2, &self.empty_group, &[]);
+            pass.set_bind_group(3, &self.materials.bind_group, &[]);
+            if let Some(mesh) = &self.dynamic {
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
+            }
+            for mesh in self
+                .chunks
+                .values()
+                .flat_map(|c| {
+                    [
+                        c.terrain.as_ref(),
+                        c.reflected_props.as_ref().or(c.props.as_ref()),
+                    ]
+                })
+                .flatten()
+            {
+                if !bounds_visible(&planes, mesh.bounds, eye) {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
         }
         if update_shelter {
@@ -2136,7 +2552,7 @@ impl Renderer {
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
-            pass.set_pipeline(&self.world_pipeline);
+            pass.set_pipeline(&self.world_reflection_pipeline);
             if let Some(mesh) = &self.dynamic {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -2177,6 +2593,95 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.draw(0..3, 0..1);
         }
+
+        // Draw nearer occluders first. A forest must not shade every distant
+        // canopy behind the same trunk before depth can reject those pixels.
+        let mut visible: Vec<_> = self
+            .chunks
+            .values()
+            .flat_map(|c| {
+                // Original crown clusters keep their leaf gaps in the middle
+                // LOD. Detailed c.props still supplies all sun-shadow casters.
+                let props = if c.camera_proxy {
+                    c.reflected_props.as_ref().or(c.props.as_ref())
+                } else {
+                    c.props.as_ref()
+                };
+                [c.terrain.as_ref(), props].into_iter().flatten()
+            })
+            .chain(self.horizon.values().filter_map(|p| p[0].as_ref()))
+            .chain(self.canopies.values().flatten().filter(|mesh| {
+                (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared()
+                    <= self.canopy_distance().powi(2)
+            }))
+            .filter(|mesh| bounds_visible(&frustum, mesh.bounds, eye))
+            .map(|mesh| {
+                (
+                    (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared(),
+                    mesh,
+                )
+            })
+            .collect();
+        visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        if self.lighting_mode & 1 != 0 {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("AO depth prepass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.ao_depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: self.gpu_profile.pass(18),
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.ao_depth_pipeline);
+                pass.set_bind_group(0, &self.uniform_group, &[]);
+                pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
+                pass.set_bind_group(2, &self.empty_group, &[]);
+                pass.set_bind_group(3, &self.materials.bind_group, &[]);
+                if let Some(mesh) = &self.dynamic {
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+                for (_, mesh) in visible
+                    .iter()
+                    .filter(|(distance, _)| *distance < 144.0 * 144.0)
+                {
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+                self.cover.draw_depth(
+                    &mut pass,
+                    eye,
+                    view_projection,
+                    self.ground_cover_density,
+                    &self.materials.bind_group,
+                );
+                self.cover.draw_meadow_depth(&mut pass);
+            }
+            self.ao.update(&self.queue, projection.inverse(), 2.0, 0.75);
+            self.ao.encode(
+                &mut encoder,
+                [
+                    self.gpu_profile.compute_pass(19),
+                    self.gpu_profile.compute_pass(20),
+                    self.gpu_profile.compute_pass(21),
+                ],
+            );
+            if self.gi_active() {
+                self.gi_screen
+                    .update(&self.queue, view_projection.inverse(), eye);
+                self.gi_screen
+                    .encode(&mut encoder, self.gpu_profile.compute_pass(28));
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Wilderness"),
@@ -2197,7 +2702,11 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: if self.lighting_mode & 1 != 0 {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -2209,56 +2718,45 @@ impl Renderer {
             pass.set_bind_group(1, &self.water_sim.bind_group, &[]);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
-            self.cover.draw_meadow(&mut pass);
+            if self.lighting_mode & 1 != 0 {
+                self.cover.draw_meadow_with_ao_depth(&mut pass);
+            } else {
+                self.cover.draw_meadow(&mut pass);
+            }
             pass.set_bind_group(2, &self.empty_group, &[]);
-            pass.set_pipeline(&self.world_pipeline);
+            pass.set_pipeline(if self.lighting_mode & 1 != 0 {
+                &self.world_ao_pipeline
+            } else {
+                &self.world_pipeline
+            });
             if let Some(mesh) = &self.dynamic {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
 
-            // Draw nearer occluders first. A forest must not shade every distant
-            // canopy behind the same trunk before depth can reject those pixels.
-            let mut visible: Vec<_> = self
-                .chunks
-                .values()
-                .flat_map(|c| {
-                    // Original crown clusters keep their leaf gaps in the middle
-                    // LOD. Detailed c.props still supplies all sun-shadow casters.
-                    let props = if c.camera_proxy {
-                        c.reflected_props.as_ref().or(c.props.as_ref())
-                    } else {
-                        c.props.as_ref()
-                    };
-                    [c.terrain.as_ref(), props].into_iter().flatten()
-                })
-                .chain(self.horizon.values().filter_map(|p| p[0].as_ref()))
-                .chain(self.canopies.values().flatten().filter(|mesh| {
-                    (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared()
-                        <= self.canopy_distance().powi(2)
-                }))
-                .filter(|mesh| bounds_visible(&frustum, mesh.bounds, eye))
-                .map(|mesh| {
-                    (
-                        (eye.clamp(mesh.bounds[0], mesh.bounds[1]) - eye).length_squared(),
-                        mesh,
-                    )
-                })
-                .collect();
-            visible.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
             for (_, mesh) in visible {
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.count, 0, 0..1);
             }
-            self.cover_drawn_instances = self.cover.draw(
-                &mut pass,
-                eye,
-                view_projection,
-                self.ground_cover_density,
-                &self.materials.bind_group,
-            );
+            self.cover_drawn_instances = if self.lighting_mode & 1 != 0 {
+                self.cover.draw_with_ao_depth(
+                    &mut pass,
+                    eye,
+                    view_projection,
+                    self.ground_cover_density,
+                    &self.materials.bind_group,
+                )
+            } else {
+                self.cover.draw(
+                    &mut pass,
+                    eye,
+                    view_projection,
+                    self.ground_cover_density,
+                    &self.materials.bind_group,
+                )
+            };
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(2, &self.empty_group, &[]);
             pass.set_bind_group(3, &self.materials.bind_group, &[]);
@@ -2331,6 +2829,7 @@ impl Renderer {
                 pass.draw(0..6, 0..20480);
             }
         }
+        self.rays.set_cascade_state(self.cascades.state());
         self.rays.update(
             &self.queue,
             &crate::rays::RaysState {

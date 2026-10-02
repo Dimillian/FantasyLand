@@ -10,6 +10,10 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 pub const DISTANCE: f32 = 52.;
+// Per-blade ambient contact is visible nearby. Beyond this radius the terrain,
+// trees and architecture still participate in GTAO, while the original ribbon
+// geometry and its basal pigment remain in the full-distance color pass.
+const AO_DEPTH_DISTANCE: f32 = 20.0;
 const INSTANCES_PER_CELL: u32 = 64;
 const INSTANCE_BYTES: u64 = 32;
 
@@ -113,6 +117,8 @@ struct Tile {
 }
 pub struct MeadowRenderer {
     pipeline: wgpu::RenderPipeline,
+    ao_color_pipeline: wgpu::RenderPipeline,
+    depth_pipeline: wgpu::RenderPipeline,
     compute: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     frame_buffer: wgpu::Buffer,
@@ -126,44 +132,63 @@ impl MeadowRenderer {
         shader: &wgpu::ShaderModule,
         format: wgpu::TextureFormat,
     ) -> Self {
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Opaque meadow ribbons"),
-            layout: Some(render_layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_meadow"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 32,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Uint32x4],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_meadow"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let color_pipeline = |label, depth_compare| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(render_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_meadow"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: 32,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Uint32x4],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_meadow"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipeline = color_pipeline("Opaque meadow ribbons", wgpu::CompareFunction::Less);
+        let ao_color_pipeline = color_pipeline(
+            "Opaque meadow ribbons after AO depth",
+            wgpu::CompareFunction::LessEqual,
+        );
+        let depth_pipeline = crate::ao::AmbientOcclusion::depth_pipeline(
+            device,
+            render_layout,
+            shader,
+            &[wgpu::VertexBufferLayout {
+                array_stride: 32,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0=>Float32x4,1=>Uint32x4],
+            }],
+            "vs_meadow",
+            "fs_meadow_depth",
+        );
         let entries: Vec<_> = (0..6)
             .map(|i| wgpu::BindGroupLayoutEntry {
                 binding: i,
@@ -209,6 +234,8 @@ impl MeadowRenderer {
         });
         Self {
             pipeline,
+            ao_color_pipeline,
+            depth_pipeline,
             compute,
             layout,
             frame_buffer,
@@ -318,11 +345,39 @@ impl MeadowRenderer {
         pass: &mut wgpu::RenderPass<'a>,
         group: impl Fn((i32, i32)) -> &'a wgpu::BindGroup,
     ) {
-        pass.set_pipeline(&self.pipeline);
+        self.draw_with_pipeline(pass, group, &self.pipeline, false);
+    }
+    /// Reuse compacted instances in nearby tiles for ambient blade contact.
+    /// The depth fragment also clips the actual ribbon positions at 20 m;
+    /// farther ribbons retain their original color geometry and root shading.
+    pub fn draw_depth<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        group: impl Fn((i32, i32)) -> &'a wgpu::BindGroup,
+    ) {
+        self.draw_with_pipeline(pass, group, &self.depth_pipeline, true);
+    }
+    pub fn draw_with_ao_depth<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        group: impl Fn((i32, i32)) -> &'a wgpu::BindGroup,
+    ) {
+        self.draw_with_pipeline(pass, group, &self.ao_color_pipeline, false);
+    }
+    fn draw_with_pipeline<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        group: impl Fn((i32, i32)) -> &'a wgpu::BindGroup,
+        pipeline: &'a wgpu::RenderPipeline,
+        depth_only: bool,
+    ) {
+        pass.set_pipeline(pipeline);
         let mut visible: Vec<_> = self
             .tiles
             .iter()
-            .filter(|(_, t)| t.frame == self.frame)
+            .filter(|(_, t)| {
+                t.frame == self.frame && (!depth_only || t.distance <= AO_DEPTH_DISTANCE)
+            })
             .collect();
         visible.sort_unstable_by(|a, b| a.1.distance.total_cmp(&b.1.distance));
         for (&key, t) in visible {

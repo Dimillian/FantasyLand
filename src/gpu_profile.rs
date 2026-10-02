@@ -7,9 +7,9 @@ use std::{
         Arc, Mutex,
     },
 };
-const PAIRS: u32 = 24;
+const PAIRS: u32 = 32;
 const BYTES: u64 = PAIRS as u64 * 16;
-pub const NAMES: [&str; 18] = [
+pub const NAMES: [&str; 29] = [
     "Sun shadows",
     "Enclosure",
     "Reflections",
@@ -28,6 +28,17 @@ pub const NAMES: [&str; 18] = [
     "Bloom blur Y2",
     "Presentation",
     "Reserved",
+    "AO depth",
+    "AO horizons",
+    "AO denoise",
+    "AO upsample",
+    "Far sun cascade",
+    "Indirect probe updates",
+    "Meadow generation",
+    "Cloud cache",
+    "Water solver",
+    "GI scroll",
+    "GI screen cache",
 ];
 #[derive(Clone, Debug, Serialize)]
 pub struct PassTime {
@@ -39,7 +50,7 @@ pub struct GpuProfile {
     resolve: Option<wgpu::Buffer>,
     read: Option<wgpu::Buffer>,
     busy: Arc<AtomicBool>,
-    result: Arc<Mutex<(Vec<PassTime>, Option<f32>)>>,
+    result: Arc<Mutex<(Vec<PassTime>, Option<f32>, u32)>>,
     active: bool,
     slots: Cell<[u32; PAIRS as usize]>,
     used: Cell<u32>,
@@ -74,7 +85,7 @@ impl GpuProfile {
                 })
             }),
             busy: Arc::new(AtomicBool::new(false)),
-            result: Arc::new(Mutex::new((vec![], None))),
+            result: Arc::new(Mutex::new((vec![], None, 0))),
             active: false,
             slots: Cell::new([u32::MAX; PAIRS as usize]),
             used: Cell::new(0),
@@ -107,6 +118,24 @@ impl GpuProfile {
             end_of_pass_write_index: Some(index + 1),
         })
     }
+    pub fn compute_pass(&self, pair: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+        if !self.active || pair >= PAIRS {
+            return None;
+        }
+        let index = self.used.get();
+        if index >= PAIRS * 2 {
+            return None;
+        }
+        let mut slots = self.slots.get();
+        slots[pair as usize] = index;
+        self.slots.set(slots);
+        self.used.set(index + 2);
+        Some(wgpu::ComputePassTimestampWrites {
+            query_set: self.queries.as_ref()?,
+            beginning_of_pass_write_index: Some(index),
+            end_of_pass_write_index: Some(index + 1),
+        })
+    }
     pub fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
         if !self.active {
             return;
@@ -134,6 +163,7 @@ impl GpuProfile {
         let result = self.result.clone();
         let slots = self.slots.get();
         let period = self.period;
+        let sample_id = self.frame;
         busy.store(true, Ordering::Relaxed);
         self.read
             .as_ref()
@@ -174,11 +204,14 @@ impl GpuProfile {
                     drop(bytes);
                     buffer.unmap();
                     if let Ok(mut stored) = result.lock() {
-                        *stored = (values, span);
+                        *stored = (values, span, sample_id);
                     }
                 }
                 busy.store(false, Ordering::Relaxed);
             });
+    }
+    pub fn sample_id(&self) -> u32 {
+        self.result.lock().map(|r| r.2).unwrap_or(0)
     }
     pub fn span_ms(&self) -> Option<f32> {
         self.result.lock().ok().and_then(|r| r.1)

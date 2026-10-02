@@ -1,5 +1,5 @@
 /target/
-/.tools/
+/.tools
 /.DS_Store
 /node_modules/
 /output/

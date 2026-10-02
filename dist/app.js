@@ -1,4 +1,4 @@
-import { paintPortrait } from './portrait.js?v=interior-rethink-1';
+import { paintPortrait } from './portrait.js?v=rendering-upgrade-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
@@ -25,6 +25,7 @@ const urlSeed = new URL(location.href).searchParams.get('seed');
 const seed = clamp(Math.floor(Number(urlSeed || saved.seed) || DEFAULT_SEED), 1, 4294967295);
 let otherViewActive = false, renderChannel = null, renderOwner = '', renderClaim = 0, renderSeen = 0;
 const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let giOutstanding = false;
 let streamWorker = null, streamReady = false, streamOutstanding = 0, streamResults = [], streamDeadline = 0;
 let game, state = {}, started = false, locked = false, modal = null;
 let modalReturnFocus = null;
@@ -43,6 +44,8 @@ const RESOLUTION_OPTIONS = [0, 1, 120, 180, 240, 360, 420, 450, 540, 720, 1080];
 let renderResolution = RESOLUTION_OPTIONS.includes(Number(saved.renderResolution ?? 1)) ? Number(saved.renderResolution ?? 1) : 1;
 // Density is a renderer preference: preserve existing v4 world progress.
 let sunShadows = saved.sunShadows !== false;
+const requestedLighting = Number(new URL(location.href).searchParams.get("lighting") ?? saved.lightingMode ?? 0);
+let lightingMode = [0,1,3,7].includes(requestedLighting) ? requestedLighting : 0;
 let meadowCarpet = saved.meadowCarpet !== false;
 // Weather preferences extend the same save; position, atlas and filters stay intact.
 let weatherMode = [0, 1, 2, 3, 4, 5, 6, 7, 8].includes(Number(saved.weatherMode ?? 0)) ? Number(saved.weatherMode ?? 0) : 0;
@@ -71,6 +74,7 @@ $('quality-select').value = quality;
 $('sensitivity').value = sensitivity;
 $('render-resolution').value = String(renderResolution);
 $('sun-shadows').value = sunShadows ? 'on' : 'off';
+$('lighting-mode').value = String(lightingMode);
 updateWeatherControls();
 updateGroundCoverControls();
 updateFilterControls();
@@ -89,7 +93,7 @@ function saveProgress() {
   if (benchmark || motionCapture || otherViewActive) return;
   if (!game || !initialReady) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ worldClock:state.worldClock, seed, x: state.x, z: state.z, waypoint, quality, sensitivity, filterMode, filterStrength, renderResolution, antialiasing, adaptiveResolution, groundCoverDensity, meadowCarpet, sunShadows, lightingMode, weatherMode, weatherSpeed, weatherPaused, reflections, enclosure, atlas: map.initialized ? { x: map.x, z: map.z, span: map.span } : null }));
   } catch (_) { /* Private browsing can disable storage; the world still works. */ }
 }
 
@@ -252,7 +256,7 @@ function updateAaControls() {
 }
 
 function updateLookSummary() {
-  const recommended = quality === 1 && antialiasing === 1 && filterMode === 1 && filterStrength === 1 && groundCoverDensity === 4 && meadowCarpet && sunShadows && reflections && enclosure;
+  const recommended = quality === 1 && antialiasing === 1 && filterMode === 1 && filterStrength === 1 && groundCoverDensity === 4 && meadowCarpet && sunShadows && lightingMode === 0 && reflections && enclosure;
   $('look-status').textContent = recommended ? 'Recommended look' : 'Custom look';
   $('look-description').textContent = recommended
     ? 'Lush ground cover, soft edges and cinematic light.'
@@ -262,12 +266,13 @@ function updateLookSummary() {
 function restoreVisualDefaults() {
   quality = 1; antialiasing = 1; filterMode = 1; filterStrength = 1;
   groundCoverDensity = 4; meadowCarpet = true;
-  sunShadows = true; reflections = true; enclosure = true;
+  sunShadows = true; lightingMode = 0; reflections = true; enclosure = true;
   renderResolution = 1; adaptiveResolution = false;
-  $('quality-select').value = '1'; $('sun-shadows').value = 'on';
+  $('quality-select').value = '1'; $('sun-shadows').value = 'on'; $('lighting-mode').value = '0';
   game?.set_quality(quality);
   game?.set_antialiasing(antialiasing);
   game?.set_shadows(sunShadows);
+  game?.set_lighting_mode(lightingMode);
   game?.set_reflections(reflections); game?.set_enclosure(enclosure);
   applyGroundCoverDensity(); applyFilter(); applyResolution(); updateWeatherControls();
   saveProgress(); toast('Recommended look restored · Native resolution');
@@ -696,7 +701,7 @@ function updateHUD(now) {
   }
   if (modal === 'character') updateCharacter();
   if (!$('diagnostics').classList.contains('hidden')) {
-    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
+    $('diagnostics').textContent = `FANTASYLAND / RUST + WASM + WGPU\n${adapterLabel}\n${streamReady ? 'Background streaming' : 'Local streaming'} · ${state.streamingPending ?? 0} pending\nLighting ${['Classic','Ambient depth','','Detailed shadows','','','','Full indirect'][lightingMode] ?? 'Custom'}${lightingMode === 7 ? (streamReady ? ` · probes ${Math.round((state.giReadyFraction ?? 0)*100)}% ready` : ' · ambient fallback while generator is unavailable') : ''}\nSampled GPU draw span ${state.gpuRenderMs == null ? 'unavailable' : `${state.gpuRenderMs.toFixed(2)} ms`}\n${fps} FPS · ${Math.round(1000 / Math.max(fps, 1))} ms\n${state.chunkCount ?? '—'} chunks · ${Number(state.triangleCount || 0).toLocaleString()} loaded triangles\nCover ${Math.round(Number(state.groundCoverDensity ?? groundCoverDensity) * 100)}% · ${Number(state.coverInstances || 0).toLocaleString()} accent plants submitted\nAA ${["Off","FXAA","SMAA"][antialiasing]} · ${adaptiveResolution ? `Adaptive ${adaptive.height}p` : "Fixed resolution"}\nMeadow carpet ${meadowCarpet ? 'On · GPU culled' : 'Off'}\n${Number(state.meshMegabytes || 0).toFixed(1)} MB mesh buffers · Shadows ${sunShadows ? 'On' : 'Off'}\nReflections ${reflections ? quality > 0 ? 'On' : 'Off at Low quality' : 'Off'} · ${Number(state.reflectionDraws || 0)} reflection draws · Enclosure ${enclosure ? 'On' : 'Off'}\nX ${Math.round(state.x || 0)}  Z ${Math.round(state.z || 0)}\nAltitude ${Math.round(state.altitude ?? state.y ?? 0)} m\n${biome} · Seed ${seed}\n${locked ? 'Pointer captured' : focusedLook ? 'Focused mouse look' : 'Mouse released'} · ${state.grounded ? 'Grounded' : 'Airborne'}`;
   }
   if (now - lastSaved > 5000) { saveProgress(); lastSaved = now; }
 }
@@ -751,18 +756,18 @@ function initRenderCoordination() {
 
 function stopStreamingWorker(error) {
   streamWorker?.terminate(); streamWorker=null;streamReady=false;
-  streamOutstanding=0;streamResults=[];streamDeadline=0;
+  streamOutstanding=0;giOutstanding=false;streamResults=[];streamDeadline=0;
   game?.set_async_streaming(false);
   if(error) console.warn('Background generation unavailable; using bounded local streaming.',String(error));
 }
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=interior-rethink-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=rendering-upgrade-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {game.set_async_streaming(true);streamReady=true;streamDeadline=0;}
-      else if(data.type==='mesh') {streamResults.push(data);}
+      else if(data.type==='mesh' || data.type==='gi') {streamResults.push(data);}
       else if(data.type==='error') stopStreamingWorker(data.message);
     };
     streamWorker.onerror=(event)=>{event.preventDefault();stopStreamingWorker(event.message);};
@@ -775,10 +780,12 @@ function pumpStreaming() {
   // Small ready packets may share a frame; expensive packing is already done.
   // At most two packets exist, so uploads cannot accumulate an unbounded queue.
   while(streamResults.length && performance.now()-began<2) {
-    const result=streamResults.shift();streamOutstanding--;
+    const result=streamResults.shift();
+    if(result.type==='gi') {giOutstanding=false;if(!game.accept_gi_result(result.ticket,result.bytes)){stopStreamingWorker('Invalid lighting packet');return;}continue;}
+    streamOutstanding--;
     if(!game.accept_stream_result(result.ticket,result.bytes)){stopStreamingWorker('Invalid mesh packet');return;}
   }
-  if(streamReady && !streamOutstanding)streamDeadline=0;
+  if(streamReady && !streamOutstanding && !giOutstanding)streamDeadline=0;
   // Completed packets can span multiple upload frames after an inactive view
   // resumes. A queued result is evidence of progress, not a stalled worker.
   if(!streamResults.length && streamDeadline && performance.now()>streamDeadline){stopStreamingWorker('Worker timed out');return;}
@@ -788,7 +795,8 @@ function pumpStreaming() {
     streamWorker.postMessage({type:'generate',job});streamOutstanding++;
     streamDeadline=performance.now()+120000;
   }
-  if(!streamOutstanding)streamDeadline=0;
+  if(!giOutstanding && game.next_gi_job) {const job=game.next_gi_job();if(job){giOutstanding=true;streamWorker.postMessage({type:'generateGi',...job});streamDeadline=performance.now()+120000;}}
+  if(!streamOutstanding && !giOutstanding)streamDeadline=0;
 }
 
 function renderFrame(now) {
@@ -856,8 +864,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=interior-rethink-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=interior-rethink-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=rendering-upgrade-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=rendering-upgrade-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -869,6 +877,7 @@ async function boot() {
     applyFilter();
     applyGroundCoverDensity();
     game.set_shadows(sunShadows);
+    game.set_lighting_mode(lightingMode);
     applyWeatherPreferences();
     resize();
     if (saved.seed === seed && Number.isFinite(saved.x) && Number.isFinite(saved.z) && Math.abs(saved.x) < worldSize / 2 && Math.abs(saved.z) < worldSize / 2) game.teleport(saved.x, saved.z);
@@ -877,7 +886,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'interior-rethink-1' };
+    window.fantasyDebug = { game, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'rendering-upgrade-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -937,6 +946,7 @@ $('ground-cover-density').addEventListener('input', (event) => {
 $('meadow-carpet').addEventListener('change', event => {
   meadowCarpet = event.target.value !== 'off'; game?.set_meadow(meadowCarpet); saveProgress();
 });
+$('lighting-mode').addEventListener('change',event=>{lightingMode=Number(event.target.value);game?.set_lighting_mode(lightingMode);saveProgress();});
 $('sun-shadows').addEventListener('change', (event) => {
   sunShadows = event.target.value !== 'off';
   game?.set_shadows(sunShadows);

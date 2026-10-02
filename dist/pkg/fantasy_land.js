@@ -22,11 +22,29 @@ export class Game {
      * @param {Uint8Array} bytes
      * @returns {boolean}
      */
+    accept_gi_result(ticket, bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.game_accept_gi_result(this.__wbg_ptr, ticket, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
+     * @param {number} ticket
+     * @param {Uint8Array} bytes
+     * @returns {boolean}
+     */
     accept_stream_result(ticket, bytes) {
         const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.game_accept_stream_result(this.__wbg_ptr, ticket, ptr0, len0);
         return ret !== 0;
+    }
+    /**
+     * An asynchronous queue barrier for repeatable benchmark setup. Rendering
+     * remains nonblocking; the browser waits on RAF while the callback fires.
+     */
+    begin_gpu_drain() {
+        wasm.game_begin_gpu_drain(this.__wbg_ptr);
     }
     /**
      * @param {HTMLCanvasElement} canvas
@@ -66,6 +84,13 @@ export class Game {
     features(cx, cz, span) {
         const ret = wasm.game_features(this.__wbg_ptr, cx, cz, span);
         return ret;
+    }
+    /**
+     * @returns {boolean}
+     */
+    gpu_drained() {
+        const ret = wasm.game_gpu_drained(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * @returns {any}
@@ -128,6 +153,13 @@ export class Game {
      */
     natural_destinations() {
         const ret = wasm.game_natural_destinations(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {any}
+     */
+    next_gi_job() {
+        const ret = wasm.game_next_gi_job(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -201,6 +233,12 @@ export class Game {
      */
     set_ground_cover_density(density) {
         wasm.game_set_ground_cover_density(this.__wbg_ptr, density);
+    }
+    /**
+     * @param {number} mask
+     */
+    set_lighting_mode(mask) {
+        wasm.game_set_lighting_mode(this.__wbg_ptr, mask);
     }
     /**
      * @param {boolean} enabled
@@ -373,6 +411,26 @@ export class StreamGenerator {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Separate worker packet: a bounded local geometry proxy for diffuse GI.
+     * IDs remain u32 throughout the JS bridge (f32 would lose high ID bits).
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {Uint32Array} door_ids
+     * @param {Float32Array} door_angles
+     * @returns {Uint8Array}
+     */
+    generate_gi(origin_x, origin_y, origin_z, door_ids, door_angles) {
+        const ptr0 = passArray32ToWasm0(door_ids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF32ToWasm0(door_angles, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.streamgenerator_generate_gi(this.__wbg_ptr, origin_x, origin_y, origin_z, ptr0, len0, ptr1, len1);
+        var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v3;
     }
     /**
      * @param {number} seed
@@ -899,6 +957,10 @@ function __wbg_get_imports() {
         },
         __wbg_now_0b7736bc17fd7719: function(arg0) {
             const ret = arg0.now();
+            return ret;
+        },
+        __wbg_onSubmittedWorkDone_5c020973b11ab15f: function(arg0) {
+            const ret = arg0.onSubmittedWorkDone();
             return ret;
         },
         __wbg_performance_d96ad0b441f4510a: function(arg0) {
@@ -1566,18 +1628,18 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, arg2, arg3, arg4);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 115, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 119, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 65, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 67, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 65, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__52);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 67, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -1620,8 +1682,8 @@ function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bin
     wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__52(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__52(arg0, arg1, arg2);
+function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__58(arg0, arg1, arg2);
 }
 
 function wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_(arg0, arg1, arg2) {
@@ -1899,9 +1961,23 @@ function makeMutClosure(arg0, arg1, f) {
     return real;
 }
 
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }

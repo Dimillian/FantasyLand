@@ -28,6 +28,34 @@ pub struct RaysState {
     pub room: [[f32; 4]; 3],
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn both_cascade_atmosphere_modules_validate() {
+        for pass in [
+            include_str!("rays_march.wgsl"),
+            include_str!("rays_composite.wgsl"),
+        ] {
+            let source = [
+                include_str!("rays_common.wgsl"),
+                pass,
+                include_str!("rays_integrate.wgsl"),
+                include_str!("room_probe.wgsl"),
+            ]
+            .join("\n");
+            let module = wgpu::naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+        }
+        assert_eq!(std::mem::size_of::<super::Uniform>() % 16, 0);
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniform {
@@ -41,6 +69,8 @@ struct Uniform {
     shadow: [f32; 4],     // radius, enabled, strength, step count
     room: [[f32; 4]; 3],
     resolution: [f32; 4], // scene width/height, ray width/height
+    far_shadow_matrix: [[f32; 4]; 4],
+    cascade_params: [f32; 4],
 }
 
 struct Targets {
@@ -62,6 +92,8 @@ pub struct Rays {
     targets: Targets,
     size: [u32; 2],
     active: bool,
+    far_shadow: Option<wgpu::TextureView>,
+    cascade_state: Option<crate::shadow::CascadeState>,
 }
 
 impl Rays {
@@ -109,6 +141,7 @@ impl Rays {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                texture(4, true),
             ],
         });
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -125,6 +158,7 @@ impl Rays {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                texture(6, true),
             ],
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -234,14 +268,22 @@ impl Rays {
             })],
         );
         let targets = Self::targets(device, size);
-        let march_group =
-            Self::march_group(device, &march_layout, &uniform, depth, shadow, comparison);
+        let march_group = Self::march_group(
+            device,
+            &march_layout,
+            &uniform,
+            depth,
+            shadow,
+            shadow,
+            comparison,
+        );
         let composite_group = Self::composite_group(
             device,
             &composite_layout,
             &uniform,
             depth,
             &targets,
+            shadow,
             shadow,
             comparison,
         );
@@ -256,6 +298,8 @@ impl Rays {
             targets,
             size,
             active: false,
+            far_shadow: None,
+            cascade_state: None,
         }
     }
 
@@ -301,6 +345,7 @@ impl Rays {
         uniform: &wgpu::Buffer,
         depth: &wgpu::TextureView,
         shadow: &wgpu::TextureView,
+        far_shadow: &wgpu::TextureView,
         comparison: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -323,6 +368,10 @@ impl Rays {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(comparison),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(far_shadow),
+                },
             ],
         })
     }
@@ -334,6 +383,7 @@ impl Rays {
         depth: &wgpu::TextureView,
         targets: &Targets,
         shadow: &wgpu::TextureView,
+        far_shadow: &wgpu::TextureView,
         comparison: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -364,6 +414,10 @@ impl Rays {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(comparison),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(far_shadow),
+                },
             ],
         })
     }
@@ -385,6 +439,7 @@ impl Rays {
             &self.uniform,
             depth,
             shadow,
+            self.far_shadow.as_ref().unwrap_or(shadow),
             comparison,
         );
         self.composite_group = Self::composite_group(
@@ -394,8 +449,43 @@ impl Rays {
             depth,
             &self.targets,
             shadow,
+            self.far_shadow.as_ref().unwrap_or(shadow),
             comparison,
         );
+    }
+
+    /// Rebind only when either sunlight texture changes; scene targets survive.
+    pub fn set_cascade_shadow(
+        &mut self,
+        device: &wgpu::Device,
+        depth: &wgpu::TextureView,
+        primary: &wgpu::TextureView,
+        far: &wgpu::TextureView,
+        comparison: &wgpu::Sampler,
+    ) {
+        self.far_shadow = Some(far.clone());
+        self.march_group = Self::march_group(
+            device,
+            &self.march_layout,
+            &self.uniform,
+            depth,
+            primary,
+            far,
+            comparison,
+        );
+        self.composite_group = Self::composite_group(
+            device,
+            &self.composite_layout,
+            &self.uniform,
+            depth,
+            &self.targets,
+            primary,
+            far,
+            comparison,
+        );
+    }
+    pub fn set_cascade_state(&mut self, state: Option<crate::shadow::CascadeState>) {
+        self.cascade_state = state;
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue, state: &RaysState) {
@@ -441,6 +531,11 @@ impl Rays {
                 self.targets.size[0] as f32,
                 self.targets.size[1] as f32,
             ],
+            far_shadow_matrix: self
+                .cascade_state
+                .map_or(Mat4::IDENTITY, |s| s.far_matrix)
+                .to_cols_array_2d(),
+            cascade_params: self.cascade_state.map_or([0.0; 4], |s| s.params),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
     }

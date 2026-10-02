@@ -384,6 +384,8 @@ pub struct CoverStats {
 }
 pub struct CoverLayer {
     pipeline: wgpu::RenderPipeline,
+    ao_color_pipeline: wgpu::RenderPipeline,
+    depth_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     templates: wgpu::Buffer,
     template_bytes: u64,
@@ -442,60 +444,79 @@ impl CoverLayer {
             bind_group_layouts: &[uniform_layout, water_layout, &layout, material_layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Instanced ground cover"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_cover"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<CoverInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Uint32x2,
-                            offset: 20,
-                            shader_location: 2,
-                        },
-                    ],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let depth_pipeline = crate::ao::AmbientOcclusion::depth_pipeline(
+            device,
+            &pipeline_layout,
+            shader,
+            &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<CoverInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32x2],
+            }],
+            "vs_cover",
+            "fs_ao_depth",
+        );
+        let color_pipeline = |label, depth_compare| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_cover"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<CoverInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 20,
+                                shader_location: 2,
+                            },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let pipeline = color_pipeline("Instanced ground cover", wgpu::CompareFunction::Less);
+        let ao_color_pipeline = color_pipeline(
+            "Instanced ground cover after AO depth",
+            wgpu::CompareFunction::LessEqual,
+        );
         let data = templates();
         let template_bytes = (data.len() * std::mem::size_of::<TemplateVertex>()) as u64;
         let templates = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -507,6 +528,8 @@ impl CoverLayer {
         Self {
             meadow,
             pipeline,
+            ao_color_pipeline,
+            depth_pipeline,
             layout,
             templates,
             template_bytes,
@@ -644,11 +667,81 @@ impl CoverLayer {
         density: f32,
         materials: &'a wgpu::BindGroup,
     ) -> u32 {
+        self.draw_with_pipeline(
+            pass,
+            eye,
+            view_projection,
+            density,
+            materials,
+            &self.pipeline,
+            true,
+        )
+    }
+
+    /// Reuses the color pass's instance prefix, LOD bank, tile ordering and
+    /// alpha test inside the AO's finite range. Farther accent plants remain in
+    /// the color pass; they cannot occlude the local AO integration volume.
+    pub fn draw_depth<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        eye: Vec3,
+        view_projection: Mat4,
+        density: f32,
+        materials: &'a wgpu::BindGroup,
+    ) {
+        self.draw_with_pipeline(
+            pass,
+            eye,
+            view_projection,
+            density,
+            materials,
+            &self.depth_pipeline,
+            false,
+        );
+    }
+
+    /// Shade equal-depth samples when the AO prepass already filled scene depth.
+    /// The original draw() keeps Less for the exact legacy feature-off path.
+    pub fn draw_with_ao_depth<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        eye: Vec3,
+        view_projection: Mat4,
+        density: f32,
+        materials: &'a wgpu::BindGroup,
+    ) -> u32 {
+        self.draw_with_pipeline(
+            pass,
+            eye,
+            view_projection,
+            density,
+            materials,
+            &self.ao_color_pipeline,
+            true,
+        )
+    }
+
+    fn draw_with_pipeline<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        eye: Vec3,
+        view_projection: Mat4,
+        density: f32,
+        materials: &'a wgpu::BindGroup,
+        pipeline: &'a wgpu::RenderPipeline,
+        record_draws: bool,
+    ) -> u32 {
         let mut drawn_tiles = 0;
         let mut drawn_instances = 0;
         let mut drawn_triangles = 0;
+        let draw_distance = if record_draws {
+            COVER_DISTANCE
+        } else {
+            crate::ao::DEPTH_DRAW_DISTANCE
+        };
         if density > 0. && density.is_finite() {
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(3, materials, &[]);
             let mut ordered: Vec<_> = self
                 .tiles
                 .values()
@@ -659,19 +752,16 @@ impl CoverLayer {
                     )
                 })
                 .filter(|(d, t)| {
-                    *d < COVER_DISTANCE && visible(t.bounds_min, t.bounds_max, eye, view_projection)
+                    *d < draw_distance && visible(t.bounds_min, t.bounds_max, eye, view_projection)
                 })
                 .collect();
             ordered.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-            for (_, tile) in ordered {
-                let nearest = eye.clamp(tile.bounds_min, tile.bounds_max);
-                let distance = (nearest - eye).length();
+            for (distance, tile) in ordered {
                 let count = prefix_count(&tile.ranks, density * distance_density(distance));
-                if count == 0 || !visible(tile.bounds_min, tile.bounds_max, eye, view_projection) {
+                if count == 0 {
                     continue;
                 }
                 pass.set_bind_group(2, &tile.group, &[]);
-                pass.set_bind_group(3, materials, &[]);
                 pass.set_vertex_buffer(0, tile.instances.slice(..));
                 let lod = cover_lod(distance, tile.lod.get());
                 tile.lod.set(lod);
@@ -682,8 +772,10 @@ impl CoverLayer {
                 drawn_instances += count;
             }
         }
-        self.drawn
-            .set((drawn_tiles, drawn_instances, drawn_triangles));
+        if record_draws {
+            self.drawn
+                .set((drawn_tiles, drawn_instances, drawn_triangles));
+        }
         drawn_instances
     }
     pub fn encode_meadow(
@@ -721,6 +813,13 @@ impl CoverLayer {
     }
     pub fn draw_meadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         self.meadow.draw(pass, |key| &self.tiles[&key].group);
+    }
+    pub fn draw_meadow_depth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        self.meadow.draw_depth(pass, |key| &self.tiles[&key].group);
+    }
+    pub fn draw_meadow_with_ao_depth<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        self.meadow
+            .draw_with_ao_depth(pass, |key| &self.tiles[&key].group);
     }
     pub fn clear(&mut self) {
         self.meadow.clear();

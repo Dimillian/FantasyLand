@@ -1,5 +1,6 @@
 @group(0) @binding(2) var light_depth: texture_depth_2d;
 @group(0) @binding(3) var light_comparison: sampler_comparison;
+@group(0) @binding(4) var far_light_depth: texture_depth_2d;
 struct VolumeOut {
     @location(0) scattering: vec4<f32>,
     @location(1) distance: f32,

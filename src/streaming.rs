@@ -244,6 +244,7 @@ pub fn decode(bytes: &[u8]) -> Option<Payload> {
 #[wasm_bindgen]
 pub struct StreamGenerator {
     world: World,
+    gi_cache: std::cell::RefCell<crate::gi::ProxyCache>,
 }
 #[wasm_bindgen]
 impl StreamGenerator {
@@ -251,6 +252,7 @@ impl StreamGenerator {
     pub fn new(seed: u32) -> Self {
         Self {
             world: World::new(seed),
+            gi_cache: std::cell::RefCell::new(crate::gi::ProxyCache::default()),
         }
     }
     pub fn generate(&self, kind: u32, x: i32, z: i32, lod: u32, detail: u8) -> Vec<u8> {
@@ -264,6 +266,40 @@ impl StreamGenerator {
                 detail: detail.min(1),
             },
         ))
+    }
+    /// Separate worker packet: a bounded local geometry proxy for diffuse GI.
+    /// IDs remain u32 throughout the JS bridge (f32 would lose high ID bits).
+    pub fn generate_gi(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        origin_z: f32,
+        door_ids: &[u32],
+        door_angles: &[f32],
+    ) -> Vec<u8> {
+        let key = crate::gi::VolumeKey {
+            origin: [origin_x, origin_y, origin_z],
+        };
+        if !key.valid()
+            || door_ids.len() != door_angles.len()
+            || door_ids.len() > 256
+            || door_angles
+                .iter()
+                .any(|v| !v.is_finite() || !(0. ..=1.).contains(v))
+        {
+            return Vec::new();
+        }
+        let doors: Vec<_> = door_ids
+            .iter()
+            .copied()
+            .zip(door_angles.iter().copied())
+            .collect();
+        crate::gi::encode_proxy(
+            &self
+                .gi_cache
+                .borrow_mut()
+                .generate(&self.world, key, &doors),
+        )
     }
 }
 

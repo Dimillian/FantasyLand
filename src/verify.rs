@@ -1,4 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
+mod render_checks;
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     use fantasy_land::{
         geometry,
@@ -19,6 +21,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1337);
     let check = std::env::args().nth(3);
+    if check.as_deref() == Some("render-compare") {
+        render_checks::run(seed, &dir, |r, mask| r.set_lighting_mode(mask));
+        return;
+    }
     let filters_only = check.as_deref() == Some("filters");
     let grounding_only = check.as_deref() == Some("grounding");
     let roads_only = check.as_deref() == Some("roads");

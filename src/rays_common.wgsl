@@ -9,6 +9,8 @@ struct Atmosphere {
     shadow: vec4<f32>,
     room: array<vec4<f32>,3>,
     resolution: vec4<f32>,
+    far_shadow_matrix: mat4x4<f32>,
+    cascade_params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> fog: Atmosphere;
 @group(0) @binding(1) var scene_depth: texture_depth_2d;

@@ -8,7 +8,7 @@ if [ -x "$PWD/.tools/cargo/bin/cargo" ]; then
 fi
 cargo build --release --lib --target wasm32-unknown-unknown --locked
 if [ -x "$PWD/.tools/wasm-bindgen-0.2.128-aarch64-apple-darwin/wasm-bindgen" ]; then
-  "$PWD/.tools/wasm-bindgen-0.2.128-aarch64-apple-darwin/wasm-bindgen" --target web --out-dir dist/pkg --out-name fantasy_land target/wasm32-unknown-unknown/release/fantasy_land.wasm
+  "$PWD/.tools/wasm-bindgen-0.2.128-aarch64-apple-darwin/wasm-bindgen" --target web --out-dir dist/pkg --out-name fantasy_land "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/fantasy_land.wasm"
 else
-  wasm-bindgen --target web --out-dir dist/pkg --out-name fantasy_land target/wasm32-unknown-unknown/release/fantasy_land.wasm
+  wasm-bindgen --target web --out-dir dist/pkg --out-name fantasy_land "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/fantasy_land.wasm"
 fi

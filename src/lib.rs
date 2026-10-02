@@ -1,4 +1,5 @@
 mod antialias;
+pub mod ao;
 pub mod celestial;
 pub mod citizens;
 pub mod climate;
@@ -8,6 +9,8 @@ pub mod ecology;
 pub mod exploration;
 pub mod geography;
 pub mod geometry;
+pub mod gi;
+pub mod gi_screen;
 mod gpu_profile;
 pub mod habitat;
 mod horizon;
@@ -45,6 +48,7 @@ pub struct Game {
     world: World,
     player: Player,
     renderer: Renderer,
+    gpu_drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
     hour: f32,
     life: citizens::Life,
 }
@@ -68,6 +72,7 @@ struct GameState {
     seed: u32,
     speed: f32,
     altitude: f32,
+    camera_position: [f32; 3],
     site_name: String,
     day_time: f32,
     world_clock: f64,
@@ -83,7 +88,11 @@ struct GameState {
     reflection_draws: u32,
     gpu_timings: Vec<gpu_profile::PassTime>,
     gpu_render_ms: Option<f32>,
+    gpu_sample_id: u32,
     streaming_pending: usize,
+    lighting_mode: u32,
+    lighting_bytes: u64,
+    gi_ready_fraction: f32,
 }
 
 #[wasm_bindgen]
@@ -104,9 +113,32 @@ impl Game {
             world,
             player,
             renderer,
+            gpu_drain: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hour: 9.0,
             life: citizens::Life::new(),
         })
+    }
+    pub fn set_lighting_mode(&mut self, mask: u32) {
+        self.renderer.set_lighting_mode(mask);
+    }
+    pub fn next_gi_job(&mut self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.renderer.next_gi_job()).unwrap_or(JsValue::NULL)
+    }
+    pub fn accept_gi_result(&mut self, ticket: u32, bytes: &[u8]) -> bool {
+        self.renderer.accept_gi_result(ticket, bytes)
+    }
+    /// An asynchronous queue barrier for repeatable benchmark setup. Rendering
+    /// remains nonblocking; the browser waits on RAF while the callback fires.
+    pub fn begin_gpu_drain(&mut self) {
+        self.gpu_drain
+            .store(false, std::sync::atomic::Ordering::Release);
+        let ready = self.gpu_drain.clone();
+        self.renderer.queue.on_submitted_work_done(move || {
+            ready.store(true, std::sync::atomic::Ordering::Release)
+        });
+    }
+    pub fn gpu_drained(&self) -> bool {
+        self.gpu_drain.load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn set_async_streaming(&mut self, enabled: bool) {
         self.renderer.set_async_streaming(enabled);
@@ -261,6 +293,7 @@ impl Game {
             seed: self.world.seed,
             speed: p.speed,
             altitude: p.position.y,
+            camera_position: p.eye().to_array(),
             site_name: place_name,
             day_time: self.hour,
             world_clock: self.life.clock,
@@ -276,7 +309,11 @@ impl Game {
             reflection_draws: self.renderer.reflection_draws(),
             gpu_timings: self.renderer.gpu_timings(),
             gpu_render_ms: self.renderer.gpu_render_ms(),
+            gpu_sample_id: self.renderer.gpu_sample_id(),
             streaming_pending: self.renderer.pending_count(),
+            lighting_mode: self.renderer.lighting_mode(),
+            lighting_bytes: self.renderer.lighting_bytes(),
+            gi_ready_fraction: self.renderer.gi_ready_fraction(),
         })
         .unwrap_or(JsValue::NULL)
     }

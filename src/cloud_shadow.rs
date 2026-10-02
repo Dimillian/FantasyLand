@@ -138,7 +138,11 @@ impl CloudShadow {
     pub fn uniform(&self) -> [f32; 4] {
         self.state.uniform()
     }
-    pub fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        profile: &crate::gpu_profile::GpuProfile,
+    ) {
         self.needs_draw = false;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Refresh world cloud shadows"),
@@ -152,7 +156,7 @@ impl CloudShadow {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes: profile.pass(25),
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.pipeline);

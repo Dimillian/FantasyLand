@@ -7,6 +7,22 @@ fn volume_visibility(clip: vec4<f32>) -> f32 {
     return mix(1.0, visibility, fog.shadow.z);
 }
 
+fn volume_clip_valid(clip: vec4<f32>) -> bool {
+    let uv = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+    return clip.z > 0.0 && clip.z < 1.0 && all(uv >= vec2<f32>(0.002)) && all(uv <= vec2<f32>(0.998));
+}
+fn volume_cascade_visibility(near_clip: vec4<f32>, far_clip: vec4<f32>, distance: f32) -> f32 {
+    let near_valid = volume_clip_valid(near_clip);
+    if near_valid && distance <= fog.cascade_params.y { return volume_visibility(near_clip); }
+    var far_visibility = 1.0;
+    if volume_clip_valid(far_clip) {
+        let uv = vec2<f32>(far_clip.x * 0.5 + 0.5, 0.5 - far_clip.y * 0.5);
+        far_visibility = mix(1.0, textureSampleCompareLevel(far_light_depth, light_comparison, uv, far_clip.z - 0.00004), fog.shadow.z);
+    }
+    if !near_valid || distance >= fog.cascade_params.z { return far_visibility; }
+    return mix(volume_visibility(near_clip), far_visibility, smoothstep(fog.cascade_params.y, fog.cascade_params.z, distance));
+}
+
 // Both resolutions use the same integrator, sample count and stable dither.
 // A rejected reconstruction is therefore actual occluded participating media,
 // rather than an identity pixel or extrapolated background illumination.
@@ -25,6 +41,12 @@ fn volume_integral(ray: vec3<f32>, distance: f32, low_pixel: vec2<i32>) -> vec4<
     // including in the full-resolution leaf-edge fallback, not at every step.
     let shadow_start = fog.shadow_matrix * vec4<f32>(fog.camera.xyz - fog.shadow_origin.xyz, 1.0);
     let shadow_ray = fog.shadow_matrix * vec4<f32>(ray, 0.0);
+    var far_start = vec4<f32>(0.0);
+    var far_ray = vec4<f32>(0.0);
+    if fog.cascade_params.w > 0.5 {
+        far_start = fog.far_shadow_matrix * vec4<f32>(fog.camera.xyz - fog.shadow_origin.xyz, 1.0);
+        far_ray = fog.far_shadow_matrix * vec4<f32>(ray, 0.0);
+    }
     for (var i = 0u; i < 20u; i += 1u) {
         if f32(i) >= steps { break; }
         // Quadratic spacing allocates most samples to nearby canopy gaps. Each
@@ -38,7 +60,12 @@ fn volume_integral(ray: vec3<f32>, distance: f32, low_pixel: vec2<i32>) -> vec4<
         let sample = ray * t;
         let altitude = max((fog.camera.y - fog.camera.w) + sample.y, 0.0);
         var density = fog.atmosphere.x * (0.28 + 0.72 * exp(-altitude * fog.atmosphere.z));
-        var visibility=volume_visibility(shadow_start + shadow_ray*t);
+        var visibility=1.0;
+        if fog.cascade_params.w > 0.5 {
+            visibility = volume_cascade_visibility(shadow_start + shadow_ray*t, far_start + far_ray*t, length(sample.xz));
+        } else {
+            visibility = volume_visibility(shadow_start + shadow_ray*t);
+        }
         if fog.room[0].w>0.0 {let q=probe_local(fog.camera.xyz+sample,fog.room[0],fog.room[1]);if abs(q.x)<fog.room[1].x&&abs(q.z)<fog.room[1].y&&q.y>0.0&&q.y<fog.room[0].w {density=0.017;visibility*=probe_aperture(q,probe_direction(fog.light_direction.xyz,fog.room[1]),fog.room[0],fog.room[1],fog.room[2]);}}
         let opacity = 1.0 - exp(-density * step_length);
         scattering += radiance * visibility * (transmittance * opacity);

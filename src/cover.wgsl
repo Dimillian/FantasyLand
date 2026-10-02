@@ -116,7 +116,7 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     pigment=mix(pigment,vec3<f32>(0.84,0.89,0.91),snow);
     let linear=pow(max(pigment,vec3<f32>(0.0)),vec3<f32>(2.2));
     let access=select(1.0,sky,u.shelter_params.z>0.5);
-    var color=surface_lighting(pigment,linear,n,6.0,visibility,distance,access);
+    var color=surface_lighting(pigment,linear,n,6.0,visibility,distance,access,v.world,ambient_occlusion(v.clip.xy),v.clip.xyz);
     let view=(u.camera.xyz-v.world)/max(distance,0.0001);
     let light=normalize(u.light.xyz);
     let transmission=pow(max(dot(-view,light),0.0),3.0);
@@ -126,4 +126,12 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     color+=vegetation_highlight(n,view,light,rough,wet,visibility)*0.30;
     if u.hearths[0].w>0.0 { color+=hearth_illumination(v.world,n,view,linear,rough,0.0,true,-1); }
     return vec4<f32>(atmospheric_color(color,v.world,distance),1.0);
+}
+
+// Nearby ribbons retain their exact wind, terrain shear and player deformation
+// in depth. Larger structures provide ambient contact beyond 20 m; the color
+// pass retains every ribbon, with its existing dark basal pigment.
+@fragment fn fs_meadow_depth(v:VertexOut) {
+    let relative=v.world.xz-u.camera.xz;
+    if dot(relative,relative)>20.0*20.0 {discard;}
 }

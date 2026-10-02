@@ -2,6 +2,7 @@
 @group(0) @binding(3) var integrated_distance: texture_2d<f32>;
 @group(0) @binding(4) var light_depth: texture_depth_2d;
 @group(0) @binding(5) var light_comparison: sampler_comparison;
+@group(0) @binding(6) var far_light_depth: texture_depth_2d;
 
 @fragment fn fs_composite(o: Out) -> @location(0) vec4<f32> {
     let full_pixel = clamp(vec2<i32>(o.clip.xy), vec2<i32>(0), vec2<i32>(fog.resolution.xy) - vec2<i32>(1));

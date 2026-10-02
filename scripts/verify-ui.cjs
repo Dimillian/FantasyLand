@@ -38,14 +38,14 @@ const stored={ 'wayfarer.exploration.v3': JSON.stringify({seed:1337,quality:2,se
 let calls=0, looks=[], rejected;
 const fakeWeatherCalls=[];
 ids.world.requestPointerLock=()=>{calls++;};
-const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
+const fakeGame={end_dialogue(){},settlement_destinations(){return [];},restore_clock(){},set_weather_mode:value=>fakeWeatherCalls.push(['mode',value]),set_weather_speed:value=>fakeWeatherCalls.push(['speed',value]),set_weather_paused:value=>fakeWeatherCalls.push(['paused',value]),set_reflections:value=>fakeWeatherCalls.push(['reflections',value]),set_enclosure:value=>fakeWeatherCalls.push(['enclosure',value]),look:(x,y)=>looks.push([x,y]),state:()=>({x:100,z:200,stamina:75}),map_data(){return new Uint8Array(320*320*4);},features(){return {};},landscape_destinations(){return [];},set_time(){},set_quality(){},set_ground_cover_density(){},set_meadow(){},set_antialiasing(){},set_shadows(){},set_lighting_mode(){},set_filter(){},set_render_resolution(){},render_resolution:()=>new Uint32Array([800,500]),return_to_spawn(){},teleport(){}};
 const context=vm.createContext({document,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(){},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:k=>stored[k],setItem:(k,v)=>stored[k]=v},fakeGame});
 vm.runInContext(source,context);
 const run=code=>vm.runInContext(code,context);
 const key=code=>document.fire('keydown',{code,target:ids.world});
 // Run the real boot/settings code against a GPU boundary stub. This verifies
 // renderer calls and reload behavior, not merely the shape of saved fields.
-function filterHarness(snapshot, destinations = []) {
+function filterHarness(snapshot, destinations = [], href = 'https://test.invalid/') {
   const filterIds = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((m) => [m[1], new Element(m[1])]));
   const filterDocument = new Element('document');
   filterDocument.body = new Element('body');
@@ -53,7 +53,7 @@ function filterHarness(snapshot, destinations = []) {
   filterDocument.createElement = tag => new Element(tag);
   filterDocument.querySelectorAll = selector => selector === '[data-close]' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal'].querySelector()) : selector === '.overlay' ? ['map', 'bag', 'character', 'skills', 'settings'].map(name => filterIds[name + '-modal']) : [];
   const filterStore = { 'wayfarer.exploration.v4': JSON.stringify(snapshot) };
-  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [], aaCalls = [];
+  const filterCalls = [], teleports = [], resolutionCalls = [], qualityCalls = [], groundCoverCalls = [], rendererEvents = [], weatherCalls = [], meadowCalls = [], aaCalls = [], lightingCalls = [];
   let destinationCalls = 0;
   const playerState = {x:snapshot.x,z:snapshot.z,stamina:100,health:100,mana:100};
   let selectedResolution = 0, selectedQuality = 1, surfaceWidth = 800, surfaceHeight = 500;
@@ -68,6 +68,7 @@ function filterHarness(snapshot, destinations = []) {
     set_time:hour=>{rendererEvents.push(['time',hour]);playerState.dayTime=hour;},
     landscape_destinations:()=>{destinationCalls++;return typeof destinations === 'function' ? destinations() : destinations;},
     set_shadows:value=>{rendererEvents.push(['shadows',value]);},
+    set_lighting_mode:value=>{lightingCalls.push(value);rendererEvents.push(['lighting',value]);},
     set_antialiasing:value=>{aaCalls.push(value);},
     set_meadow:value=>{meadowCalls.push(value);},
     set_ground_cover_density:value=>{groundCoverCalls.push(value);rendererEvents.push(['groundCover',value]);},
@@ -82,10 +83,10 @@ function filterHarness(snapshot, destinations = []) {
     state:()=>({...playerState})
   };
   let readyFrames = 0;
-  const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href:'https://test.invalid/'},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
+  const filterContext = vm.createContext({document:filterDocument,window:new Element('window'),navigator:{gpu:{}},location:{href},URL,console,Map,Set,Math,Number,JSON,Promise,Uint8Array,Uint8ClampedArray,ImageData:function(){},devicePixelRatio:1,performance:{now:()=>0},requestAnimationFrame(callback){if (++readyFrames <= 2) queueMicrotask(()=>callback(0));},setTimeout(){return 1;},clearTimeout(){},matchMedia:()=>({matches:false}),localStorage:{getItem:key=>filterStore[key],setItem:(key,value)=>filterStore[key]=value},fakeModule:{default:async()=>{},Game:{create:async()=>engine}}});
   const bootSource = source.replace(/await import\('\.\/pkg\/fantasy_land\.js(?:\?[^']*)?'\)/, 'fakeModule');
   vm.runInContext(bootSource,filterContext);
-  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
+  return {ids:filterIds,get destinationCalls(){return destinationCalls;},calls:filterCalls,teleports,resolutionCalls,qualityCalls,groundCoverCalls,rendererEvents,weatherCalls,meadowCalls,aaCalls,lightingCalls,run:code=>vm.runInContext(code,filterContext),saved:()=>JSON.parse(filterStore['wayfarer.exploration.v4'])};
 }
 
 async function verifyInteriorTours() {
@@ -109,7 +110,7 @@ async function verifyFilterSettings() {
   assert.deepEqual(first.calls,[[1,1]],'Boot must apply Bloom at 100% to the renderer.');
   assert.deepEqual(first.resolutionCalls,[1]);
   assert.equal(first.ids['render-dimensions'].textContent,'Actual 800 × 500');
-  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','filter','groundCover','shadows','resize'],'Preferences must apply after world quality and before resize.');
+  assert.deepEqual(first.rendererEvents.map(event=>event[0]),['quality','resolution','filter','groundCover','shadows','lighting','resize'],'Preferences must apply after world quality and before resize.');
   assert.deepEqual(first.teleports,[[637,222]],'Existing v4 position must survive adding filters.');
   first.run('initialReady=true;');
   first.ids['filter-select'].value='2'; first.ids['filter-select'].fire('change');
@@ -215,22 +216,59 @@ async function verifyResolutionSettings() {
   const invalid=filterHarness({...existing,renderResolution:999});
   assert.equal(invalid.run('renderResolution'),1);
   // Restoring the visual baseline must never restart the world or reset controls.
-  const custom = filterHarness({...existing, groundCoverDensity:1, meadowCarpet:false, antialiasing:2, sunShadows:false, reflections:false, enclosure:false, adaptiveResolution:true, sensitivity:1.45, weatherMode:5, weatherSpeed:3, weatherPaused:true});
+  const custom = filterHarness({...existing, groundCoverDensity:1, meadowCarpet:false, antialiasing:2, sunShadows:false, lightingMode:7, reflections:false, enclosure:false, adaptiveResolution:true, sensitivity:1.45, weatherMode:5, weatherSpeed:3, weatherPaused:true});
   await custom.run('boot()'); custom.run('initialReady=true;');
   assert.equal(custom.ids['look-status'].textContent,'Custom look');
   custom.ids['restore-visual-defaults'].fire('click');
   const baseline = custom.saved();
-  for (const [key,value] of Object.entries({quality:1,antialiasing:1,filterMode:1,filterStrength:1,groundCoverDensity:4,meadowCarpet:true,sunShadows:true,reflections:true,enclosure:true,renderResolution:1,adaptiveResolution:false})) assert.equal(baseline[key],value,`Default ${key}`);
+  for (const [key,value] of Object.entries({quality:1,antialiasing:1,filterMode:1,filterStrength:1,groundCoverDensity:4,meadowCarpet:true,sunShadows:true,lightingMode:0,reflections:true,enclosure:true,renderResolution:1,adaptiveResolution:false})) assert.equal(baseline[key],value,`Default ${key}`);
   for (const key of ['seed','x','z','waypoint','atlas']) assert.deepEqual(baseline[key],existing[key],`Restore defaults must preserve ${key}`);
   assert.equal(baseline.sensitivity,1.45); assert.equal(baseline.weatherMode,5); assert.equal(baseline.weatherSpeed,3); assert.equal(baseline.weatherPaused,true);
   assert.deepEqual(custom.teleports,[[810,-160]],'Restoring graphics never teleports the player.');
   assert.equal(custom.resolutionCalls.at(-1),1); assert.equal(custom.qualityCalls.at(-1),1);
   assert.equal(custom.groundCoverCalls.at(-1),4); assert.equal(custom.aaCalls.at(-1),1);
   assert.deepEqual(custom.calls.at(-1),[1,1]); assert.equal(custom.meadowCalls.at(-1),true);
+  assert.equal(custom.lightingCalls.at(-1),0); assert.equal(custom.ids['lighting-mode'].value,'0');
   assert.equal(custom.ids['look-status'].textContent,'Recommended look');
   const baselineReload=filterHarness(baseline); await baselineReload.run('boot()');
   assert.equal(baselineReload.resolutionCalls.at(-1),1); assert.equal(baselineReload.ids['look-status'].textContent,'Recommended look');
   console.log('PASS: resolution defaults/boot ordering; explicit resolution independent of quality; Native resize; Auto quality; actual-size labels; v4 persistence.');
+}
+
+async function verifyLightingSettings() {
+  const existing = {seed:1337,x:637,z:222,quality:1,sensitivity:1.2,antialiasing:2,filterMode:2,filterStrength:0.8,renderResolution:420,groundCoverDensity:2.25,meadowCarpet:false,sunShadows:false,reflections:false,enclosure:false,weatherMode:5,weatherSpeed:3,weatherPaused:true,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
+  const selected = filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;');
+  assert.deepEqual(selected.lightingCalls,[0],'An older save must keep Classic lighting at boot.');
+  assert.equal(selected.ids['lighting-mode'].value,'0');
+  assert.ok(selected.rendererEvents.findIndex(e=>e[0]==='lighting') < selected.rendererEvents.findIndex(e=>e[0]==='resize'),'Lighting must reach the renderer before first resize.');
+  const unrelatedBefore = JSON.stringify({weather:selected.weatherCalls,aa:selected.aaCalls,meadow:selected.meadowCalls,teleports:selected.teleports});
+  for (const mode of [1,3,7,0]) {
+    const eventsBefore = selected.rendererEvents.length;
+    selected.ids['lighting-mode'].value=String(mode); selected.ids['lighting-mode'].fire('change');
+    assert.deepEqual(selected.rendererEvents.slice(eventsBefore),[['lighting',mode]],'Selecting lighting must only update its renderer preference.');
+    const persisted=selected.saved();
+    assert.equal(persisted.lightingMode,mode);
+    for(const key of Object.keys(existing)) assert.deepEqual(persisted[key],existing[key],`Lighting must preserve ${key}.`);
+    const restored=filterHarness(persisted); await restored.run('boot()');
+    assert.deepEqual(restored.lightingCalls,[mode],`Saved lighting ${mode} must reach the renderer on reload.`);
+    assert.equal(restored.ids['lighting-mode'].value,String(mode));
+    assert.equal(JSON.stringify({weather:selected.weatherCalls,aa:selected.aaCalls,meadow:selected.meadowCalls,teleports:selected.teleports}),unrelatedBefore,'Lighting must preserve weather, AA, cover and location.');
+  }
+  for (const value of [2,4,8,-1,'invalid']) {
+    const invalid=filterHarness({...existing,lightingMode:value}); await invalid.run('boot()');
+    assert.deepEqual(invalid.lightingCalls,[0]); assert.equal(invalid.ids['lighting-mode'].value,'0');
+  }
+  const query=filterHarness({...existing,lightingMode:1},[],'https://test.invalid/?lighting=7'); await query.run('boot()'); query.run('initialReady=true;saveProgress();');
+  assert.deepEqual(query.lightingCalls,[7],'The explicit local review URL must override the saved lighting mode.');
+  assert.equal(query.saved().lightingMode,7);
+  const invalidQuery=filterHarness({...existing,lightingMode:7},[],'https://test.invalid/?lighting=2'); await invalidQuery.run('boot()');
+  assert.deepEqual(invalidQuery.lightingCalls,[0],'Unsupported review modes must fall back to Classic.');
+  const recommended=filterHarness({seed:1337,x:637,z:222,lightingMode:7}); await recommended.run('boot()'); recommended.run('initialReady=true;');
+  assert.equal(recommended.ids['look-status'].textContent,'Custom look','Experimental lighting must not advertise the reviewed baseline.');
+  recommended.ids['restore-visual-defaults'].fire('click');
+  assert.equal(recommended.lightingCalls.at(-1),0); assert.equal(recommended.saved().lightingMode,0); assert.equal(recommended.ids['lighting-mode'].value,'0');
+  assert.equal(recommended.ids['look-status'].textContent,'Recommended look');
+  console.log('PASS: Classic lighting migration; all lighting modes apply immediately and survive reload; unrelated preferences/progress retained; review URL override; invalid-mode fallback; baseline reset and summary.');
 }
 
 async function verifyRemovedFilterMigration() {
@@ -504,6 +542,7 @@ async function main(){
   await verifyInteriorTours();
   await verifyFilterSettings();
   await verifyResolutionSettings();
+  await verifyLightingSettings();
   await verifyRemovedFilterMigration();
   await verifyGroundCoverSettings();
   await verifyWeatherSettings();

@@ -38,8 +38,56 @@ struct Globals {
     rooms_b:array<vec4<f32>,12>,
     rooms_c:array<vec4<f32>,12>,
     hearth_rooms:array<vec4<f32>,2>,
+    ao_params:vec4<f32>, // ambient visibility strength; zero is the legacy path
 };
 @group(0) @binding(0) var<uniform> u: Globals;
+@group(0) @binding(9) var ambient_visibility:texture_2d<f32>;
+
+fn ambient_occlusion(pixel:vec2<f32>)->f32 {
+    // A camera-space texture must never shade the planar reflection camera.
+    // Branch before the load preserves the disabled shader's lighting values.
+    if u.ao_params.x<=0.0 || u.reflection_params.z>0.5 {return 1.0;}
+    let size=vec2<i32>(textureDimensions(ambient_visibility));
+    let p=clamp(vec2<i32>(pixel),vec2<i32>(0),size-vec2<i32>(1));
+    return mix(1.0,textureLoad(ambient_visibility,p,0).r,clamp(u.ao_params.x,0.0,1.0));
+}
+
+// Compile direct probe evaluation only into the small reflected-camera pass.
+const DIRECT_PROBES:bool=false;
+@group(0) @binding(14) var screen_indirect:texture_2d<f32>;
+@group(0) @binding(15) var screen_indirect_depth:texture_2d<f32>;
+
+fn surface_indirect(world:vec3<f32>,normal:vec3<f32>,legacy:vec3<f32>,pixel:vec3<f32>)->vec3<f32> {
+    if gi_state.parameters.y<0.5 {return legacy;}
+    if DIRECT_PROBES {return gi_indirect(world,normal,legacy);}
+    let local=world-gi_state.origin_cell.xyz;
+    let extent=vec3<f32>(gi_state.voxel_dims.xyz)*gi_state.origin_cell.w;
+    // The local volume has zero confidence in its outer metre. Preserve the
+    // original ambient there before fetching the camera's irradiance cache.
+    if any(local<=vec3<f32>(1.0)) || any(local>=extent-vec3<f32>(1.0)) {return legacy;}
+    let size=vec2<i32>(textureDimensions(screen_indirect));
+    let coordinate=(pixel.xy-vec2<f32>(0.5))*0.5-vec2<f32>(0.5);
+    let base=vec2<i32>(floor(coordinate));
+    let fraction=fract(coordinate);
+    let target_distance=1.0/max(1.0-pixel.z,0.000001);
+    var irradiance=vec3<f32>(0.0);
+    var confidence=0.0;
+    var total=0.0;
+    for(var y=0;y<2;y+=1){for(var x=0;x<2;x+=1){
+        let p=clamp(base+vec2<i32>(x,y),vec2<i32>(0),size-vec2<i32>(1));
+        let value=textureLoad(screen_indirect,p,0);
+        let depth=textureLoad(screen_indirect_depth,p,0).r;
+        let sample_distance=1.0/max(1.0-depth,0.000001);
+        let edge=max(0.0,1.0-abs(sample_distance-target_distance)/max(target_distance,1.0)*32.0);
+        let bilinear=select(1.0-fraction.x,fraction.x,x==1)*select(1.0-fraction.y,fraction.y,y==1);
+        let weight=bilinear*edge*edge;
+        irradiance+=value.rgb*value.a*weight;
+        confidence+=value.a*weight;
+        total+=weight;
+    }}
+    if confidence<0.00001 || total<0.00001 {return legacy;}
+    return mix(legacy,irradiance/confidence,clamp(confidence/total,0.0,1.0));
+}
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -506,7 +554,7 @@ fn surface_pigment(base: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, materia
     return surface_communities(substrate, world, normal, material, footprint, distance);
 }
 
-fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32) -> vec3<f32> {
+fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, material: f32, visibility: f32, distance: f32, sky_access: f32, world:vec3<f32>, ambient_visibility_factor:f32, pixel:vec3<f32>) -> vec3<f32> {
     let sun = normalize(u.light.xyz);
     let diffuse = max(dot(normal, sun), 0.0);
     let up = clamp(normal.y * 0.5 + 0.5, 0.0, 1.0);
@@ -545,7 +593,7 @@ fn surface_lighting(base: vec3<f32>, linear_base: vec3<f32>, normal: vec3<f32>, 
     let reflectance = mix(base, vec3<f32>(pigment_luma), nocturne);
     ambient *= (0.30 + sky_access * 0.38) * (1.0 - u.weather.x * 0.16);
     direct *= 1.30;
-    let illumination = ambient * u.ambient.rgb + sunlight * direct * visibility * u.direct.w;
+    let illumination = surface_indirect(world,normal,ambient * u.ambient.rgb,pixel) * ambient_visibility_factor + sunlight * direct * visibility * u.direct.w;
     var albedo = linear_base;
     if nocturne > 0.001 { albedo = pow(max(reflectance,vec3<f32>(0.0)),vec3<f32>(2.2)); }
     // Illuminate linear albedo. Gamma-converting the product would darken
@@ -618,12 +666,11 @@ struct SurfaceGrad { world_x:vec3<f32>, world_y:vec3<f32>, uv_x:vec2<f32>, uv_y:
 fn surface_grad(v:VertexOut)->SurfaceGrad {
     return SurfaceGrad(dpdx(v.world),dpdy(v.world),dpdx(v.uv),dpdy(v.uv));
 }
-fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
+// Shared silhouette contract for the color and GTAO depth passes. Wind and
+// meadow/player deformation already share the original vertex entries.
+fn surface_visibility(v:VertexOut,distance:f32) {
     if u.reflection_params.z > 0.5 && (v.world.y < u.reflection_params.x - 0.12
         || (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) { discard; }
-    let distance = length(v.world - u.camera.xyz);
-    let water_footprint = max(length(grad.world_x.xz), length(grad.world_y.xz));
-    let material_footprint = max(length(grad.world_x), length(grad.world_y));
     if v.material > 6.5 && v.material < 9.5 {
         // Near terrain replaces far patches exactly on the streamed chunk mask.
         let tile_delta = floor(v.world.xz / 192.0) - floor(u.camera.xz / 192.0);
@@ -651,6 +698,13 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
             discard;
         }
     }
+}
+
+fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
+    let distance = length(v.world - u.camera.xyz);
+    let water_footprint = max(length(grad.world_x.xz), length(grad.world_y.xz));
+    let material_footprint = max(length(grad.world_x), length(grad.world_y));
+    surface_visibility(v,distance);
 
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) {
         return vec4<f32>(atmospheric_color(water_color(v.world,distance,v.color,water_footprint,v.normal,v.uv.x),v.world,distance),1.0);
@@ -679,19 +733,20 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     let view = (u.camera.xyz-v.world)/max(distance,0.0001);
     var visibility = sun_visibility(v.world, normal) * weather_light_visibility(v.world);
     if room>=0 {visibility*=room_aperture(v.world,light,u32(room));}
-    var color = surface_lighting(pigment, pigment_linear, normal, v.material, visibility, distance, sky_access);
+    let ao_visibility=ambient_occlusion(v.clip.xy);
+    var color:vec3<f32>;
     let human = v.texture >= 1000.0;
-    if human && room<0 {
+    if room>=0 {
+        color=pigment_linear*(surface_indirect(v.world,normal,u.ambient.rgb*room_ambient(v.world,u32(room))*0.62,v.clip.xyz)*ao_visibility+u.direct.rgb*u.direct.w*visibility*max(dot(normal,light),0.0));
+    } else if human {
         // Costume plates contain their own small-scale form shading. A soft
         // wrapped body response avoids turning them into black sheets when
         // the billboard rotates, while still obeying actual scene shadows.
         let wrap=0.32+0.68*max(dot(normal,light),0.0);
-        color=pigment_linear*(u.ambient.rgb*0.50*sky_access
+        color=pigment_linear*(surface_indirect(v.world,normal,u.ambient.rgb*0.50*sky_access,v.clip.xyz)*ao_visibility
             +u.direct.rgb*u.direct.w*visibility*wrap);
     }
-    if room>=0 {
-        color=pigment_linear*(u.ambient.rgb*room_ambient(v.world,u32(room))*0.62+u.direct.rgb*u.direct.w*visibility*max(dot(normal,light),0.0));
-    }
+    else {color=surface_lighting(pigment,pigment_linear,normal,v.material,visibility,distance,sky_access,v.world,ao_visibility,v.clip.xyz);}
     let wet = u.surface.x * deposition * (1.0-snow);
     let roughness = mix(pixel.roughness,0.92,snow);
     let vegetation = (v.material>0.5 && v.material<1.5)
@@ -734,6 +789,22 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
     let grad=surface_grad(v);
     if (v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5) { discard; }
     return shade_surface(v,grad);
+}
+@fragment fn fs_ao_depth(v:VertexOut) {
+    let uv_x=dpdx(v.uv);let uv_y=dpdy(v.uv);
+    surface_visibility(v,length(v.world-u.camera.xyz));
+    // Water, glass and flames do not occlude diffuse ambient lighting. Human
+    // sprite plates and foliage retain precisely the color pass's cutouts.
+    if (v.material>3.5 && v.material<4.5) || (v.material>7.5 && v.material<8.5)
+        || (v.material>9.5 && v.material<10.5) || v.texture==16.0 {discard;}
+    if v.texture>=1000.0 {
+        let code=u32(v.texture-1000.0+0.1);
+        let texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(48.0,96.0))
+            +vec2<u32>(((code/16u)%4u)*48u,((code/64u)%4u)*96u));
+        if textureLoad(human_sprites,texel,i32(code%16u+((code/16384u)%4u)*16u),0).g<0.04 {discard;}
+    } else if v.texture>=5.0 && v.texture<10.0 {
+        if textureSampleGrad(material_color,foliage_sampler,v.uv,i32(v.texture+0.1),uv_x,uv_y).a<0.40 {discard;}
+    }
 }
 @fragment fn fs_water(v: VertexOut) -> @location(0) vec4<f32> {
     let grad=surface_grad(v);
