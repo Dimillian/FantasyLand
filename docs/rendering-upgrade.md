@@ -32,8 +32,10 @@ renderer; they do not introduce an external game engine.
 Sunlight, material specular response, emission, weather and post-processing
 remain separate from indirect illumination. Unavailable probe coverage falls
 back to existing ambient lighting. If worker generation fails, the browser
-uses ambient fallback and reports it in diagnostics. Classic remains the
-saved/default migration path while the upgraded look is reviewed.
+uses ambient fallback and reports it in diagnostics. Full indirect is now the
+engine, fresh-save and graphics-reset default (2026-10-02, chosen by the user).
+Explicitly saved lighting choices remain respected. Historical benchmark
+results below retain their original measured configurations.
 
 Select Classic, Ambient depth, Detailed shadows or Full indirect in graphics
 settings. `?lighting=7` enables all three for a local review session. Graphics

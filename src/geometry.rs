@@ -13,6 +13,7 @@ const PROP_GRID: f32 = 12.0;
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    pub wind: f32, // stem response; packed into normal.w without extra GPU bytes
     pub color: [f32; 3],
     pub material: f32,
     /// Explicit UV and atlas layer; -1 selects world-space substrate mapping.
@@ -49,6 +50,7 @@ impl MeshData {
         let normal = [n[0] / len, n[1] / len, n[2] / len];
         let i = self.vertices.len() as u32;
         self.vertices.extend([a, b, c].map(|position| Vertex {
+            wind: 0.,
             position,
             normal,
             color,
@@ -503,6 +505,7 @@ fn water_triangle(mesh: &mut MeshData, triangle: [GroundVertex; 3], fallback: f3
         };
         for (position, depth) in [polygon[0], polygon[i], polygon[i + 1]] {
             mesh.vertices.push(Vertex {
+                wind: 0.,
                 position,
                 normal,
                 color: [
@@ -4830,6 +4833,7 @@ fn render_tree_lod(mesh: &mut MeshData, p: Prop, lod: u8) {
                 v.texture = 3.0;
             }
         }
+        tree_wind_weights(mesh, surface_start, p, &model);
         return;
     }
     if !matches!(p.kind, PropKind::Birch | PropKind::DeadTree) {
@@ -4901,7 +4905,22 @@ fn render_tree_lod(mesh: &mut MeshData, p: Prop, lod: u8) {
             v.texture = 3.0;
         }
     }
+    tree_wind_weights(mesh, surface_start, p, &model);
 }
+
+fn tree_wind_weights(mesh: &mut MeshData, first: usize, p: Prop, model: &TreeModel) {
+    let flexibility = match p.kind {
+        PropKind::Birch | PropKind::Willow => 1.0,
+        PropKind::DeadTree => 0.16,
+        PropKind::Pine | PropKind::Fir => 0.62,
+        _ => 0.48,
+    };
+    for v in &mut mesh.vertices[first..] {
+        let height = ((v.position[1] - p.position[1] - 0.25) / model.height).clamp(0., 1.);
+        v.wind = (height * height * flexibility * (model.height / 18.).clamp(0.4, 1.4)).min(1.);
+    }
+}
+
 fn pine(mesh: &mut MeshData, p: Prop) {
     render_tree(mesh, p, false);
 }
@@ -5918,6 +5937,43 @@ mod character_asset_tests {
             std::hint::black_box(blocks_player(&w, x + (i as f32 * 0.031), z));
         }
         println!("{formations} real formations, {neighbor_probes} neighboring-cell collider probes; representative [{x},{z}]; repeated collision mean {:.3}ms",now.elapsed().as_secs_f64()*10.);
+    }
+    #[test]
+    fn wind_weights_keep_tree_roots_fixed_and_all_lods_flexible() {
+        for kind in [
+            PropKind::Birch,
+            PropKind::Fir,
+            PropKind::Broadleaf,
+            PropKind::Willow,
+        ] {
+            let p = Prop {
+                position: [100., 10., 200.],
+                scale: 1.,
+                canopy: 1.,
+                seed: 44,
+                kind,
+                biome: Biome::Forest,
+                style: PropStyle::default(),
+            };
+            for lod in 0..=2 {
+                let mut mesh = MeshData::default();
+                render_tree_lod(&mut mesh, p, lod);
+                assert!(mesh
+                    .vertices
+                    .iter()
+                    .any(|v| v.wind > 0.08 && v.material == 3.));
+                assert!(mesh
+                    .vertices
+                    .iter()
+                    .any(|v| v.wind > 0.08 && v.material < 1.5));
+                for v in &mesh.vertices {
+                    assert!((0.0..=1.0).contains(&v.wind));
+                    if v.position[1] <= p.position[1] + 0.25 {
+                        assert_eq!(v.wind, 0.);
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn grounding_retains_crown_normals_and_fixes_shrub_roots_in_wind() {

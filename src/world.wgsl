@@ -38,6 +38,7 @@ struct Globals {
     rooms_b:array<vec4<f32>,12>,
     rooms_c:array<vec4<f32>,12>,
     hearth_rooms:array<vec4<f32>,2>,
+    wind_field:WindField,
     ao_params:vec4<f32>, // ambient visibility strength; zero is the legacy path
 };
 @group(0) @binding(0) var<uniform> u: Globals;
@@ -185,38 +186,11 @@ fn sky_gradient(direction: vec3<f32>) -> vec3<f32> {
     return color;
 }
 
-// Identical helper in shadow.wgsl. The prevailing wind agrees with rainfall's
-// east-northeast direction. Broad gusts move neighboring plants together;
-// the small crosswind oscillation prevents a rigid synchronized lean.
-fn vegetation_wind(world: vec3<f32>, time: f32, strength: f32) -> vec2<f32> {
-    let direction = normalize(u.storm.xy + vec2<f32>(0.001,0.0));
-    let across = vec2<f32>(-direction.y,direction.x);
-    // Weather rotates displacement, never the absolute-coordinate phase field.
-    // Otherwise a small wind turn becomes a large phase jump 60km from origin.
-    let wave = time * 0.70 - dot(world.xz, vec2<f32>(0.82,0.57)) * 0.026;
-    let cross_wave = time * 0.39 + dot(world.xz, vec2<f32>(-0.57,0.82)) * 0.019;
-    let gust = 0.53 + sin(wave) * 0.27 + sin(cross_wave) * 0.16;
-    let flutter = sin(time * 1.9 + dot(world.xz, vec2<f32>(0.31, 0.23))) * 0.08;
-    return (direction * (gust + flutter) + across * sin(cross_wave) * 0.12)
-         * clamp(strength, 0.0, 2.5);
-}
-
 fn transform_vertex(v: VertexIn) -> VertexOut {
     var o: VertexOut;
     var p = v.position;
-    if v.material > 0.5 && v.material < 1.5 {
-        let weight = clamp((1.4 - v.material) / 0.4, 0.0, 1.0);
-        let bend = vegetation_wind(p, u.params.x, u.air.y) * (0.32 * weight);
-        p.x += bend.x;
-        p.z += bend.y;
-    }
-    if v.material > 5.5 && v.material < 6.5 {
-        // Fractional material encodes bend weight; roots remain fixed.
-        let weight = clamp((v.material - 6.0) / 0.4, 0.0, 1.0);
-        let bend = vegetation_wind(p, u.params.x, u.air.y) * (0.11 * weight * weight);
-        p.x += bend.x;
-        p.z += bend.y;
-    }
+    let displacement=wind_displacement(p,v.material,v.normal.w,u.wind_field);
+    p += displacement;
     if v.material > 9.5 && v.material < 10.5 {
         let tip = v.uv.y*v.uv.y;
         p.x += sin(u.params.x*5.7+v.position.z)*0.13*tip;
@@ -224,6 +198,9 @@ fn transform_vertex(v: VertexIn) -> VertexOut {
         p.y += sin(u.params.x*7.1+v.position.x)*0.08*tip;
     }
     var surface_normal = v.normal.xyz;
+    if v.material>5.5 && v.material<6.5 {
+        surface_normal=normalize(surface_normal-vec3<f32>(displacement.x,0.0,displacement.z)*0.8);
+    }
     if ((v.material > 3.5 && v.material < 4.5) || (v.material > 7.5 && v.material < 8.5)) && v.color.z > 0.5 {
         // Broad geometric sea swells survive coarse terrain tessellation. Near
         // shore they converge to the exact clipped coastline; fine ripples are

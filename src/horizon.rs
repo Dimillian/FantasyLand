@@ -54,6 +54,7 @@ pub fn patch_parts(world: &World, cx: i32, cz: i32) -> [MeshData; 2] {
                 let start = mesh.vertices.len() as u32;
                 for (position, _, _, depth) in points {
                     mesh.vertices.push(Vertex {
+                        wind: 0.,
                         position: position.to_array(),
                         normal,
                         color: if ocean {
@@ -375,6 +376,7 @@ fn canopy_triangle(mesh: &mut MeshData, p: [Vec3; 3], color: [f32; 3]) {
     let start = mesh.vertices.len() as u32;
     for position in p {
         mesh.vertices.push(Vertex {
+            wind: 0.,
             position: position.to_array(),
             normal,
             color,

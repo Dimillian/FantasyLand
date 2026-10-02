@@ -104,9 +104,11 @@ impl CascadedShadows {
         time: f32,
         wind: f32,
         wind_dir: Vec2,
+        wind_field: crate::wind::WindUniform,
     ) -> Option<Mat4> {
         let far_matrix = if self.enabled {
-            self.far.update(queue, eye, sun, time, wind, wind_dir)
+            self.far
+                .update(queue, eye, sun, time, wind, wind_dir, wind_field)
         } else {
             Mat4::IDENTITY
         };
@@ -136,6 +138,7 @@ struct ShadowUniform {
     matrix: [[f32; 4]; 4],
     origin: [f32; 4],
     time: [f32; 4],
+    wind_field: crate::wind::WindUniform,
 }
 pub struct ShadowMap {
     pub view: wgpu::TextureView,
@@ -217,7 +220,9 @@ impl ShadowMap {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sun shadow shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("wind.wgsl"), include_str!("shadow.wgsl")).into(),
+            ),
         });
         let attributes = crate::vertex::ATTRIBUTES;
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -307,6 +312,7 @@ impl ShadowMap {
         time: f32,
         wind: f32,
         wind_dir: glam::Vec2,
+        wind_field: crate::wind::WindUniform,
     ) -> Mat4 {
         let view = shadow_view(sun);
         let texel = self.radius * 2.0 / self.size as f32;
@@ -318,6 +324,7 @@ impl ShadowMap {
             matrix: matrix.to_cols_array_2d(),
             origin: eye.extend(1.).to_array(),
             time: [time, wind, wind_dir.x, wind_dir.y],
+            wind_field,
         };
         if self.last_published.get() != Some(uniform) {
             queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));

@@ -92,7 +92,9 @@ pub fn cell(
     Some(MeadowCell {
         data: [
             seed,
-            c[0] | c[1] << 8 | c[2] << 16,
+            c[0] | c[1] << 8
+                | c[2] << 16
+                | ((crate::wind::ground_exposure(e.tree_density) * 255.).round() as u32) << 24,
             (height * 255.).round() as u32 | ((coverage.clamp(0., 1.) * 255.).round() as u32) << 8,
             ix + iz * 32 | 0xffff0000,
         ],

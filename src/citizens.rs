@@ -749,6 +749,7 @@ impl Life {
                 (0.5, 0., [1., 1.]),
             ] {
                 mesh.vertices.push(Vertex {
+                    wind: 0.,
                     position: [
                         position[0] + right[0] * x * width,
                         position[1] + (y * 96.0 - 4.0) / 92.0 * h,

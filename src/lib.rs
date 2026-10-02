@@ -35,6 +35,7 @@ pub mod traversal;
 mod vertex;
 pub mod water_sim;
 pub mod weather;
+pub mod wind;
 pub mod world;
 
 use player::Player;

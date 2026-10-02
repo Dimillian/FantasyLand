@@ -21,6 +21,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1337);
     let check = std::env::args().nth(3);
+    if check.as_deref() == Some("wind-motion") {
+        render_checks::wind_motion(seed, &dir);
+        return;
+    }
     if check.as_deref() == Some("render-compare") {
         render_checks::run(seed, &dir, |r, mask| r.set_lighting_mode(mask));
         return;

@@ -221,14 +221,14 @@ async function verifyResolutionSettings() {
   assert.equal(custom.ids['look-status'].textContent,'Custom look');
   custom.ids['restore-visual-defaults'].fire('click');
   const baseline = custom.saved();
-  for (const [key,value] of Object.entries({quality:1,antialiasing:1,filterMode:1,filterStrength:1,groundCoverDensity:4,meadowCarpet:true,sunShadows:true,lightingMode:0,reflections:true,enclosure:true,renderResolution:1,adaptiveResolution:false})) assert.equal(baseline[key],value,`Default ${key}`);
+  for (const [key,value] of Object.entries({quality:1,antialiasing:1,filterMode:1,filterStrength:1,groundCoverDensity:4,meadowCarpet:true,sunShadows:true,lightingMode:7,reflections:true,enclosure:true,renderResolution:1,adaptiveResolution:false})) assert.equal(baseline[key],value,`Default ${key}`);
   for (const key of ['seed','x','z','waypoint','atlas']) assert.deepEqual(baseline[key],existing[key],`Restore defaults must preserve ${key}`);
   assert.equal(baseline.sensitivity,1.45); assert.equal(baseline.weatherMode,5); assert.equal(baseline.weatherSpeed,3); assert.equal(baseline.weatherPaused,true);
   assert.deepEqual(custom.teleports,[[810,-160]],'Restoring graphics never teleports the player.');
   assert.equal(custom.resolutionCalls.at(-1),1); assert.equal(custom.qualityCalls.at(-1),1);
   assert.equal(custom.groundCoverCalls.at(-1),4); assert.equal(custom.aaCalls.at(-1),1);
   assert.deepEqual(custom.calls.at(-1),[1,1]); assert.equal(custom.meadowCalls.at(-1),true);
-  assert.equal(custom.lightingCalls.at(-1),0); assert.equal(custom.ids['lighting-mode'].value,'0');
+  assert.equal(custom.lightingCalls.at(-1),7); assert.equal(custom.ids['lighting-mode'].value,'7');
   assert.equal(custom.ids['look-status'].textContent,'Recommended look');
   const baselineReload=filterHarness(baseline); await baselineReload.run('boot()');
   assert.equal(baselineReload.resolutionCalls.at(-1),1); assert.equal(baselineReload.ids['look-status'].textContent,'Recommended look');
@@ -238,8 +238,8 @@ async function verifyResolutionSettings() {
 async function verifyLightingSettings() {
   const existing = {seed:1337,x:637,z:222,quality:1,sensitivity:1.2,antialiasing:2,filterMode:2,filterStrength:0.8,renderResolution:420,groundCoverDensity:2.25,meadowCarpet:false,sunShadows:false,reflections:false,enclosure:false,weatherMode:5,weatherSpeed:3,weatherPaused:true,waypoint:{x:810,z:390,name:'The Road'},atlas:{x:640,z:225,span:6000}};
   const selected = filterHarness(existing); await selected.run('boot()'); selected.run('initialReady=true;');
-  assert.deepEqual(selected.lightingCalls,[0],'An older save must keep Classic lighting at boot.');
-  assert.equal(selected.ids['lighting-mode'].value,'0');
+  assert.deepEqual(selected.lightingCalls,[7],'An older save without a lighting choice must use Full indirect at boot.');
+  assert.equal(selected.ids['lighting-mode'].value,'7');
   assert.ok(selected.rendererEvents.findIndex(e=>e[0]==='lighting') < selected.rendererEvents.findIndex(e=>e[0]==='resize'),'Lighting must reach the renderer before first resize.');
   const unrelatedBefore = JSON.stringify({weather:selected.weatherCalls,aa:selected.aaCalls,meadow:selected.meadowCalls,teleports:selected.teleports});
   for (const mode of [1,3,7,0]) {
@@ -256,19 +256,19 @@ async function verifyLightingSettings() {
   }
   for (const value of [2,4,8,-1,'invalid']) {
     const invalid=filterHarness({...existing,lightingMode:value}); await invalid.run('boot()');
-    assert.deepEqual(invalid.lightingCalls,[0]); assert.equal(invalid.ids['lighting-mode'].value,'0');
+    assert.deepEqual(invalid.lightingCalls,[7]); assert.equal(invalid.ids['lighting-mode'].value,'7');
   }
   const query=filterHarness({...existing,lightingMode:1},[],'https://test.invalid/?lighting=7'); await query.run('boot()'); query.run('initialReady=true;saveProgress();');
   assert.deepEqual(query.lightingCalls,[7],'The explicit local review URL must override the saved lighting mode.');
   assert.equal(query.saved().lightingMode,7);
   const invalidQuery=filterHarness({...existing,lightingMode:7},[],'https://test.invalid/?lighting=2'); await invalidQuery.run('boot()');
-  assert.deepEqual(invalidQuery.lightingCalls,[0],'Unsupported review modes must fall back to Classic.');
+  assert.deepEqual(invalidQuery.lightingCalls,[7],'Unsupported review modes must fall back to Full indirect.');
   const recommended=filterHarness({seed:1337,x:637,z:222,lightingMode:7}); await recommended.run('boot()'); recommended.run('initialReady=true;');
-  assert.equal(recommended.ids['look-status'].textContent,'Custom look','Experimental lighting must not advertise the reviewed baseline.');
+  assert.equal(recommended.ids['look-status'].textContent,'Recommended look','Full indirect lighting is the chosen default.');
   recommended.ids['restore-visual-defaults'].fire('click');
-  assert.equal(recommended.lightingCalls.at(-1),0); assert.equal(recommended.saved().lightingMode,0); assert.equal(recommended.ids['lighting-mode'].value,'0');
+  assert.equal(recommended.lightingCalls.at(-1),7); assert.equal(recommended.saved().lightingMode,7); assert.equal(recommended.ids['lighting-mode'].value,'7');
   assert.equal(recommended.ids['look-status'].textContent,'Recommended look');
-  console.log('PASS: Classic lighting migration; all lighting modes apply immediately and survive reload; unrelated preferences/progress retained; review URL override; invalid-mode fallback; baseline reset and summary.');
+  console.log('PASS: Full indirect lighting defaults; all lighting modes apply immediately and survive reload; unrelated preferences/progress retained; review URL override; invalid-mode fallback; baseline reset and summary.');
 }
 
 async function verifyRemovedFilterMigration() {

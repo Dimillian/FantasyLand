@@ -166,3 +166,54 @@ pub fn run(seed: u32, dir: &str, configure: impl Fn(&mut Renderer, u32)) {
         println!("fixture {id}: captured {mode} at {resolution}p");
     }
 }
+
+/// Fixed-camera sequences demonstrate wind on real foliage, with no camera bob.
+/// Invocation: verify output/wind 1337 wind-motion [forest|meadow] [weather 1..8].
+pub fn wind_motion(seed: u32, dir: &str) {
+    let args: Vec<_> = std::env::args().collect();
+    let id = args.get(4).map(String::as_str).unwrap_or("forest");
+    assert!(["forest", "meadow"].contains(&id));
+    let mode = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(2);
+    let world = World::new(seed);
+    let mut f = fixture(&world, id);
+    f.hour = 11.;
+    f.pitch = if id == "meadow" { -0.12 } else { 0.14 };
+    let eye = Vec3::from_array(f.eye);
+    let mut r = pollster::block_on(Renderer::headless(1280, 720)).unwrap();
+    r.set_quality(1);
+    r.set_render_resolution(720);
+    r.set_antialiasing(1);
+    r.set_ground_cover_density(4.);
+    r.set_lighting_mode(7);
+    r.set_filter(1, 1.);
+    r.set_weather_mode(mode);
+    for _ in 0..600 {
+        r.update_weather(&world, eye, f.hour, 0.05);
+        r.advance_time(0.05);
+    }
+    r.set_weather_paused(true);
+    r.update_chunks(&world, eye, true);
+    while r.pending_count() > 0 {
+        r.update_chunks(&world, eye, false);
+    }
+    for _ in 0..120 {
+        r.render(eye, f.yaw, f.pitch, f.hour).unwrap();
+        r.device.poll(wgpu::PollType::Wait).unwrap();
+    }
+    let mut completed = Vec::new();
+    for frame in 0..96 {
+        for _ in 0..5 {
+            r.advance_time(1. / 60.);
+        }
+        let t = Instant::now();
+        r.render(eye, f.yaw, f.pitch, f.hour).unwrap();
+        r.device.poll(wgpu::PollType::Wait).unwrap();
+        completed.push(t.elapsed().as_secs_f64() * 1000.);
+        png(
+            &format!("{dir}/frame-{frame:03}.png"),
+            &r.capture_rgba().unwrap(),
+        );
+    }
+    fs::write(format!("{dir}/motion.json"),serde_json::to_string_pretty(&serde_json::json!({"scene":id,"weather":r.weather_state(),"frames":96,"fps":12,"seconds":8,"eye":f.eye,"yaw":f.yaw,"pitch":f.pitch,"lighting":7,"nativeCompleted":stats(&completed),"note":"Fixed camera, 720p, 400% cover. Capture pacing is not browser FPS."})).unwrap()).unwrap();
+    println!("Wind motion captured: {id}, weather {mode}, 8 seconds");
+}

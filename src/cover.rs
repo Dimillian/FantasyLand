@@ -274,7 +274,13 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
                     let angle = random(seed, 401) * std::f32::consts::TAU;
                     [angle.sin(), angle.cos()]
                 },
-                data: [pack_color(color), kind * VARIANTS + variant],
+                data: [
+                    pack_color(color)
+                        | ((crate::wind::ground_exposure(ecology.tree_density) * 255.).round()
+                            as u32)
+                            << 24,
+                    kind * VARIANTS + variant,
+                ],
             };
             plants.push((random(seed, 397) * 4., seed, instance));
         }

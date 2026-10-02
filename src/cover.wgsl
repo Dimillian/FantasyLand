@@ -60,7 +60,7 @@ fn vs_cover(input:CoverIn,@builtin(vertex_index) vertex:u32)->VertexOut {
     let color=plant.color.rgb*mix(vec3<f32>(1.0),tint,plant.color.w)*root_light;
     let weight=clamp(p.y/0.65,0.0,1.0);
     return transform_vertex(VertexIn(vec3<f32>(world_xz.x,surface.x+p.y-0.018,world_xz.y),
-        vec4<f32>(normal,0.0),color,6.0+weight*0.4,plant.surface.xy,plant.surface.z));
+        vec4<f32>(normal,-f32(packed>>24u)/255.0),color,6.0+weight*0.4,plant.surface.xy,plant.surface.z));
 }
 
 // Opaque ribbons: dense coverage without transparent card padding or per-blade
@@ -88,7 +88,7 @@ struct MeadowIn { @location(0) root:vec4<f32>, @location(1) data:vec4<u32> };
     let pixel_height=blade_height*u.settings.w*0.688191/max(root_clip.w,0.2);
     let wind_detail=mix(0.35,1.0,smoothstep(2.0,10.0,pixel_height));
     var o=transform_vertex(VertexIn(vec3<f32>(world_xz.x,ground.x+q.y*blade_height-0.012,world_xz.y),
-        vec4<f32>(n,0.0),pigment,6.0+q.y*sqrt(widths.y*wind_detail)*0.4,vec2<f32>(q.x*0.5+0.5,q.y),-1.0));
+        vec4<f32>(n,-f32(packed>>24u)/255.0),pigment,6.0+q.y*sqrt(widths.y*wind_detail*min(blade_height/0.65,1.0))*0.4,vec2<f32>(q.x*0.5+0.5,q.y),-1.0));
     // Part gently around the player. This is a local bend, never a simulation
     // over the entire continent; roots remain fixed and recover as we pass.
     let away=o.world.xz-u.camera.xz;let distance=length(away);

@@ -20,7 +20,7 @@ impl From<&Vertex> for PackedVertex {
                 (v.normal[0].clamp(-1., 1.) * 127.).round() as i8,
                 (v.normal[1].clamp(-1., 1.) * 127.).round() as i8,
                 (v.normal[2].clamp(-1., 1.) * 127.).round() as i8,
-                0,
+                (v.wind.clamp(-1., 1.) * 127.).round() as i8,
             ],
             color: v.color,
             material: v.material,
@@ -62,6 +62,7 @@ mod tests {
     #[test]
     fn metric_architecture_uvs_survive_gpu_packing_without_clamping() {
         let v = Vertex {
+            wind: 0.,
             position: [0.; 3],
             normal: [0., 1., 0.],
             color: [0.5; 3],
@@ -84,6 +85,7 @@ mod tests {
     #[test]
     fn packing_preserves_water_and_shares_card_corners() {
         let a = Vertex {
+            wind: 0.,
             position: [-77000.25, 0.123, 55123.],
             normal: [0., 1., 0.],
             color: [-1.4, 2.2, -184.3],

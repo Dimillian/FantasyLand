@@ -28,8 +28,9 @@ impl PackedMesh {
         if data.indices.is_empty() {
             bounds = [Vec3::ZERO; 2];
         }
-        bounds[0] -= Vec3::ONE;
-        bounds[1] += Vec3::ONE;
+        // Includes the maximum storm displacement of weighted crowns.
+        bounds[0] -= Vec3::splat(3.);
+        bounds[1] += Vec3::splat(3.);
         let (vertices, indices) = vertex::pack(&data.vertices, &data.indices);
         Self {
             vertices: bytemuck::cast_slice(&vertices).to_vec(),

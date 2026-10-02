@@ -47,6 +47,7 @@ struct Globals {
     rooms_b: [[f32; 4]; 12],
     rooms_c: [[f32; 4]; 12],
     hearth_rooms: [[f32; 4]; 2],
+    wind_field: crate::wind::WindUniform,
     ao_params: [f32; 4],
 }
 struct GpuMesh {
@@ -235,6 +236,7 @@ pub struct Renderer {
     quality: u32,
     resolution: u32,
     elapsed: f32,
+    wind: crate::wind::Wind,
     climate: [f32; 4],
     air: [f32; 4],
     atmosphere_position: Option<Vec3>,
@@ -342,6 +344,7 @@ impl Renderer {
             s.configure(&device, &config);
         }
         let scene_shader_source = concat!(
+            include_str!("wind.wgsl"),
             include_str!("world.wgsl"),
             "\n",
             include_str!("cover.wgsl"),
@@ -798,7 +801,7 @@ impl Renderer {
             cache: None,
         });
         let gpu_profile = crate::gpu_profile::GpuProfile::new(&device, &queue);
-        Ok(Self {
+        let mut renderer = Self {
             device,
             queue,
             gpu_error,
@@ -889,6 +892,7 @@ impl Renderer {
             quality: 1,
             resolution: 0,
             elapsed: 0.0,
+            wind: crate::wind::Wind::default(),
             climate: [0.; 4],
             air: [0., 0.4, 0.5, 0.],
             atmosphere_position: None,
@@ -906,7 +910,9 @@ impl Renderer {
             cover_drawn_instances: 0,
             width,
             height,
-        })
+        };
+        renderer.set_lighting_mode(7);
+        Ok(renderer)
     }
     fn resize_ao(&mut self) {
         self.ao_depth = self.depth.clone();
@@ -2002,6 +2008,11 @@ impl Renderer {
         };
         self.precipitation
             .advance(dt, [self.weather_state.wind_x, self.weather_state.wind_z]);
+        self.wind.advance(
+            dt,
+            [self.weather_state.wind_x, self.weather_state.wind_z],
+            self.weather_state.gust,
+        );
         self.water_sim.advance_time(dt);
         self.elapsed = (self.elapsed + dt).rem_euclid(86400.0);
         self.shelter_elapsed += dt;
@@ -2188,12 +2199,24 @@ impl Renderer {
         let wind_dir = glam::Vec2::new(weather.wind_x, weather.wind_z);
         let mut air = self.air;
         air[1] = wind;
-        let shadow_matrix = self
-            .shadow
-            .update(&self.queue, eye, sun, self.elapsed, wind, wind_dir);
-        let far_matrix = self
-            .cascades
-            .update(&self.queue, eye, sun, self.elapsed, wind, wind_dir);
+        let shadow_matrix = self.shadow.update(
+            &self.queue,
+            eye,
+            sun,
+            self.elapsed,
+            wind,
+            wind_dir,
+            self.wind.uniform(),
+        );
+        let far_matrix = self.cascades.update(
+            &self.queue,
+            eye,
+            sun,
+            self.elapsed,
+            wind,
+            wind_dir,
+            self.wind.uniform(),
+        );
         // This cached overhead view serves both local sky occlusion and shelter.
         // Unlike a screen-space effect it also covers roofs outside the view.
         let update_shelter = !self.shelter_valid
@@ -2201,9 +2224,15 @@ impl Renderer {
             || eye.distance_squared(self.shelter_origin) > 16.0;
         if update_shelter {
             self.shelter_origin = eye;
-            self.shelter_matrix =
-                self.shelter
-                    .update(&self.queue, eye, Vec3::Y, 0.0, 0.0, wind_dir);
+            self.shelter_matrix = self.shelter.update(
+                &self.queue,
+                eye,
+                Vec3::Y,
+                0.0,
+                0.0,
+                wind_dir,
+                crate::wind::WindUniform::default(),
+            );
             self.shelter_elapsed = 0.0;
             self.shelter_valid = true;
         }
@@ -2289,6 +2318,7 @@ impl Renderer {
             storm: weather.storm,
             surface: weather.surface,
             precipitation_offset: self.precipitation.uniform(),
+            wind_field: self.wind.uniform(),
             reflection_matrix: (self.reflection_projection
                 * Mat4::from_translation(eye - self.reflection_origin))
             .to_cols_array_2d(),
