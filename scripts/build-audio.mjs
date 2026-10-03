@@ -1,11 +1,12 @@
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {synth,seamless,wav,RATE} from './audio-synthesis.mjs';
 const dir=new URL('../dist/audio/',import.meta.url);mkdirSync(dir,{recursive:true});
-const manifest={version:3,sampleRate:RATE,sounds:{}};
+const manifest={version:5,sampleRate:RATE,sounds:{}};
 const loops=['air','leaves','needles','rain','roof','stream','surf','fire','insects','snow-wind'];
 const add=(id,kind,length,seed,loop=false)=>{let data=synth(kind,length,seed);if(loop)data=seamless(data);const bytes=wav(data);writeFileSync(new URL(`${id}.wav`,dir),bytes);let peak=0,energy=0;for(const s of data){peak=Math.max(peak,Math.abs(s));energy+=s*s;}manifest.sounds[id]={file:`${id}.wav`,loop,seconds:data.length/RATE,peak,rms:Math.sqrt(energy/data.length),bytes:bytes.length};};
 loops.forEach((kind,i)=>add(kind,kind,8.25+i*.37,91+i*53,true));
 for(const floor of ['grass','leaves','mud','gravel','stone','wood','sand','snow','water'])for(let i=0;i<4;i++)add(`step-${floor}-${i}`,`step-${floor}`,.32,197+i*73+floor.length*821);
 for(const kind of ['bird-forest','bird-meadow','bird-tropical','owl','frog','crow','gull','creak','thunder','thunder-cloud'])for(let i=0;i<3;i++)add(`${kind}-${i}`,kind,kind.startsWith('thunder')?7:kind==='crow'?.7:1.5,831+i*97+kind.length*101);
+for(const kind of ['swing','hit','block','hurt'])for(let i=0;i<3;i++)add(`combat-${kind}-${i}`,`combat-${kind}`,{swing:.32,hit:.30,block:.48,hurt:.34}[kind],1871+i*81+kind.length*99);
 writeFileSync(new URL('manifest.json',dir),JSON.stringify(manifest,null,2)+'\n');
 console.log(`Generated ${Object.keys(manifest.sounds).length} original sounds (${(Object.values(manifest.sounds).reduce((s,v)=>s+v.bytes,0)/1048576).toFixed(1)} MiB PCM)`);

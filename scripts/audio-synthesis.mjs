@@ -1,9 +1,11 @@
+import {combatSound} from './combat-synthesis.mjs';
 import {footstep} from './footstep-synthesis.mjs';
 // Original procedural sound palette. No recordings, downloads or external assets.
 export const RATE=22050;
 export function rng(seed=1){let s=seed>>>0;return ()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>0)/4294967296;};}
 const tau=Math.PI*2;
 export function synth(kind,seconds,seed=1){
+  if(kind.startsWith('combat-'))return combatSound(kind.slice(7),seconds,rng(seed),RATE);
   if(kind.startsWith('step-'))return footstep(kind.slice(5),seconds,rng(seed),RATE);
   const r=rng(seed),n=Math.round(seconds*RATE),a=new Float32Array(n);let low=0,mid=0,slow=0,phase=0;
   const bird=kind.startsWith('bird');

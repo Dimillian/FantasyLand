@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 5,
   "sampleRate": 22050,
   "sounds": {
     "air": {
@@ -609,6 +609,102 @@
       "peak": 0.41750049591064453,
       "rms": 0.06014476712400936,
       "bytes": 308744
+    },
+    "combat-swing-0": {
+      "file": "combat-swing-0.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3799999952316284,
+      "rms": 0.07264667556714478,
+      "bytes": 14156
+    },
+    "combat-swing-1": {
+      "file": "combat-swing-1.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3799999952316284,
+      "rms": 0.06939701480459315,
+      "bytes": 14156
+    },
+    "combat-swing-2": {
+      "file": "combat-swing-2.wav",
+      "loop": false,
+      "seconds": 0.32,
+      "peak": 0.3799999952316284,
+      "rms": 0.06003202325123101,
+      "bytes": 14156
+    },
+    "combat-hit-0": {
+      "file": "combat-hit-0.wav",
+      "loop": false,
+      "seconds": 0.3,
+      "peak": 0.550000011920929,
+      "rms": 0.06580040134681125,
+      "bytes": 13274
+    },
+    "combat-hit-1": {
+      "file": "combat-hit-1.wav",
+      "loop": false,
+      "seconds": 0.3,
+      "peak": 0.550000011920929,
+      "rms": 0.06108244014630229,
+      "bytes": 13274
+    },
+    "combat-hit-2": {
+      "file": "combat-hit-2.wav",
+      "loop": false,
+      "seconds": 0.3,
+      "peak": 0.550000011920929,
+      "rms": 0.062482670031830785,
+      "bytes": 13274
+    },
+    "combat-block-0": {
+      "file": "combat-block-0.wav",
+      "loop": false,
+      "seconds": 0.48,
+      "peak": 0.6299999952316284,
+      "rms": 0.05465459349450305,
+      "bytes": 21212
+    },
+    "combat-block-1": {
+      "file": "combat-block-1.wav",
+      "loop": false,
+      "seconds": 0.48,
+      "peak": 0.6299999952316284,
+      "rms": 0.058369778056389855,
+      "bytes": 21212
+    },
+    "combat-block-2": {
+      "file": "combat-block-2.wav",
+      "loop": false,
+      "seconds": 0.48,
+      "peak": 0.6299999952316284,
+      "rms": 0.053214708180777594,
+      "bytes": 21212
+    },
+    "combat-hurt-0": {
+      "file": "combat-hurt-0.wav",
+      "loop": false,
+      "seconds": 0.34,
+      "peak": 0.46000000834465027,
+      "rms": 0.044827552035063715,
+      "bytes": 15038
+    },
+    "combat-hurt-1": {
+      "file": "combat-hurt-1.wav",
+      "loop": false,
+      "seconds": 0.34,
+      "peak": 0.46000000834465027,
+      "rms": 0.04918671266519117,
+      "bytes": 15038
+    },
+    "combat-hurt-2": {
+      "file": "combat-hurt-2.wav",
+      "loop": false,
+      "seconds": 0.34,
+      "peak": 0.46000000834465027,
+      "rms": 0.05155084015988844,
+      "bytes": 15038
     }
   }
 }

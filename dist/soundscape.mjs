@@ -10,7 +10,7 @@ function smooth(param,value,time,seconds){
   else {const current=param.value;param.cancelScheduledValues(time);param.setValueAtTime(current,time);}
   param.setTargetAtTime(value,time,seconds);
 }
-const DEFAULTS={master:.75,ambience:.80,footsteps:.45,wildlife:.75};
+const DEFAULTS={master:.75,ambience:.80,footsteps:.45,wildlife:.75,effects:.70};
 export class Soundscape {
   constructor(saved={}){
     this.volumes={};for(const [k,v] of Object.entries(DEFAULTS))this.volumes[k]=clamp(Number.isFinite(Number(saved?.[k]))?Number(saved[k]):v);
@@ -38,7 +38,7 @@ export class Soundscape {
     this.gate=c.createGain();this.gate.gain.value=this.active?1:0;this.gate.connect(this.master);
     this.buses={master:this.master};
     this.outdoorFilter=c.createBiquadFilter();this.outdoorFilter.type='lowpass';this.outdoorFilter.frequency.value=16000;this.outdoorFilter.Q.value=.45;this.outdoorFilter.connect(this.gate);
-    for(const name of ['ambience','footsteps','wildlife']){const g=c.createGain();this.buses[name]=g;g.connect(name==='footsteps'?this.gate:this.outdoorFilter);}
+    for(const name of ['ambience','footsteps','wildlife','effects']){const g=c.createGain();this.buses[name]=g;g.connect((name==='footsteps'||name==='effects')?this.gate:this.outdoorFilter);}
     this.room=c.createConvolver();this.roomSend=c.createGain();this.roomSend.gain.value=0;this.room.connect(this.roomSend);this.roomSend.connect(this.gate);
     const ir=c.createBuffer(2,Math.floor(c.sampleRate*.65),c.sampleRate);let seed=91;
     for(let ch=0;ch<2;ch++){const d=ir.getChannelData(ch);for(let i=0;i<d.length;i++){seed=(Math.imul(seed,1664525)+1013904223)>>>0;d[i]=((seed/4294967296)*2-1)*Math.exp(-i/c.sampleRate*10)*.25;}}
@@ -77,6 +77,12 @@ export class Soundscape {
     // A small scheduling lead lets the audio thread receive the source before
     // its deadline when chunk uploads/GC briefly occupy the rendering thread.
     node.start(c.currentTime+.025);
+  }
+  combat(event,state={}){
+    const kind=({swing:'swing','enemy-swing':'swing',hit:'hit',block:'block',hurt:'hurt','guard-break':'block'})[event.kind];
+    if(!kind)return;
+    const enemy=event.kind==='enemy-swing';
+    this.play(this.pick(`combat-${kind}`),'effects',(enemy?.48:1)*({swing:.36,hit:.58,block:.50,hurt:.47}[kind]),{pan:enemy?this.panAt(event.position,state):0,rate:.97+Math.random()*.06,lowpass:kind==='block'?8500:kind==='swing'?6500:4200,reverb:(state.audio?.indoor||0)*.12,tag:'combat'});
   }
   cancelThunder(clearQueue=true){
     if(clearQueue)this.thunder.clear();
