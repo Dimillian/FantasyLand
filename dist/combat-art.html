@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>First-person equipment study</title>
+<style>body{background:#101714;color:#c6bca8;font:14px monospace;margin:24px}h1{font-size:20px}canvas{width:100%;image-rendering:pixelated;border:1px solid #394138}section{display:grid;grid-template-columns:1fr 1fr;gap:20px}button{background:#333a2f;color:#ded4ba;padding:10px;border:1px solid #66705d}</style>
+<h1>FORGED IRON / FIRST-PERSON STUDY</h1><p>Procedural projected geometry · interior shield face · jointed forearms · original worn materials</p><div style="display:flex;gap:14px;flex-wrap:wrap;margin:18px 0">
+<label>Blade / sleeve<br><audio controls preload="none" src="./audio/combat-swing-0.wav?v=5"></audio></label>
+<label>Body / armour contact<br><audio controls preload="none" src="./audio/combat-hit-0.wav?v=5"></audio></label>
+<label>Wood / steel guard<br><audio controls preload="none" src="./audio/combat-block-0.wav?v=5"></audio></label>
+</div><section id="studies"></section>
+<script type="module">
+import {createEquipmentSprite,equipmentRecipe} from './equipment-sprites.mjs';
+for(const [name,swing,guard] of [['Ready',0,0],['Shield raised',0,1],['Wind-up',.18,0],['Follow-through',.34,0]]){
+ const began=performance.now();
+ const wrap=document.createElement('div'),label=document.createElement('p');label.textContent=name;const canvas=document.createElement('canvas');canvas.width=746;canvas.height=420;wrap.append(label,canvas);document.querySelector('#studies').append(wrap);
+ const c=canvas.getContext('2d');c.fillStyle='#5d706e';c.fillRect(0,0,746,220);c.fillStyle='#414938';c.fillRect(0,220,746,200);
+ c.fillStyle='#c2baa4';c.fillRect(370,209,6,1);c.fillRect(373,206,1,7);
+ c.drawImage(createEquipmentSprite(equipmentRecipe(19,'shield'),undefined,{guard}),0,0);c.drawImage(createEquipmentSprite(equipmentRecipe(41,'sword'),undefined,{swing}),0,0);
+ label.textContent+=` · two sprites built in ${(performance.now()-began).toFixed(1)} ms`;
+}
+const heading=document.createElement('h2');heading.textContent='Same rig · other item recipes';document.body.append(heading);
+const examples=document.createElement('section');document.body.append(examples);
+for(const [kind,hand] of [['axe','right'],['mace','right'],['lantern','right'],['lantern','left']]){
+ const wrap=document.createElement('div'),label=document.createElement('p');label.textContent=kind+' · '+hand+' hand';
+ const canvas=createEquipmentSprite(equipmentRecipe(73,kind),undefined,{hand});canvas.style.background='#5d706e';wrap.append(label,canvas);examples.append(wrap);
+}
+</script>
