@@ -39,6 +39,13 @@
   color: #c1cec3;
   font-size: 11px;
 }
+#navigation-clock {
+  flex-shrink: 0;
+  color: #e1d5b5;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .navigation-compass {
   position: relative;
   height: 39px;
@@ -324,3 +331,21 @@ body.quick-menu-open .touch-controls {
     padding: 8px 10px;
   }
 }
+
+/* Procedural viewmodel is a low-resolution, cached sprite layer above the world. */
+#combat-view{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;image-rendering:pixelated}
+body.photo-mode #combat-view{visibility:hidden}
+
+/* Keep control instructions in menus, never over the playing view. */
+.focus-hint, .quick-menu-toggle kbd { display: none !important; }
+
+/* Progress arrives as a quiet marginal note; it never covers the reticle. */
+.skill-notifications {position:fixed;right:24px;top:26%;width:220px;display:grid;gap:10px;pointer-events:none;z-index:35;color:#ddd5bc;font-family:var(--font-ui,monospace);}
+.skill-notice {display:flex;gap:12px;padding:12px 14px;border-left:2px solid #aa956c;background:linear-gradient(90deg,#171c20eb,#171c20a8);box-shadow:0 5px 22px #0004;animation:skill-arrive .28s ease-out;}
+.skill-notice>div{flex:1}.skill-notice small{display:block;letter-spacing:2px;font-size:8px;color:#b7a681}.skill-notice strong{display:block;font-size:13px;margin:5px 0}.skill-notice strong b{float:right;font-size:11px;color:#e2c27e}.skill-notice span{font-size:9px;color:#aba99b}.skill-notice .skill-notice-glyph{font-size:23px;color:#c9b579;align-self:center}.skill-notice-track{height:2px;background:#bdb48a26;margin:7px 0 5px}.skill-notice-track i{display:block;height:100%;background:#b9c5ac;transition:width .35s}.skill-notice.rank-up{border-color:#f0cf80;box-shadow:0 0 28px #dcb66519}.rank-up small{color:#efd693}@keyframes skill-arrive{from{opacity:0;transform:translateX(15px)}to{opacity:1;transform:translateX(0)}}
+body:has(.overlay:not(.hidden)) .skill-notifications{display:none}
+.defeat-actions{position:fixed;z-index:40;left:50%;top:44%;transform:translateX(-50%)}
+.starter-kit{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:24px 0}.item-card{display:flex;gap:18px;text-align:left;padding:22px;border:1px solid #b2a07945;background:#1b2226}.item-card .icon-host{width:64px;height:64px;flex-shrink:0}.item-card strong{display:block;font-size:18px;color:#dfceb0}.item-card small{display:block;color:#969c95;margin:8px 0}.item-card b{color:#c6b783;font-size:12px}.item-card[aria-pressed=true]{border-color:#b2a07999}.kit-intro{color:#9fa399;font-size:13px;line-height:1.6}.attribute-grid dt small{display:block;font-size:10px;color:#89958f;margin-top:5px}.encounter-tools{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.encounter-tools select{max-width:360px}.trial-foe-label{display:inline-flex;gap:10px;align-items:center;margin-right:10px}
+@media(max-width:650px){.starter-kit{grid-template-columns:1fr}.skill-notifications{right:12px;width:180px;top:22%}.item-card{padding:14px}}
+.item-card .pixel-icon {width:54px;height:54px}.skill-inactive .skill-icon,.skill-inactive .skill-info{opacity:.5}
+@media(prefers-reduced-motion:reduce){.skill-notice{animation:none}.skill-notice-track i{transition:none}}

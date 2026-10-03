@@ -9,9 +9,9 @@
       content="Explore a vast procedural fantasy wilderness built with Rust, WebAssembly and WebGPU."
     />
     <title>FantasyLand — The Endless Marches</title>
-    <link rel="stylesheet" href="./style.css?v=map-controls-1" />
-    <link rel="stylesheet" href="./codex.css?v=map-controls-1" />
-    <link rel="stylesheet" href="./hud.css?v=map-controls-1" />
+    <link rel="stylesheet" href="./style.css?v=progression-1" />
+    <link rel="stylesheet" href="./codex.css?v=progression-1" />
+    <link rel="stylesheet" href="./hud.css?v=progression-1" />
   </head>
   <body class="intro-open">
     <canvas
@@ -19,12 +19,14 @@
       aria-label="First-person world. Click to capture your mouse and explore."
       tabindex="0"
     ></canvas>
+    <canvas id="combat-view" class="hidden" aria-hidden="true"></canvas>
     <div class="edge-shade" aria-hidden="true"></div>
 
     <header class="top-hud navigation-hud" aria-label="Navigation">
       <div class="navigation-location">
         <strong id="place-name">The wilderness</strong>
         <span id="weather-hud" aria-label="Temperature">—</span>
+        <span id="navigation-clock" aria-label="World time">09:00</span>
       </div>
       <div id="compass" class="navigation-compass" role="img" aria-label="Compass, facing north">
         <div id="compass-track" aria-hidden="true"></div>
@@ -158,6 +160,8 @@
       <button data-move="sprint" aria-label="Sprint">RUN</button>
       <button id="touch-jump" aria-label="Jump">↑</button>
     </div>
+    <aside id="skill-notifications" class="skill-notifications" aria-live="polite" aria-atomic="false"></aside>
+    <div id="defeat-actions" class="defeat-actions hidden"><button id="revive-button">Return to the starting road</button></div>
     <pre id="diagnostics" class="hidden" aria-label="Performance diagnostics"></pre>
 
     <section id="intro" class="intro" aria-labelledby="intro-title">
@@ -176,6 +180,8 @@
           Mouse look
           <span>·</span>
           M atlas
+          <span>·</span>
+          R weapon / F6 sparring
         </p>
         <p class="prototype-note">
           EXPLORATION BUILD
@@ -366,6 +372,7 @@
                 <b>◇</b>
                 Landmark
               </span>
+              <span><i style="background:#d28b7f"></i> Hostile site</span>
               <span>
                 <i class="route-key route-main" aria-hidden="true"></i>
                 Main road
@@ -436,48 +443,45 @@
         </nav>
         <div class="sheet-content">
           <div class="section-heading">
-            <h3>Backpack</h3>
-            <button
-              class="preview-badge"
-              data-tip-title="UI preview"
-              data-tip-text="Sample values. Items and progression are not yet active."
-            >
-              Preview
-            </button>
+            <h3>Travel kit</h3>
+            <span class="pack-weight" id="pack-weight">5.5 kg carried</span>
+          </div>
+          <div class="inventory-filters" aria-label="Item categories">
+            <button data-inventory-category="all" aria-pressed="true">All items</button><button data-inventory-category="equipment" aria-pressed="false">Equipment</button><button data-inventory-category="parts" aria-pressed="false">Monster parts</button><button data-inventory-category="essences" aria-pressed="false">Essences</button>
           </div>
           <div class="inventory-layout">
             <div class="pack-panel">
-              <div class="pack-count">0 / 48</div>
+              <div class="pack-grid-heading"><span><span id="pack-category">ALL ITEMS</span> <small id="pack-equipped-count">2 equipped</small></span><span class="pack-count" id="pack-count">2 / 48</span></div>
               <div
                 class="inventory-grid"
                 role="grid"
-                aria-label="Backpack preview, empty slots"
+                aria-label="Backpack, 2 items and 46 empty slots"
                 aria-rowcount="6"
                 aria-colcount="8"
               >
                 <div class="inventory-grid-row" role="row">
                   <div
-                    class="inventory-slot"
+                    class="inventory-slot occupied" data-tier="common" data-owned-item="iron-sword" data-item="iron-sword"
                     role="gridcell"
                     aria-rowindex="1"
                     aria-colindex="1"
                     tabindex="0"
-                    aria-label="Empty slot 1"
-                    data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
-                    data-tip-icon="bag"
-                  ></div>
+                    aria-label="Iron arming sword · Equipped"
+                    data-tip-title="Iron arming sword"
+                    data-tip-text="Empty backpack slot"
+                    data-tip-icon="blade"
+                  ><span class="icon-host" data-icon="blade" aria-hidden="true"></span><span class="slot-equipped" id="sword-summary">E</span></div>
                   <div
-                    class="inventory-slot"
+                    class="inventory-slot occupied" data-tier="common" data-owned-item="oak-shield" data-item="oak-shield"
                     role="gridcell"
                     aria-rowindex="1"
                     aria-colindex="2"
                     tabindex="-1"
-                    aria-label="Empty slot 2"
-                    data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
-                    data-tip-icon="bag"
-                  ></div>
+                    aria-label="Oak round shield · Equipped"
+                    data-tip-title="Oak round shield"
+                    data-tip-text="Empty backpack slot"
+                    data-tip-icon="shield"
+                  ><span class="icon-host" data-icon="shield" aria-hidden="true"></span><span class="slot-equipped" id="shield-summary">E</span></div>
                   <div
                     class="inventory-slot"
                     role="gridcell"
@@ -486,7 +490,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 3"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -497,7 +501,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 4"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -508,7 +512,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 5"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -519,7 +523,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 6"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -530,7 +534,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 7"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -541,7 +545,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 8"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
@@ -554,7 +558,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 9"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -565,7 +569,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 10"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -576,7 +580,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 11"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -587,7 +591,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 12"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -598,7 +602,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 13"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -609,7 +613,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 14"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -620,7 +624,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 15"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -631,7 +635,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 16"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
@@ -644,7 +648,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 17"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -655,7 +659,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 18"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -666,7 +670,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 19"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -677,7 +681,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 20"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -688,7 +692,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 21"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -699,7 +703,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 22"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -710,7 +714,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 23"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -721,7 +725,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 24"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
@@ -734,7 +738,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 25"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -745,7 +749,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 26"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -756,7 +760,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 27"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -767,7 +771,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 28"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -778,7 +782,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 29"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -789,7 +793,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 30"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -800,7 +804,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 31"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -811,7 +815,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 32"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
@@ -824,7 +828,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 33"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -835,7 +839,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 34"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -846,7 +850,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 35"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -857,7 +861,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 36"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -868,7 +872,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 37"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -879,7 +883,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 38"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -890,7 +894,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 39"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -901,7 +905,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 40"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
@@ -914,7 +918,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 41"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -925,7 +929,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 42"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -936,7 +940,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 43"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -947,7 +951,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 44"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -958,7 +962,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 45"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -969,7 +973,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 46"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -980,7 +984,7 @@
                     tabindex="-1"
                     aria-label="Empty slot 47"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                   <div
@@ -991,29 +995,14 @@
                     tabindex="-1"
                     aria-label="Empty slot 48"
                     data-tip-title="Empty slot"
-                    data-tip-text="Inventory preview"
+                    data-tip-text="Empty backpack slot"
                     data-tip-icon="bag"
                   ></div>
                 </div>
               </div>
-              <button
-                id="bag-open-map"
-                class="pack-atlas"
-                data-tip-title="Traveler’s atlas"
-                data-tip-text="Open the world map. [M]"
-              >
-                <span class="icon-host" data-icon="map" aria-hidden="true"></span>
-                Atlas
-                <kbd>M</kbd>
-              </button>
             </div>
-            <aside class="item-detail">
-              <div class="empty-emblem">
-                <span class="icon-host" data-icon="bag" aria-hidden="true"></span>
-              </div>
-              <h3>Empty</h3>
-            </aside>
           </div>
+          <p class="inventory-message" id="equipment-message" role="status">Click / Enter to equip or unequip.</p>
         </div>
         <footer class="command-footer">
           <span>THE ENDLESS MARCHES</span>
@@ -1023,6 +1012,11 @@
           </span>
         </footer>
       </div>
+    </section>
+    <section id="loot-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="loot-title">
+      <div class="sheet loot-sheet"><header class="modal-header"><span class="overline">REMAINS</span><h2 id="loot-title">Search body</h2><button class="close-button" data-close aria-label="Close loot">×</button></header>
+      <div class="sheet-content"><div class="section-heading"><h3>Recovered belongings</h3><span id="loot-weight"></span></div><div id="loot-items" class="loot-items"></div></div>
+      <footer class="command-footer"><button id="loot-all">Take all</button><span><kbd>ESC</kbd> Leave</span></footer></div>
     </section>
     <section
       id="character-modal"
@@ -1037,13 +1031,7 @@
             <span class="icon-host header-icon" data-icon="character" aria-hidden="true"></span>
             <h2 id="character-title">Character</h2>
           </div>
-          <button
-            class="preview-badge"
-            data-tip-title="UI preview"
-            data-tip-text="Sample values. Items and progression are not yet active."
-          >
-            Preview
-          </button>
+
           <button class="close-button" data-close aria-label="Close character">
             <span class="icon-host" data-icon="close" aria-hidden="true"></span>
           </button>
@@ -1114,7 +1102,7 @@
                 </div>
               </dl>
               <div class="section-heading"><h3>Attributes</h3></div>
-              <dl class="attribute-grid">
+              <dl class="attribute-grid" id="live-attributes">
                 <div>
                   <dt>Strength</dt>
                   <dd>—</dd>
@@ -1196,13 +1184,7 @@
             <span class="icon-host header-icon" data-icon="armor" aria-hidden="true"></span>
             <h2 id="equipment-title">Equipment</h2>
           </div>
-          <button
-            class="preview-badge"
-            data-tip-title="UI preview"
-            data-tip-text="Sample values. Items and progression are not yet active."
-          >
-            Preview
-          </button>
+
           <button class="close-button" data-close aria-label="Close equipment">
             <span class="icon-host" data-icon="close" aria-hidden="true"></span>
           </button>
@@ -1243,7 +1225,7 @@
                 class="equipment-slot"
                 aria-label="Head, empty equipment slot"
                 data-tip-title="Head"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="helmet"
               >
                 <span class="slot-mark">
@@ -1255,7 +1237,7 @@
                 class="equipment-slot"
                 aria-label="Chest, empty equipment slot"
                 data-tip-title="Chest"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="armor"
               >
                 <span class="slot-mark">
@@ -1267,7 +1249,7 @@
                 class="equipment-slot"
                 aria-label="Hands, empty equipment slot"
                 data-tip-title="Hands"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="gloves"
               >
                 <span class="slot-mark">
@@ -1279,7 +1261,7 @@
                 class="equipment-slot"
                 aria-label="Feet, empty equipment slot"
                 data-tip-title="Feet"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="boots"
               >
                 <span class="slot-mark">
@@ -1294,9 +1276,9 @@
             <div class="equipment-slots">
               <button
                 class="equipment-slot"
-                aria-label="Main hand, empty equipment slot"
+                id="equipped-sword" data-item="iron-sword" aria-label="Iron arming sword, main hand"
                 data-tip-title="Main hand"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="blade"
               >
                 <span class="slot-mark">
@@ -1306,9 +1288,9 @@
               </button>
               <button
                 class="equipment-slot"
-                aria-label="Off hand, empty equipment slot"
+                id="equipped-shield" data-item="oak-shield" aria-label="Oak round shield, off hand"
                 data-tip-title="Off hand"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="shield"
               >
                 <span class="slot-mark">
@@ -1320,7 +1302,7 @@
                 class="equipment-slot"
                 aria-label="Accessory, empty equipment slot"
                 data-tip-title="Accessory"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="ring"
               >
                 <span class="slot-mark">
@@ -1332,7 +1314,7 @@
                 class="equipment-slot"
                 aria-label="Gathering tool, empty equipment slot"
                 data-tip-title="Gathering tool"
-                data-tip-text="Empty equipment slot · preview"
+                data-tip-text="Nothing equipped in this slot."
                 data-tip-icon="mining"
               >
                 <span class="slot-mark">
@@ -1342,6 +1324,7 @@
               </button>
             </div>
           </div>
+          <p class="inventory-message" id="gear-message" role="status">Click or Enter on worn gear to unequip it.</p>
         </div>
         <footer class="command-footer">
           <span>THE ENDLESS MARCHES</span>
@@ -1396,15 +1379,7 @@
           </button>
         </nav>
         <div class="sheet-content">
-          <div class="skills-toolbar">
-            <button
-              class="preview-badge"
-              data-tip-title="UI preview"
-              data-tip-text="Sample values. Items and progression are not yet active."
-            >
-              Preview
-            </button>
-          </div>
+          <div class="skills-toolbar"><span>Learn through practice · successful hits and blocks grant experience</span></div>
           <div id="skill-groups" class="skill-columns"></div>
         </div>
         <footer class="command-footer">
@@ -1694,6 +1669,7 @@
                       aria-label="Birds &amp; wildlife"
                     />
                   </label>
+                  <label class="setting-row"><span>Combat &amp; equipment<small><output id="audio-effects-value" for="audio-effects">70%</output></small></span><input id="audio-effects" type="range" min="0" max="100" step="5" value="70" aria-label="Combat and equipment sounds" /></label>
                   <small id="sound-status" role="status">
                     Sound starts when you enter the world.
                   </small>
@@ -1812,6 +1788,8 @@
         <div class="sheet-content">
           <details class="settings-disclosure" id="world-tools" open>
             <summary>World tools &amp; experiments</summary>
+            <div class="setting-row"><span>Sparring trial <small id="combat-status">Sword &amp; shield · One opponent · Session only</small></span><label class="trial-foe-label">Opponent <select id="trial-foe"><option value="0">Barrow skeleton</option><option value="1">Thorn goblin</option><option value="2">Hollow ghost</option></select></label>
+                  <button id="combat-start" class="plain-button" type="button">Start / rematch [F6]</button><button id="combat-stop" class="plain-button" type="button">Leave trial</button></div>
             <div class="settings-disclosure-content">
               <label class="setting-row">
                 <span>
@@ -1891,7 +1869,8 @@
               </label>
               <div class="setting-row seed-row">
                 <span>
-                  <label for="landscape-destination">Explore landscape</label>
+                  <div class="encounter-tools"><button id="find-encounters">Find nearby monster haunts</button><select id="encounter-destination" aria-label="Monster haunt"><option value="">Choose a haunt…</option></select><button id="visit-encounter" disabled>Visit haunt →</button></div>
+                <label for="landscape-destination">Explore landscape</label>
                   <small id="landscape-destination-help" role="status">
                     Visit a generated location in this world.
                   </small>
@@ -2189,7 +2168,7 @@
         </footer>
       </div>
     </section>
-    <script type="module" src="./app.js?v=compass-frame-1"></script>
-    <script type="module" src="./game-ui.js?v=map-controls-1"></script>
+    <script type="module" src="./app.js?v=encounters-1"></script>
+    <script type="module" src="./game-ui.js?v=progression-1"></script>
   </body>
 </html>

@@ -1638,3 +1638,57 @@ body.large-menu-text .skill-row {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Item inspection: rarity, identity, primary numbers, details, then action. */
+[data-tier="common"] {--item-tier:#d4d0bc;--item-tint:#d4d0bc12}
+[data-tier="uncommon"] {--item-tier:#85bd80;--item-tint:#85bd8015}
+[data-tier="rare"] {--item-tier:#79b5e4;--item-tint:#79b5e415}
+[data-tier="epic"] {--item-tier:#be91e6;--item-tint:#be91e615}
+[data-tier="legendary"] {--item-tier:#e4b35f;--item-tint:#e4b35f15}
+.inventory-slot.occupied {position:relative;border-color:var(--item-tier);background:radial-gradient(ellipse at center,var(--item-tint),#172024);cursor:pointer;display:grid;place-items:center;}
+.inventory-slot.occupied .pixel-icon {width:32px;height:32px;filter:drop-shadow(1px 2px 1px #0008)}
+.slot-equipped {position:absolute;bottom:2px;right:3px;font:8px 'Marches Pixel',monospace;color:#d3ba77;text-shadow:1px 1px #000}
+.pack-weight {color:#aaa38d;font-size:12px}.inventory-message{font-size:12px;color:#8e988f;margin:20px 0 0}
+
+.game-tooltip.item-tooltip{width:316px;padding:18px;border-color:var(--item-tier);border-top:2px solid var(--item-tier);background:linear-gradient(130deg,var(--item-tint),#10191bea),#182123;box-shadow:inset 0 0 0 2px #0c1315,0 12px 32px #000b}
+.item-title-row{display:flex;gap:13px;align-items:center}.item-portrait{display:grid;place-items:center;width:54px;height:64px;flex-shrink:0;background:linear-gradient(var(--item-tint),#11191c);border:1px solid #7c807146}.item-portrait .pixel-icon{width:44px;height:52px}
+.item-tier{display:block;color:var(--item-tier);text-transform:uppercase;font:9px 'Marches Pixel',monospace;letter-spacing:1.5px;margin-bottom:7px}
+.item-title-row h3{color:var(--item-tier);font-size:21px;line-height:1.1;font-weight:400;margin:0 0 7px}.item-category{font-size:11px;color:#8f9a94}
+.item-main-stats{display:flex;gap:24px;margin:18px 0;padding:16px 0;border-top:1px solid #82714d4d;border-bottom:1px solid #82714d4d}.item-main-stats>div{min-width:70px}.item-main-stats strong{font:38px/1 var(--menu-font);color:#ece5d0;display:block;letter-spacing:-1px}.item-main-stats em{font-style:normal;font-size:18px;margin-left:2px;color:#b4bdaf}.item-main-stats span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#b3a887;margin-top:7px}
+.item-stat-list{margin:0;display:grid;gap:8px}.item-stat-list>div{display:flex;justify-content:space-between;gap:18px;font-size:12px}.item-stat-list dt{color:#8e9b94}.item-stat-list dd{margin:0;color:#d7d2bf;font-variant-numeric:tabular-nums}.item-stat-list small{color:#929d93;font-size:10px}
+.game-tooltip .item-flavor,.item-flavor{font-size:12px;line-height:1.5;font-style:italic;color:#888f85;margin:18px 0}
+.item-state{border-top:1px solid #82714d4d;padding-top:12px;display:flex;align-items:center;gap:7px;font-size:11px;color:#c7b683}.item-state>span:last-child{margin-left:auto;color:#88968f}.item-status-dot{width:5px;height:5px;background:#707872;transform:rotate(45deg)}.item-status-dot.on{background:#c8b477}
+.game-tooltip .item-action,.item-action{margin-top:14px;padding-top:10px;border-top:1px solid #82714d30;color:#92988b;font-size:10px}.item-action kbd{font-size:8px;color:#ccc6ad}
+@media(max-width:650px){.item-main-stats strong{font-size:32px}}
+
+.sheet-content .item-flavor{font-size:12px;line-height:1.5;color:#92998d;margin:18px 0}
+.pack-grid-heading .pack-count{padding:0}.pack-grid-heading{margin-top:18px}
+
+
+/* Square satchel slots. Owned items stay visible when equipped. */
+#bag-modal .sheet-content{padding:22px}
+#bag-modal .inventory-layout{display:block}
+#bag-modal .section-heading{margin-bottom:18px}
+#bag-modal .section-heading h3{font-size:21px;letter-spacing:.4px}
+#bag-modal .pack-panel{padding:14px;background:linear-gradient(135deg,#22231f,#171c1d);border:1px solid #736246;box-shadow:inset 0 0 24px #0006,0 1px #c3a86d22}
+#bag-modal .pack-grid-heading{display:flex;justify-content:space-between;align-items:center;margin:0 0 14px;font:10px 'Marches Pixel',monospace;color:#b9a77e;letter-spacing:.7px}
+#bag-modal .pack-grid-heading small{font:12px var(--menu-font);letter-spacing:0;text-transform:none;color:#879482;margin-left:14px}
+#bag-modal .pack-count{padding:0;color:#888d80}
+#bag-modal .inventory-grid{grid-template-columns:repeat(var(--pack-columns),minmax(0,1fr));gap:5px;width:100%;box-sizing:border-box;padding:0;border:0;background:none}
+#bag-modal .inventory-slot{width:100%;height:auto;aspect-ratio:1;min-width:0;box-sizing:border-box;border:1px solid #434338;background:linear-gradient(145deg,#11191b,#202626);box-shadow:inset 1px 2px 4px #0007,0 1px #b6a37312;position:relative}
+#bag-modal .inventory-slot.occupied{background:radial-gradient(ellipse at 50% 40%,#4a4c3b,#202a29 80%);border-color:#8a8466;cursor:pointer;box-shadow:inset 0 0 0 2px #0f171980,0 2px 4px #0006}
+#bag-modal .inventory-slot .icon-host{width:80%;height:80%;display:grid;place-items:center}
+#bag-modal .inventory-slot .pixel-icon{width:100%;height:100%;filter:drop-shadow(2px 3px 1px #0009)}
+#bag-modal .inventory-slot.is-equipped{border-color:#c1a569;background:radial-gradient(ellipse at 50% 35%,#535843,#242d29 85%)}
+#bag-modal .inventory-slot.is-equipped:before{content:'';position:absolute;top:3px;left:3px;width:7px;height:7px;border-top:2px solid #e4c783;border-left:2px solid #e4c783}
+#bag-modal .slot-equipped{bottom:0;left:0;right:0;padding:4px 0 3px;text-align:center;font:6px 'Marches Pixel',monospace;letter-spacing:.25px;color:#eed69c;background:#171f1deb;border-top:1px solid #ac915b66}
+#bag-modal .slot-equipped:empty{display:none}
+#bag-modal .inventory-slot:hover,#bag-modal .inventory-slot:focus-visible{outline:2px solid #ebd49d;outline-offset:1px;z-index:1;background-color:#394236}
+#bag-modal .inventory-message{margin:12px 0 0;font-size:11px;color:#8e9587;min-height:16px}
+@media(max-width:600px){#bag-modal .sheet-content{padding:12px}#bag-modal .pack-panel{padding:10px}#bag-modal .pack-grid-heading small{margin-left:8px}}
+
+.inventory-filters{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}.inventory-filters button{font:13px var(--menu-font);color:#9b9f90;border:1px solid #55533e;background:#182022;padding:7px 12px}.inventory-filters button[aria-pressed=true]{color:#eed49c;border-color:#b79b5e;background:#393d30}
+.slot-quantity{position:absolute;top:3px;right:5px;font:12px var(--menu-font);color:#f0e4c7;text-shadow:1px 1px #000}
+#loot-modal .loot-sheet{width:min(560px,100%);height:min(470px,var(--window-height))}.loot-items{display:grid;gap:10px}.loot-item{display:flex;gap:16px;align-items:center;text-align:left;border:1px solid #665c46;background:linear-gradient(125deg,var(--item-tint),#182123);padding:12px;color:#d9d0b6}.loot-icon{width:54px;height:54px;flex-shrink:0}.loot-icon svg{width:100%;height:100%}.loot-item strong,.loot-item small,.loot-item em{display:block}.loot-item strong{font:18px var(--menu-font);color:var(--item-tier);margin:3px 0}.loot-item small,.loot-item em{font:11px var(--menu-font);color:#99a397}.loot-item>b{margin-left:auto;color:#c6ba91;font:15px var(--menu-font)}.loot-item:hover,.loot-item:focus-visible{outline:1px solid #e5cd91;background:#343f34}#loot-all{font:15px var(--menu-font);color:#efdaaa;padding:8px 22px;background:#3b4535;border:1px solid #b69c62}#loot-all:disabled{opacity:.4}.loot-empty{text-align:center;padding:60px 0;color:#aaa38d}
+
+#loot-modal .command-footer{flex:0 0 auto;min-height:48px;padding:9px 14px}

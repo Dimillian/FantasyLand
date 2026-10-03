@@ -1,13 +1,17 @@
 import { compassReading } from './hud-navigation.js';
 import { descriptor, worldKey, validSeed, validateSave, WorldStore } from './world-store.mjs';
 import { AtlasCache } from './atlas-cache.mjs';
-import { Soundscape } from './soundscape.mjs?v=footstep-foley-3';
-import { paintPortrait } from './portrait.js?v=current-world-1';
+import { Soundscape } from './soundscape.mjs?v=combat-foley-5';
+import { paintPortrait } from './portrait.js?v=encounters-1';
+import { equipmentRecipe } from './equipment-items.mjs';
+import { CombatView } from './combat-view.mjs?v=encounters-1';
 import { AdaptiveResolution } from './adaptive-resolution.js';
 // Authored interface for the Rust world engine. All terrain, movement, collision,
 // and world rendering belong to Game; JavaScript only coordinates input and UI.
 const $ = (id) => document.getElementById(id);
 const canvas = $('world');
+const combatView = new CombatView($('combat-view'));
+let combatActive=false, weaponDrawn=false, combatAttack=false, combatBlock=false;
 const STORAGE_KEY = 'fantasyland.preferences.v1';
 const DEFAULT_SEED = 1337;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -37,7 +41,7 @@ const renderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(
 let giOutstanding = false;
 let streamWorker = null, streamReady = false, streamOutstanding = 0, streamResults = [], streamDeadline = 0;
 let game, state = {}, started = false, locked = false, modal = null;
-const menuScreens = ['map', 'settings', 'bag', 'character', 'equipment', 'skills', 'pause', 'options'];
+const menuScreens = ['map', 'settings', 'bag', 'character', 'equipment', 'skills', 'pause', 'options', 'loot'];
 let modalReturnFocus = null;
 let optionsPage = 'graphics';
 let optionsReturnMenu = 'pause';
@@ -94,7 +98,7 @@ updateFilterControls();
 updateAaControls();
 updateLookSummary();
 
-for (const name of ['master','ambience','footsteps','wildlife']) {
+for (const name of ['master','ambience','footsteps','wildlife','effects']) {
   const control=$(`audio-${name}`), output=$(`audio-${name}-value`);
   control.value=String(Math.round(soundscape.volumes[name]*100));
   output.textContent=`${control.value}%`;
@@ -345,6 +349,7 @@ function resize() {
 }
 
 function clearMovement() {
+  combatAttack=false;combatBlock=false;game?.combat_input?.(false,false,true);
   keys.clear(); touchMoves.clear(); jumpQueued = false; dragLook = null;
   document.querySelectorAll('[data-move]').forEach((button) => button.classList.remove('active'));
 }
@@ -449,6 +454,7 @@ function openModal(type) {
     $('time-setting-label').textContent = formatTime(state.dayTime);
     updateWeatherStatus();
   }
+  if (['character','bag','equipment','skills'].includes(type)) syncCharacter();
   if (type === 'character') updateCharacter();
   if (type === 'pause') {
     $('pause-location').textContent = `${state.siteName || 'The wilderness'} · ${formatTime(state.dayTime)}`;
@@ -705,7 +711,8 @@ function drawMap(now) {
     if (p.x < -10 || p.y < -10 || p.x > w + 10 || p.y > h + 10) continue;
     visible.push({ ...feature, px: p.x, py: p.y });
     const selected = map.selected && Math.hypot(feature.x - map.selected.x, feature.z - map.selected.z) < 1;
-    ctx.fillStyle = selected ? '#fff2ac' : feature.isSite ? '#efdc9f' : '#d8dfbb';
+    const hostile=['enemy_camp','crypt','cemetery','mini_dungeon','haunted_grove'].includes(feature.kind);
+    ctx.fillStyle = selected ? '#fff2ac' : hostile ? '#d28b7f' : feature.isSite ? '#efdc9f' : '#d8dfbb';
     ctx.strokeStyle = '#263320'; ctx.lineWidth = 2;
     ctx.beginPath();
     if (feature.isSite) ctx.rect(p.x - 3, p.y - 3, 6, 6);
@@ -783,12 +790,60 @@ function formatTime(value = 9) {
   return `${String(Math.floor(time)).padStart(2, '0')}:${String(Math.floor(time % 1 * 60)).padStart(2, '0')}`;
 }
 
-function resource(name) { return clamp(Number(state[name] ?? 100), 0, 100); }
+function resourceMax(name) { return characterData?.derived[{health:'maxHealth',mana:'maxMana',stamina:'maxStamina'}[name]]??100; }
+function resource(name) { return clamp(Number(state[name] ?? 100), 0, resourceMax(name)); }
+
+let characterData=null, equipmentSignature='', trialActive=false, encounterOptions=[];
+const starterRecipes={mainHand:equipmentRecipe(41,'sword'),offHand:equipmentRecipe(19,'shield')};
+function syncCharacter(){
+  if(!game?.character_state)return;
+  characterData=game.character_state();const {character:c,derived:d}=characterData;
+  const signature=`${c.sword_equipped}:${c.shield_equipped}`;
+  if(signature!==equipmentSignature){equipmentSignature=signature;combatView.setEquipment({mainHand:c.sword_equipped?starterRecipes.mainHand:null,offHand:c.shield_equipped?starterRecipes.offHand:null});}
+  document.dispatchEvent(new CustomEvent('character-progress',{detail:characterData}));
+  const sword=`${Math.round(d.damage)} damage · ${d.attackCost} stamina per swing`;
+  const shield=`${d.blockCost} stamina per block · 2 protection`;
+  for(const [id,equipped,title,slot] of [['equipped-sword',c.sword_equipped,'Iron arming sword','Main hand'],['equipped-shield',c.shield_equipped,'Oak round shield','Off hand']]){
+    const button=$(id);button.setAttribute('aria-label',`${slot}: ${equipped?title:'empty'}`);button.classList.toggle('slot-filled',equipped);button.querySelector('strong').textContent=equipped?title:`${slot} · Empty`;button.dataset.equipped=String(equipped);if(equipped)button.dataset.item=id==='equipped-sword'?'iron-sword':'oak-shield';else delete button.dataset.item;
+  }
+  $('live-attributes').innerHTML=[['Strength',c.strength,'Weapon damage'],['Endurance',c.endurance,'Health and stamina'],['Agility',c.agility,'Attack stamina cost'],['Intellect',c.intellect,'Mana capacity'],['Willpower',c.willpower,'Stamina recovery']].map(([name,value,use])=>`<div><dt>${name}<small>${use}</small></dt><dd>${value}</dd></div>`).join('');
+}
+function activateItem(button){
+ const item=characterData?.items.find(i=>i.id===button?.dataset.item);if(!item)return;
+ if(item.group!=='equipment')return;
+ document.dispatchEvent(new CustomEvent('equip-item',{detail:{id:item.id}}));document.dispatchEvent(new Event('dismiss-item-tooltip'));
+}
+for(const button of document.querySelectorAll('#equipment-modal [data-item]'))button.addEventListener('click',()=>activateItem(button));
+const inventoryGrid=document.querySelector('.inventory-grid');
+inventoryGrid.addEventListener('click',e=>activateItem(e.target.closest('[data-item]')));
+inventoryGrid.addEventListener('keydown',e=>{if(e.code==='Enter'||e.code==='Space'){e.preventDefault();activateItem(e.target.closest('[data-item]'));}});
+function equipmentMessage(message){$('equipment-message').textContent=message;$('gear-message').textContent=message;}
+document.addEventListener('equip-item',({detail:{id}})=>{
+ if(!game||!characterData)return;
+ const on=!(id==='iron-sword'?characterData.character.sword_equipped:characterData.character.shield_equipped);
+ if(!game.equip_item(id,on)){equipmentMessage('Finish the encounter before changing equipment.');return;}
+ equipmentMessage(on?'Item equipped.':'Item unequipped.');syncCharacter();saveProgress();
+});
+const skillNotices=new Map();
+function notifySkill(event){
+  const key=event.kind.startsWith('blades')?'blades':'blocking',ranked=event.kind.endsWith('-rank');
+  let notice=skillNotices.get(key);if(!notice){const node=document.createElement('div');node.className='skill-notice';$('skill-notifications').append(node);notice={node,amount:0,timer:null};skillNotices.set(key,notice);}
+  clearTimeout(notice.timer);notice.amount+=ranked?0:event.amount;const name=key==='blades'?'Blades':'Blocking',v=characterData.character[key],next=key==='blades'?characterData.bladesNext:characterData.blockingNext;
+  notice.node.classList.toggle('rank-up',ranked);notice.node.innerHTML=`<span class="skill-notice-glyph">${key==='blades'?'⚔':'◇'}</span><div><small>${ranked?'SKILL IMPROVED':'PRACTICE'}</small><strong>${name} <b>${ranked?`Rank ${v.rank}`:`+${notice.amount} XP`}</b></strong><div class="skill-notice-track"><i style="width:${v.xp/next*100}%"></i></div><span>Rank ${v.rank} · ${v.xp} / ${next} XP</span></div>`;
+  notice.timer=setTimeout(()=>{notice.node.remove();skillNotices.delete(key);},ranked?5500:2800);
+}
+$('find-encounters').addEventListener('click',()=>{
+  encounterOptions=game?.encounter_locations?.()||[];const select=$('encounter-destination');select.replaceChildren(new Option(encounterOptions.length?'Choose a haunt…':'No uncleared haunts nearby',''));
+  encounterOptions.forEach((e,i)=>select.add(new Option(e.name,String(i))));$('visit-encounter').disabled=true;
+});
+$('encounter-destination').addEventListener('change',()=>{$('visit-encounter').disabled=$('encounter-destination').value==='';});
+$('visit-encounter').addEventListener('click',()=>{const e=encounterOptions[Number($('encounter-destination').value)];if(e&&game.visit_encounter(e.x,e.z)){state=game.state();closeModal();saveProgress();}});
+$('revive-button').addEventListener('click',()=>{game.revive();state=game.state();combatView.reset();saveProgress();});
 
 function updateCharacter() {
-  $('character-health').textContent = `${Math.round(resource('health'))} / 100`;
-  $('character-mana').textContent = `${Math.round(resource('mana'))} / 100`;
-  $('character-stamina').textContent = `${Math.round(resource('stamina'))} / 100`;
+  $('character-health').textContent = `${Math.round(state.health??100)} / ${characterData?.derived.maxHealth??100}`;
+  $('character-mana').textContent = `${Math.round(state.mana??100)} / ${characterData?.derived.maxMana??100}`;
+  $('character-stamina').textContent = `${Math.round(state.stamina??100)} / ${characterData?.derived.maxStamina??100}`;
   $('character-place').textContent = state.siteName || 'The Wilds';
   $('character-biome').textContent = niceName(state.forest || state.landscape || state.biome || 'Wilderness');
   $('character-position').textContent = `${Math.round(Math.abs(state.x || 0))} ${state.x >= 0 ? 'E' : 'W'} · ${Math.round(Math.abs(state.z || 0))} ${state.z >= 0 ? 'S' : 'N'}`;
@@ -841,13 +896,15 @@ function updateHUD(now) {
   const biome = niceName(state.forest || state.landscape || state.biome || 'Wilderness');
   $('place-name').textContent = state.siteName && state.siteName !== 'The Wilds' ? state.siteName : biome;
   $('clock').textContent = formatTime(state.dayTime);
+  $('navigation-clock').textContent = formatTime(state.dayTime);
   updateWeatherStatus();
   for (const name of ['health', 'mana', 'stamina']) {
     const amount = Math.round(resource(name));
-    $(name + '-fill').style.width = `${amount}%`;
+    $(name + '-fill').style.width = `${amount/resourceMax(name)*100}%`;
+    $(name + '-meter').setAttribute('aria-valuemax',resourceMax(name));
     $(name + '-value').textContent = amount;
     $(name + '-meter').setAttribute('aria-valuenow', amount);
-    $(name + '-stat').classList.toggle('is-depleted', amount < 100);
+    $(name + '-stat').classList.toggle('is-depleted', amount < resourceMax(name));
   }
   const pin = navigation.pin;
   $('pinned-location').classList.toggle('hidden', !pin);
@@ -925,7 +982,7 @@ function stopStreamingWorker(error) {
 function startStreamingWorker() {
   if(typeof Worker==='undefined') return;
   try {
-    streamWorker=new Worker(new URL('./world-worker.js?v=current-world-1',location.href),{type:'module',name:'FantasyLand world generation'});
+    streamWorker=new Worker(new URL('./world-worker.js?v=encounters-1',location.href),{type:'module',name:'FantasyLand world generation'});
     streamDeadline=performance.now()+120000;
     streamWorker.onmessage=({data})=>{
       if(data.type==='ready') {
@@ -989,8 +1046,21 @@ function renderFrame(now) {
     if (benchmark?.walking && benchmark.phase === "sample") { forward=1;strafe=0; }
     if (motionCapture?.phase === "record") {forward=1;strafe=0;}
     pumpStreaming();
+    game.combat_input?.(moving && combatAttack,moving && (combatBlock || keys.has('KeyV')), !moving);
+    combatAttack=false;
     game.tick((modal && modal !== 'settings') || !started ? 0 : dt, forward, strafe, sprint || !!(benchmark?.walking && benchmark.phase === "sample"), moving && jumpQueued);
     jumpQueued = false;
+    if (game.combat_frame) {
+      const packet=game.combat_frame();combatActive=!!packet[23];weaponDrawn=!!packet[0];trialActive=!!packet[26];
+      $('defeat-actions').classList.toggle('hidden',packet[17]>0||trialActive||!!modal||!started);
+      for(const event of game.combat_events()) {
+        if(event.kind.endsWith('-xp')||event.kind.endsWith('-rank')){syncCharacter();notifySkill(event);}
+        else {combatView.event(event);soundscape.combat?.(event,state);if(event.kind==='victory'||event.kind==='defeat')saveProgress();}
+      }
+      combatView.draw(packet,moving?dt:0,{visible:started&&!modal&&!quickMenuOpen,moving:Math.abs(forward)+Math.abs(strafe)>.01});
+      const combatStatus=combatActive?(packet[10]===1?'Victory — T to rematch':packet[10]===2?'Defeated — T to rematch':(trialActive?'Sparring trial active':'Hostile encounter')):'No active encounter';
+      if($('combat-status').textContent!==combatStatus)$('combat-status').textContent=combatStatus;
+    }
     const compassVisible = started && !modal && !document.body.classList.contains('photo-mode');
     const audioNeedsFrame = soundscape.ready && soundscape.active;
     if (game.lightning_audio_frame && (compassVisible || audioNeedsFrame)) {
@@ -1008,7 +1078,7 @@ function renderFrame(now) {
     }
     if (benchmark?.phase === "sample") benchmark.cpu.push(performance.now()-frameStart);
     if (!initialReady && (!game.is_ready || game.is_ready())) {
-      initialReady = true;
+      initialReady = true;syncCharacter();
       $('loading-track').classList.add('hidden');
       $('loading-label').classList.add('hidden');
       $('start-button').classList.remove('hidden');
@@ -1046,8 +1116,8 @@ async function boot() {
       const info = adapter?.info;
       if (info) adapterLabel = [info.vendor,info.architecture,info.description].filter(Boolean).join(' · ') || 'WebGPU';
     }
-    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=current-world-1');
-    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=current-world-1', location.href) });
+    const { default: init, Game } = await import('./pkg/fantasy_land.js?v=encounters-1');
+    await init({ module_or_path: new URL('./pkg/fantasy_land_bg.wasm?v=encounters-1', location.href) });
     $('loading-label').textContent = 'Carving rivers, raising hills, finding a road…';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     game = await Game.create(canvas, seed);
@@ -1068,7 +1138,7 @@ async function boot() {
     for(const d of destinations){const option=document.createElement('option');option.value=d.id;option.textContent=`${d.kind[0].toUpperCase()+d.kind.slice(1)} · ${d.name} · ${d.region}`;$('settlement-select').append(option);}
     state = game.state();
     // Exposed intentionally for integration checks and world-generation inspection.
-    window.fantasyDebug = { game, atlasCache, worldIdentity, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'current-world-1' };
+    window.fantasyDebug = { game, atlasCache, worldIdentity, get state() { return state; }, get map() { return map; }, get waypoint() { return waypoint; }, openMap, closeModal, saveProgress, get input() { return { started, locked, focusedLook, pointerLockFallback, lockPending, modal }; }, captureMouse, get renderActive() {return !otherViewActive && !document.hidden;}, version: 'encounters-1' };
     requestAnimationFrame(renderFrame);
   } catch (error) { showFatal(error); }
 }
@@ -1135,7 +1205,7 @@ $('hud-options-button').addEventListener('click', () => openModal('options'));
 document.addEventListener('pointerdown', event => {
   if (quickMenuOpen && !$('quick-menu').contains(event.target) && !$('quick-menu-toggle').contains(event.target)) setQuickMenu(false);
 });
-$('bag-open-map').addEventListener('click', openMap);
+
 $('skills-open-map').addEventListener('click', openMap);
 $('zoom-in').addEventListener('click', () => zoomMap(.70));
 $('zoom-out').addEventListener('click', () => zoomMap(1.43));
@@ -1338,6 +1408,7 @@ function renderConversation(data) {
 }
 function interact() {
   const result = game?.interact(); if (!result) return;
+  if(result.kind==='loot'){showLoot(result);return;}
   if (typeof result === 'string') { toast(result); return; }
   modalReturnFocus = document.activeElement;
   renderConversation(result); modal = 'dialogue'; releaseMouse();
@@ -1372,6 +1443,15 @@ function modalKeyboard(event) {
 }
 $('settlement-form').addEventListener('submit',event=>{event.preventDefault();const id=Number($('settlement-select').value);if(!id||!game)return;game.visit_settlement(id);state=game.state();closeModal();toast('Arrived. Follow the lanes; press E to talk or open a door.');});
 
+function startCombatTrial() {
+  if(!game||!initialReady)return;
+  if(!(game.start_combat_kind?game.start_combat_kind(Number($('trial-foe').value)):game.start_combat())){toast('No safe sparring space here. Move to a clear road or open ground.');return;}
+  combatActive=true;trialActive=true;combatView.reset();clearMovement();state=game.state();closeModal();
+  $('toast').classList.remove('visible');$('toast').textContent='';
+}
+function leaveCombatTrial(){game?.stop_combat();combatActive=false;trialActive=false;clearMovement();combatView.reset();state=game.state();toast('Trial ended. Your original position and health are restored.');}
+$('combat-start').addEventListener('click',startCombatTrial);
+$('combat-stop').addEventListener('click',()=>{leaveCombatTrial();closeModal();});
 const menuKeys = { KeyM: 'map', Tab: 'map', KeyI: 'bag', KeyC: 'character', KeyK: 'skills', KeyO: 'settings' };
 document.addEventListener('keydown', (event) => {
   const editing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName);
@@ -1394,6 +1474,7 @@ document.addEventListener('keydown', (event) => {
     if (event.code === 'Enter' && initialReady) { event.preventDefault(); startExploring(event); }
     return;
   }
+  if(event.code==='F6'&&!event.repeat&&!modal){event.preventDefault();if(trialActive)leaveCombatTrial();else startCombatTrial();return;}
   if (event.code === 'KeyQ' && !modal && !event.altKey && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (event.repeat) return;
@@ -1412,6 +1493,13 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (quickMenuOpen) return;
+  if(!modal){
+    if(event.code==='KeyR'&&!event.repeat){event.preventDefault();game.toggle_weapon?.();return;}
+    if(event.code==='KeyF'&&!event.repeat){event.preventDefault();combatAttack=true;return;}
+    if(event.code==='KeyV'){event.preventDefault();keys.add('KeyV');return;}
+    if(trialActive&&event.code==='KeyT'&&!event.repeat){event.preventDefault();startCombatTrial();return;}
+
+  }
   if(event.code==='KeyE'&&!event.repeat&&!modal){event.preventDefault();interact();return;}
   if (modal) {
     if (modal === 'map'  && event.target === mapCanvas) {
@@ -1480,6 +1568,10 @@ canvas.addEventListener('click', (event) => {
   else if (!modal && !locked) captureMouse(event);
 });
 canvas.addEventListener('pointerdown', (event) => {
+  if(started&&!modal&&!quickMenuOpen&&(locked||focusedLook)&&!benchmark&&!motionCapture&&event.pointerType!=='touch'){
+    if(event.button===0){combatAttack=true;event.preventDefault();}
+    if(event.button===2){combatBlock=true;event.preventDefault();}
+  }
   if (!started || modal || !game || locked || benchmark || motionCapture) return;
   canvas.focus({ preventScroll: true });
   // Desktop lock uses click; mouse drag fallback is document-level, so there is
@@ -1492,8 +1584,8 @@ document.addEventListener('pointermove', (event) => {
   game.look((event.clientX - dragLook.x) * sensitivity, (event.clientY - dragLook.y) * sensitivity);
   dragLook.x = event.clientX; dragLook.y = event.clientY;
 });
-document.addEventListener('pointerup', (event) => { if (dragLook?.id === event.pointerId) dragLook = null; });
-document.addEventListener('pointercancel', (event) => { if (dragLook?.id === event.pointerId) dragLook = null; });
+document.addEventListener('pointerup', (event) => { if(event.button===2)combatBlock=false; if (dragLook?.id === event.pointerId) dragLook = null; });
+document.addEventListener('pointercancel', (event) => { combatBlock=false; if (dragLook?.id === event.pointerId) dragLook = null; });
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 for (const button of document.querySelectorAll('[data-move]')) {
   const move = button.dataset.move;
@@ -1693,5 +1785,12 @@ $('atlas-layer').addEventListener('change',()=>{
   scheduleMapData(0);
 });
 $('atlas-names').addEventListener('change',()=>{map.dirty=true;});
+
+
+let lootedBody=null;
+function showLoot(data){lootedBody=data.id;openModal('loot');document.dispatchEvent(new CustomEvent('loot-content',{detail:data}));}
+function takeLoot(id){if(!game?.take_loot(lootedBody,id))return;syncCharacter();saveProgress();const data=game.corpse_loot();if(data){document.dispatchEvent(new CustomEvent('loot-content',{detail:data}));($('loot-items').querySelector('button')||$('loot-modal').querySelector('[data-close]')).focus();}else closeModal();}
+document.addEventListener('loot-take',({detail})=>takeLoot(detail));
+$('loot-all').addEventListener('click',()=>takeLoot('all'));
 
 boot();

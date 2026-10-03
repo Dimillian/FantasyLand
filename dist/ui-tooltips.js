@@ -36,6 +36,7 @@ export function createTooltips(render) {
     active = null;
     tooltip.classList.add('hidden');
   }
+  document.addEventListener('dismiss-item-tooltip',hide);
   function show(trigger) {
     clearTimeout(timer);
     if (active !== trigger) {
@@ -78,6 +79,7 @@ export function createTooltips(render) {
     trigger.addEventListener('blur', () => deferHide(trigger));
     // A tap focuses non-button inventory cells as well as opening their tooltip.
     trigger.addEventListener('click', () => {
+      if(trigger.dataset.item||trigger.dataset.lootId){hide();return;}
       if (trigger.matches('[role="gridcell"]')) trigger.focus();
       show(trigger);
     });
@@ -103,7 +105,7 @@ export function createTooltips(render) {
   document.addEventListener('pointermove', (event) => {
     if (suppressHover && (event.movementX || event.movementY)) {
       suppressHover = false;
-      const trigger = event.target.closest('[data-skill], [data-tip-title]');
+      const trigger = event.target.closest('[data-skill], [data-tip-title], [data-item]');
       if (trigger && event.pointerType !== 'touch') show(trigger);
     }
   });
