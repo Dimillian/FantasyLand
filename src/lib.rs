@@ -5,6 +5,11 @@ pub mod celestial;
 pub mod citizens;
 pub mod climate;
 mod cloud_shadow;
+pub mod combat;
+pub mod progression;
+pub mod encounters;
+pub mod loot;
+pub mod hostile;
 pub mod countryside;
 pub mod cover;
 pub mod ecology;
@@ -59,6 +64,10 @@ pub struct Game {
     gpu_drain: std::sync::Arc<std::sync::atomic::AtomicBool>,
     hour: f32,
     life: citizens::Life,
+    combat: combat::Combat,
+    combat_paused: bool,
+    trial_return: Option<savegame::PlayerState>,
+    encounters: encounters::Encounters,
     audio_probe: std::cell::RefCell<soundscape::Probe>,
 }
 
@@ -126,6 +135,10 @@ impl Game {
             gpu_drain: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             hour: 9.0,
             life: citizens::Life::new(),
+            combat: Default::default(),
+            combat_paused: false,
+            trial_return: None,
+            encounters:Default::default(),
             audio_probe: Default::default(),
         })
     }
@@ -133,13 +146,96 @@ impl Game {
         serde_wasm_bindgen::to_value(&worldgen::WorldDescriptor::current(self.world.seed)).unwrap()
     }
     pub fn save_snapshot(&self) -> JsValue {
-        serde_wasm_bindgen::to_value(&savegame::Snapshot::capture(
-            &self.world,
-            &self.player,
-            self.life.clock,
-        ))
-        .unwrap()
+        let mut snapshot = savegame::Snapshot::capture(&self.world, &self.player, self.life.clock);
+        snapshot.defeated=self.encounters.defeated.iter().cloned().collect();snapshot.corpses=self.encounters.corpses.clone();
+        // Sparring is an experiment, not permanent damage to the played character.
+        if let Some(p) = &self.trial_return {
+            snapshot.player = p.clone();
+        }
+        serde_wasm_bindgen::to_value(&snapshot).unwrap()
     }
+    pub fn character_state(&self)->JsValue {
+        #[derive(Serialize)]
+        #[serde(rename_all="camelCase")]
+        struct Data<'a>{character:&'a progression::Character,derived:progression::Derived,blades_next:u32,blocking_next:u32,items:Vec<progression::ItemView>,weight:f32}
+        let c=&self.player.character;
+        serde_wasm_bindgen::to_value(&Data{character:c,derived:c.derived(),blades_next:c.blades.next(),blocking_next:c.blocking.next(),items:c.items(),weight:loot::weight(&c.inventory)}).unwrap()
+    }
+    pub fn equip_item(&mut self,id:&str,on:bool)->bool {
+        if self.combat.swing>0. || (self.combat.active && self.combat.result==0){return false;}
+        let changed=self.player.character.equip(id,on);
+        if changed {self.combat.input(false,false);self.combat.block=false;}
+        changed
+    }
+    pub fn encounter_locations(&self)->JsValue {
+        let places=encounters::locations(&self.world,self.player.position.x,self.player.position.z,5500.).into_iter().filter(|e|!self.encounters.defeated.contains(&e.id)).take(24).collect::<Vec<_>>();
+        serde_wasm_bindgen::to_value(&places).unwrap()
+    }
+    pub fn visit_encounter(&mut self,x:f32,z:f32)->bool {
+        let places=encounters::locations(&self.world,x,z,80.);
+        let Some(e)=places.iter().find(|e|(e.x-x).abs()<0.1&&(e.z-z).abs()<0.1&&!self.encounters.defeated.contains(&e.id)) else{return false;};
+        self.teleport(e.x,e.z+2.8); self.face(0.,-0.08);true
+    }
+    pub fn revive(&mut self){
+        if self.player.health>0.{return;}
+        self.stop_combat();let (p,yaw)=self.world.spawn_view();self.teleport(p[0],p[1]);self.face(yaw,-0.1);
+        let d=self.player.character.derived();self.player.health=d.max_health;self.player.stamina=d.max_stamina;
+    }
+    pub fn start_combat_kind(&mut self,kind:u32)->bool {
+        let ok=self.start_combat();if ok {self.combat.kind=kind.min(2);self.combat.health=self.combat.max_health();}ok
+    }
+    pub fn start_combat(&mut self) -> bool {
+        self.stop_combat();
+        if !self
+            .combat
+            .begin(&self.world, self.player.position, self.player.yaw)
+        {
+            return false;
+        }
+        self.trial_return =
+            Some(savegame::Snapshot::capture(&self.world, &self.player, self.life.clock).player);
+        let p = self.combat.origin();
+        self.player.teleport(&self.world, p.x, p.z);
+        self.player.health = self.player.character.derived().max_health;
+        self.player.stamina = self.player.character.derived().max_stamina;
+        self.life.talking = None;
+        true
+    }
+    pub fn stop_combat(&mut self) {
+        self.combat.stop();
+        self.encounters.reset_nearby();
+        if let Some(p) = self.trial_return.take() {
+            self.player.teleport(&self.world, p.x, p.z);
+            self.player.yaw = p.yaw;
+            self.player.pitch = p.pitch;
+            self.player.health = p.health;
+            self.player.stamina = p.stamina;
+            self.player.walked = p.walked;
+        }
+    }
+    pub fn combat_input(&mut self, attack: bool, block: bool, paused: bool) {
+        self.combat_paused = paused;
+        self.combat.input(attack, block);
+    }
+    pub fn toggle_weapon(&mut self) {
+        self.combat.toggle_weapon();
+    }
+    pub fn combat_frame(&self) -> Vec<f32> {
+        let mut f = self.combat.frame(&self.player);
+        f.extend([
+            self.hour,
+            self.renderer.weather_state().cloud_cover,
+            self.combat.active as u8 as f32,
+            self.combat.kind as f32,
+            self.combat.max_health(),
+            self.trial_return.is_some() as u8 as f32,
+        ]);
+        f
+    }
+    pub fn combat_events(&mut self) -> JsValue {
+        serde_wasm_bindgen::to_value(&self.combat.take_events()).unwrap()
+    }
+
     pub fn restore_snapshot(&mut self, value: JsValue) -> Result<(), JsValue> {
         let snapshot: savegame::Snapshot =
             serde_wasm_bindgen::from_value(value).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -166,6 +262,8 @@ impl Game {
         self.player.mana = p.mana;
         self.player.stamina = p.stamina;
         self.player.walked = p.walked;
+        self.player.character=snapshot.character;
+        self.encounters.defeated=snapshot.defeated.into_iter().collect();self.encounters.corpses=snapshot.corpses;
         self.restore_clock(snapshot.clock);
         Ok(())
     }
@@ -222,8 +320,32 @@ impl Game {
         } else {
             dt.clamp(0.0, 0.05)
         };
-        self.player
-            .update(&self.world, dt, forward, strafe, sprint, jump);
+        let before = self.player.position;
+        let pace = if self.player.health <= 0. {
+            0.
+        } else if self.combat.block {
+            0.42
+        } else {
+            1.
+        };
+        self.player.update(
+            &self.world,
+            dt,
+            forward * pace,
+            strafe * pace,
+            sprint && pace == 1.,
+            jump,
+        );
+        if self.combat.active && self.combat.health > 0. {
+            self.player.block_combat_overlap(before, self.combat.enemy);
+        }
+        if self.trial_return.is_none() && !self.combat_paused {self.encounters.tick(&self.world,self.player.position,&mut self.combat,dt);}
+        self.combat.update(
+            &self.world,
+            &mut self.player,
+            if self.combat_paused { 0. } else { dt },
+        );
+        self.encounters.complete(self.world.seed,&self.combat);
         self.life
             .update(&self.world, self.player.eye().to_array(), dt);
         self.hour = (self.life.clock / 120. % 24.) as f32;
@@ -233,8 +355,14 @@ impl Game {
         self.renderer
             .update_chunks(&self.world, self.player.position, false);
         self.life.weather = self.renderer.weather_state().label.to_string();
-        self.renderer
-            .update_people(&self.world, &self.life, self.player.eye(), self.player.yaw);
+        self.renderer.update_people_with_combat(
+            &self.world,
+            &self.life,
+            self.player.eye(),
+            self.player.yaw,
+            Some(&self.combat),
+            &self.encounters.corpses,
+        );
         self.renderer
             .render(
                 self.player.eye(),
@@ -273,6 +401,7 @@ impl Game {
         ]
     }
     pub fn teleport(&mut self, x: f32, z: f32) {
+        self.stop_combat();
         self.life.talking = None;
         self.life.invalidate();
         if !x.is_finite() || !z.is_finite() {
@@ -404,6 +533,7 @@ impl Game {
         .unwrap_or(JsValue::NULL)
     }
     pub fn interaction_label(&self) -> String {
+        if let Some(c)=self.corpse_target(){return format!("[E] Search {}{}",c.name(),if c.items.is_empty(){" · Empty"}else{""});}
         match self.life.target(
             &self.world,
             self.player.eye().to_array(),
@@ -440,6 +570,8 @@ impl Game {
         }
     }
     pub fn interact(&mut self) -> JsValue {
+        if self.corpse_target().is_some(){return self.corpse_loot();}
+        if self.combat.active && self.combat.result==0 {return JsValue::NULL;}
         let Some((kind, id)) = self.life.target(
             &self.world,
             self.player.eye().to_array(),
@@ -478,6 +610,17 @@ impl Game {
         } else {
             "Closing the door."
         })
+    }
+    pub fn corpse_loot(&self)->JsValue{
+        #[derive(Serialize)]struct View {kind:&'static str,id:String,name:&'static str,items:Vec<progression::ItemView>}
+        let Some(c)=self.corpse_target() else{return JsValue::NULL;};
+        let mut owner=self.player.character.clone();owner.inventory=c.items.clone();owner.sword_equipped=false;owner.shield_equipped=false;
+        serde_wasm_bindgen::to_value(&View{kind:"loot",id:c.id.clone(),name:c.name(),items:owner.items()}).unwrap()
+    }
+    pub fn take_loot(&mut self,corpse_id:&str,item_id:&str)->bool{
+        let Some(c)=self.corpse_target()else{return false;};if c.id!=corpse_id{return false;}
+        let index=self.encounters.corpses.iter().position(|c|c.id==corpse_id).unwrap();
+        self.encounters.corpses[index].take(&mut self.player.character.inventory,item_id)
     }
     pub fn dialogue(&self, topic: &str) -> JsValue {
         serde_wasm_bindgen::to_value(&self.life.conversation(&self.world, topic))
@@ -767,3 +910,15 @@ pub fn inspect_landscapes(seed: u32) -> JsValue {
 
 #[cfg(test)]
 mod geography_checks;
+
+impl Game {
+ fn corpse_target(&self)->Option<&loot::Corpse>{
+  if self.player.health<=0.||(self.combat.active&&self.combat.result==0){return None;}
+  let p=self.player.position;let forward=glam::Vec2::new(self.player.yaw.sin(),-self.player.yaw.cos());
+  self.encounters.corpses.iter().filter(|c|{
+   let q=glam::Vec3::from_array(c.position);let delta=glam::Vec2::new(q.x-p.x,q.z-p.z);let distance=delta.length();
+   distance<3.4&&(q.y-p.y).abs()<2.5&&(distance<0.7||delta.normalize().dot(forward)>0.35)&&
+    (1..6).all(|i|{let v=p.lerp(q,i as f32/6.);!geometry::blocks_body(&self.world,v.x,v.y+0.12,v.z)})
+  }).min_by(|a,b|glam::Vec3::from_array(a.position).distance_squared(p).total_cmp(&glam::Vec3::from_array(b.position).distance_squared(p)))
+ }
+}

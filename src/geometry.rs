@@ -780,6 +780,7 @@ pub fn terrain_surface_height_lod(world: &World, x: f32, z: f32, lod: u32) -> f3
 pub fn walk_height(world: &World, x: f32, z: f32) -> f32 {
     let mut height =
         crate::settlement_mesh::floor(world, x, z, terrain_surface_height(world, x, z));
+    height=crate::hostile::floor(world,x,z,height);
     if let Some(ice) = ice_surface_height(world, x, z) {
         height = height.max(ice + 0.025);
     }
@@ -1144,7 +1145,7 @@ fn props_for_pass(
                     continue;
                 }
                 if landmarks.iter().any(|s| {
-                    (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 15.0_f32.powi(2)
+                    (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < (if crate::hostile::is_hostile(&s.kind){26.0_f32}else{15.0_f32}).powi(2)
                 }) {
                     continue;
                 }
@@ -1197,6 +1198,12 @@ fn props_for_pass(
     for landmark in landmarks {
         if owns(ox, oz, landmark.x, landmark.z) {
             let seed = hash(world.seed ^ 7123, landmark.x as i32, landmark.z as i32);
+            if crate::hostile::is_hostile(&landmark.kind){
+                let layout=world.hostile.layout(world,&landmark);
+                for p in &layout.parts{box_mesh(&mut mesh,p.center,p.size,0.,p.color,p.material);}
+                if landmark.kind=="enemy_camp"{for dx in [-8.,8.]{for dz in [-7.,6.]{let x=landmark.x+dx;let z=landmark.z+dz;let y=layout.floor;for side in [-1.,1.]{let a=[x+side*2.,y+0.1,z-1.8];let b=[x,y+2.9,z-1.8];let c=[x,y+2.9,z+1.8];let d=[x+side*2.,y+0.1,z+1.8];mesh.quad(a,b,c,d,[0.34,0.18,0.13],5.);mesh.quad(d,c,b,a,[0.25,0.16,0.11],5.);}}}}
+                continue;
+            }
             landmark_mesh(
                 world,
                 &mut mesh,
@@ -1268,7 +1275,7 @@ pub fn distant_props_chunk_at_lod(world: &World, cx: i32, cz: i32, lod: u32) -> 
                 continue;
             }
             if landmarks.iter().any(|s| {
-                (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 15.0_f32.powi(2)
+                (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < (if crate::hostile::is_hostile(&s.kind){26.0_f32}else{15.0_f32}).powi(2)
             }) {
                 continue;
             }
@@ -1399,7 +1406,8 @@ pub fn blocks_player(world: &World, x: f32, z: f32) -> bool {
 
 /// Body-height collision preserves the empty space underneath arches and roofs.
 pub fn blocks_body(world: &World, x: f32, feet: f32, z: f32) -> bool {
-    crate::settlement_mesh::blocked(world, x, feet, z)
+    crate::hostile::blocked(world,x,feet,z)
+        || crate::settlement_mesh::blocked(world, x, feet, z)
         || blocks_legacy_props(world, x, z)
         || crate::natural::blocks_player(world, x, feet, z, 0.35, 1.80)
 }
@@ -1456,7 +1464,7 @@ fn blocks_legacy_props(world: &World, x: f32, z: f32) -> bool {
                     continue;
                 }
                 if landmarks.iter().any(|s| {
-                    (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < 15.0_f32.powi(2)
+                    (s.x - p.position[0]).powi(2) + (s.z - p.position[2]).powi(2) < (if crate::hostile::is_hostile(&s.kind){26.0_f32}else{15.0_f32}).powi(2)
                 }) {
                     continue;
                 }

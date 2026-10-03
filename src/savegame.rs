@@ -2,7 +2,7 @@
 //! Validate the entire snapshot before mutating the running game.
 use crate::{world::World, worldgen::WorldDescriptor};
 use serde::{Deserialize, Serialize};
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 3;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
@@ -10,6 +10,9 @@ pub struct Snapshot {
     pub world: WorldDescriptor,
     pub player: PlayerState,
     pub clock: f64,
+    pub character: crate::progression::Character,
+    pub defeated: Vec<String>,
+    pub corpses:Vec<crate::loot::Corpse>,
     pub doors: Vec<DoorState>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,6 +41,9 @@ impl Snapshot {
         if self.schema != SAVE_VERSION || self.world != expected {
             return Err("Incompatible save or world identity.");
         }
+        if !self.character.valid() || self.defeated.len()>10000 || self.defeated.iter().any(|id| id.len()>100 || !id.starts_with("monster:")) || self.defeated.iter().collect::<std::collections::HashSet<_>>().len()!=self.defeated.len() {return Err("Invalid character or encounter state.");}
+        if self.corpses.len()>10000||self.corpses.iter().any(|c|!c.valid()||!self.defeated.contains(&c.id))||self.corpses.iter().map(|c|&c.id).collect::<std::collections::HashSet<_>>().len()!=self.corpses.len(){return Err("Invalid corpse loot state.");}
+        let stats=self.character.derived();
         let p = &self.player;
         if ![
             p.x, p.z, p.yaw, p.pitch, p.health, p.mana, p.stamina, p.walked,
@@ -49,9 +55,9 @@ impl Snapshot {
             || p.pitch.abs() > 1.42
             || p.yaw.abs() > 1e6
             || p.walked > 1e12
-            || !(0. ..=100.).contains(&p.health)
-            || !(0. ..=100.).contains(&p.mana)
-            || !(0. ..=100.).contains(&p.stamina)
+            || !(0. ..=stats.max_health).contains(&p.health)
+            || !(0. ..=stats.max_mana).contains(&p.mana)
+            || !(0. ..=stats.max_stamina).contains(&p.stamina)
             || p.walked < 0.
             || !self.clock.is_finite()
             || !(0. ..=1e12).contains(&self.clock)
@@ -89,6 +95,8 @@ impl Snapshot {
         doors.sort_by_key(|d| d.id);
         Self {
             schema: SAVE_VERSION,
+            character:p.character.clone(),
+            defeated:vec![],corpses:vec![],
             world: WorldDescriptor::current(world.seed),
             clock,
             doors,
@@ -111,7 +119,9 @@ mod tests {
     #[test]
     fn snapshot_roundtrip_rejects_mismatches_corruption_and_duplicate_ids() {
         let mut s = Snapshot {
-            schema: 1,
+            schema: SAVE_VERSION,
+            character:Default::default(),
+            defeated:vec![],corpses:vec![],
             world: WorldDescriptor::current(0),
             clock: 2881.,
             doors: vec![],

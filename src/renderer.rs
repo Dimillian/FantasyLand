@@ -2031,7 +2031,25 @@ impl Renderer {
         eye: Vec3,
         yaw: f32,
     ) {
-        let data = life.mesh(world, eye.to_array(), yaw);
+        self.update_people_with_combat(world, life, eye, yaw, None, &[]);
+    }
+    pub fn update_people_with_combat(
+        &mut self,
+        world: &World,
+        life: &crate::citizens::Life,
+        eye: Vec3,
+        yaw: f32,
+        combat: Option<&crate::combat::Combat>,
+        corpses: &[crate::loot::Corpse],
+    ) {
+        let mut data = life.mesh(world, eye.to_array(), yaw);
+        if let Some(combat) = combat {
+            combat.append_mesh(&mut data, eye, yaw);
+        }
+        for c in corpses.iter().filter(|c|Vec3::from_array(c.position).distance_squared(eye)<90.*90.).take(24){
+            if combat.is_some_and(|v|v.active&&v.result==1&&v.enemy.distance_squared(Vec3::from_array(c.position))<0.1){continue;}
+            crate::combat::Combat::append_corpse(&mut data,c,eye,yaw);
+        }
         let vertices: Vec<crate::vertex::PackedVertex> = data
             .vertices
             .iter()
@@ -2127,12 +2145,14 @@ impl Renderer {
             .flat_map(|b| b.lights())
             .collect();
         lights.extend(geometry::campfire_emitters(world, eye.x, eye.z, 70.));
+        let hostile_rooms=world.hostile.near(world,eye.x,eye.z);
+        for room in &hostile_rooms{for p in room.parts.iter().filter(|p|p.material==12.){lights.push([p.center[0],p.center[1],p.center[2],if room.indoor{12.}else{8.}]);}}
         // Retain the containing room's fixtures before nearby lights behind
         // opaque walls. The existing eight-light GPU budget stays fixed.
         let containing = buildings.iter().find(|b| b.inside(eye.x, eye.z, 0.));
         let light_score = |p: &[f32; 4]| {
             Vec3::from_slice(p).distance_squared(eye)
-                - if containing.is_some_and(|b| b.inside(p[0], p[2], 0.)) {
+                - if containing.is_some_and(|b| b.inside(p[0], p[2], 0.)) || hostile_rooms.iter().any(|r|r.indoor&&r.contains(eye.x,eye.z,0.)&&r.contains(p[0],p[2],0.)) {
                     10000.
                 } else {
                     0.

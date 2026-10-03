@@ -804,9 +804,12 @@ fn shade_surface(v: VertexOut, grad:SurfaceGrad) -> vec4<f32> {
         || (v.material>9.5 && v.material<10.5) || v.texture==16.0 {discard;}
     if v.texture>=1000.0 {
         let code=u32(v.texture-1000.0+0.1);
-        let texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(48.0,96.0))
+        var texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(48.0,96.0))
             +vec2<u32>(((code/16u)%4u)*48u,((code/64u)%4u)*96u));
-        if textureLoad(human_sprites,texel,i32(code%16u+((code/16384u)%4u)*16u),0).g<0.04 {discard;}
+        let combat=(code & 65536u)!=0u;
+        let combatFrame=((code/64u)%4u)+((code/262144u)%8u)*4u;
+        if combat {let dir=(code/16u)%4u;texel=vec2<i32>(vec2<u32>(clamp(v.uv,vec2<f32>(0.0),vec2<f32>(0.999))*vec2<f32>(96.0,192.0))+vec2<u32>((dir%2u)*96u,(dir/2u)*192u));}
+        if textureLoad(human_sprites,texel,i32(select(code%16u+((code/16384u)%4u)*16u,64u+(code%16u)*24u+combatFrame,combat)),0).g<0.04 {discard;}
     } else if ((v.texture>=5.0 && v.texture<10.0) || (v.texture>=28.0 && v.texture<33.0)) {
         if textureSampleGrad(material_color,foliage_sampler,v.uv,i32(v.texture+0.1),uv_x,uv_y).a<0.40 {discard;}
     }

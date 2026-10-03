@@ -119,6 +119,7 @@ pub fn surface_height(seed: u32, origin: [f32; 2], heights: &[f32], local: [f32;
 }
 pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
     let origin = [tx as f32 * TILE_SIZE, tz as f32 * TILE_SIZE];
+    let hostile=world.landmarks_near(origin[0]+24.,origin[1]+24.,66.).into_iter().filter(|l|crate::hostile::is_hostile(&l.kind)).collect::<Vec<_>>();
     let monuments = crate::natural::landmarks_near(world, origin[0] + 24., origin[1] + 24., 36.);
     let mut heights = Vec::with_capacity(GRID_SIZE * GRID_SIZE);
     for z in 0..GRID_SIZE {
@@ -163,6 +164,7 @@ pub fn tile_data(world: &World, tx: i32, tz: i32) -> TileData {
             let x = origin[0] + local[0];
             let z = origin[1] + local[1];
             let sample = world.sample(x, z);
+            if hostile.iter().any(|l|(l.x-x).abs()<15.&&(l.z-z).abs()<22.){continue;}
             let rendered_root = surface_height(world.seed, origin, &heights, local) - 0.018;
             if sample.ocean || sample.road > 0.10 || sample.water_height > sample.height + 0.15 {
                 continue;

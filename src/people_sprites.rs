@@ -6,7 +6,10 @@ pub const FRAME_H: usize = 96;
 pub const VARIANTS: u32 = 4;
 pub const WIDTH: u32 = FRAME_W as u32 * 4;
 pub const HEIGHT: u32 = FRAME_H as u32 * 4;
-pub const LAYERS: u32 = 16 * VARIANTS;
+pub const COMBAT_W: usize = 96;
+pub const COMBAT_H: usize = 192;
+pub const COMBAT_FRAMES: u32 = 24;
+pub const LAYERS: u32 = 16 * VARIANTS + COMBAT_FRAMES * 3;
 #[derive(Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum Slot {
@@ -20,19 +23,22 @@ pub enum Slot {
     Accent = 8,
 }
 struct Frame {
+    width: usize,
+    height: usize,
     pixels: Vec<u8>,
 }
 impl Frame {
     fn new() -> Self {
-        Self {
-            pixels: vec![0; FRAME_W * FRAME_H * 4],
-        }
+        Self::sized(FRAME_W, FRAME_H)
+    }
+    fn sized(width: usize, height: usize) -> Self {
+        Self {width, height, pixels:vec![0; width*height*4]}
     }
     fn dot(&mut self, x: i32, y: i32, s: Slot, v: f32) {
-        if x < 1 || x >= FRAME_W as i32 - 1 || y < 1 || y >= FRAME_H as i32 - 1 {
+        if x < 1 || x >= self.width as i32 - 1 || y < 1 || y >= self.height as i32 - 1 {
             return;
         }
-        let i = (y as usize * FRAME_W + x as usize) * 4;
+        let i = (y as usize * self.width + x as usize) * 4;
         self.pixels[i..i + 4].copy_from_slice(&[
             (v.clamp(0., 1.) * 255.) as u8,
             s as u8 * 24,
@@ -605,6 +611,186 @@ fn frame(role: u32, variant: u32, dir: u32, pose: u32) -> Frame {
     }
     f
 }
+// Separate skeleton plates keep citizen walk cycles intact. Twenty-four frames
+// cover locomotion and attack/reaction phases in four directional views.
+fn combat_frame(dir: u32, pose: u32) -> Frame {
+    use Slot::*;
+    let mut f = Frame::sized(COMBAT_W, COMBAT_H);
+    let side = dir == 1 || dir == 3;
+    let back = dir == 2;
+    let walk = pose < 8;
+    let cycle = pose as f32 * std::f32::consts::TAU / 8.;
+    let stride = if walk { cycle.sin() } else { 0. };
+    let wind = if (8..12).contains(&pose) { (pose - 8) as f32 / 3. } else { 0. };
+    let strike = if (12..15).contains(&pose) { (pose - 12) as f32 / 2. } else { 0. };
+    let recover = if (15..18).contains(&pose) { (pose - 15) as f32 / 2. } else { 0. };
+    let hurt = if pose == 18 { -5. } else if pose == 19 { -9. } else { 0. };
+    let fall = if pose >= 20 { (pose - 20) as f32 / 3. } else { 0. };
+    let bob = if walk { cycle.cos().abs() * 1.8 } else { wind * -2. };
+    let p = |x: f32, y: f32| {
+        let scale = if side { 0.62 } else { 1. };
+        let x = 48. + (x - 48.) * scale + hurt * (1. - y / 190.) + fall * (182. - y) * 0.16;
+        let y = y + bob * (1. - y / 190.) + (182. - y) * fall * 0.90;
+        [if dir == 3 { COMBAT_W as f32 - x } else { x }, y]
+    };
+    fn bone(f: &mut Frame, a: [f32; 2], b: [f32; 2], r: f32) {
+        f.line(a, b, r, Slot::Linen, 0.56);
+        f.line([a[0]-0.65,a[1]], [b[0]-0.65,b[1]], (r*0.40).max(0.55), Slot::Linen, 0.96);
+        for q in [a,b] { f.ellipse(q[0],q[1],r*1.18,r*0.85,Slot::Linen,0.77); }
+    }
+    // Independent hips, knees and ankles: a planted foot / lifted toe gait.
+    for (sign, phase) in [(-1.,stride),(1.,-stride)] {
+        let hip = p(48.+sign*7.,112.);
+        let knee = p(48.+sign*8.+phase*5.,143.-phase.max(0.)*5.);
+        let ankle = p(48.+sign*9.+phase*8.,177.-phase.max(0.)*8.);
+        bone(&mut f,hip,knee,2.8);
+        bone(&mut f,[knee[0]-1.5,knee[1]],[ankle[0]-1.5,ankle[1]],1.8);
+        bone(&mut f,[knee[0]+2.,knee[1]+1.],[ankle[0]+2.,ankle[1]-1.],1.0);
+        for toe in 0..4 { bone(&mut f,[ankle[0]+toe as f32-2.,ankle[1]], [ankle[0]+toe as f32*1.8-4.,ankle[1]+5.],0.8); }
+    }
+    // Pelvis has an open centre; individual vertebrae carry the rib cage.
+    for sign in [-1.,1.] {
+        let a=p(48.+sign*3.,101.);let b=p(48.+sign*11.,106.);let c=p(48.+sign*7.,117.);
+        bone(&mut f,a,b,3.);bone(&mut f,b,c,2.4);bone(&mut f,c,p(48.,113.),1.8);
+    }
+    for y in (47..108).step_by(5) { let q=p(48.,y as f32);f.ellipse(q[0],q[1],2.8,1.8,Linen,0.78); }
+    for rib in 0..6 {
+        let y=60.+rib as f32*6.;let width=14.-rib as f32*1.1;
+        for sign in [-1.,1.] {
+            let mut last=p(48.,y-2.);
+            for step in 1..=8 {
+                let t=step as f32/8.;let angle=t*std::f32::consts::PI;
+                let next=p(48.+sign*width*angle.sin(),y+t*5.);
+                bone(&mut f,last,next,0.95);last=next;
+            }
+        }
+    }
+    if !back { bone(&mut f,p(48.,58.),p(48.,90.),1.4); }
+    for sign in [-1.,1.] { bone(&mut f,p(48.,54.),p(48.+sign*16.,58.),2.0); }
+    // Frayed remnants at the waist; the empty rib spaces stay transparent.
+    f.poly(&[p(36.,104.),p(59.,103.),p(58.,125.),p(54.,118.),p(50.,129.),p(47.,120.),p(43.,126.),p(38.,118.)],Cloth,0.44);
+    bone(&mut f,p(39.,107.),p(55.,108.),0.8);
+    let (hand, tip) = if (8..12).contains(&pose) {
+        (p(76.-15.*wind,97.-63.*wind),p(81.-31.*wind,61.-58.*wind))
+    } else if (12..15).contains(&pose) {
+        (p(61.-35.*strike,34.+83.*strike),p(50.-44.*strike,3.+145.*strike))
+    } else if (15..18).contains(&pose) {
+        (p(26.+50.*recover,117.-20.*recover),p(6.+75.*recover,148.-87.*recover))
+    } else { (p(76.+stride*2.,97.),p(81.+stride*2.,61.)) };
+    let shoulder=p(64.,58.);
+    let elbow=[(shoulder[0]+hand[0])*0.5+5.,(shoulder[1]+hand[1])*0.5+9.];
+    bone(&mut f,shoulder,elbow,2.6);
+    bone(&mut f,[elbow[0]-1.,elbow[1]],[hand[0]-1.,hand[1]],1.7);
+    bone(&mut f,[elbow[0]+2.,elbow[1]],[hand[0]+2.,hand[1]],1.0);
+    let left_elbow=p(27.-stride*3.,83.);let left_hand=p(31.-stride*2.,108.);
+    bone(&mut f,p(32.,58.),left_elbow,2.5);bone(&mut f,left_elbow,left_hand,1.8);
+    for finger in 0..4 { let x=left_hand[0]+finger as f32*1.8-3.;bone(&mut f,[x,left_hand[1]],[x-1.,left_hand[1]+7.],0.8); }
+    // Rusted arming sword follows the hand through anticipation and follow-through.
+    let d=[tip[0]-hand[0],tip[1]-hand[1]];let length=d[0].hypot(d[1]).max(1.);let n=[-d[1]/length,d[0]/length];
+    f.line(hand,tip,2.1,Metal,0.52);f.line([hand[0]+n[0],hand[1]+n[1]],tip,0.65,Metal,0.98);
+    f.line([hand[0]-n[0]*6.,hand[1]-n[1]*6.],[hand[0]+n[0]*6.,hand[1]+n[1]*6.],1.2,Leather,0.78);
+    for finger in 0..3 {f.ellipse(hand[0],hand[1]+finger as f32*2.,3.0,0.9,Linen,0.9);}
+    // Skull: brow, cheek bones, recessed sockets, nasal cavity and separate jaw.
+    let skull=p(48.,29.);let sx=if side {7.} else {10.};
+    f.ellipse(skull[0],skull[1],sx,12.,Linen,0.83);
+    f.ellipse(skull[0],skull[1]+10.,sx*0.67,5.,Linen,0.65);
+    if !back {
+        for x in if side {vec![skull[0]+2.]} else {vec![skull[0]-4.5,skull[0]+4.5]} {
+            f.ellipse(x,skull[1]+1.,3.0,3.6,Hair,0.12);
+            f.dot(x as i32,skull[1] as i32+1,Accent,0.95);
+            f.line([x-2.8,skull[1]-3.],[x+2.8,skull[1]-2.],0.9,Linen,0.94);
+        }
+        f.poly(&[[skull[0],skull[1]+4.],[skull[0]-1.8,skull[1]+8.],[skull[0]+1.8,skull[1]+8.]],Hair,0.1);
+        f.rect(skull[0]-4.,skull[1]+10.,8.,2.,Hair,0.12);
+        for tooth in 0..5 {f.rect(skull[0]-4.+tooth as f32*1.7,skull[1]+9.,1.,2.,Linen,0.98);}
+    }
+    f.line([skull[0]-2.,skull[1]-10.],[skull[0]+1.,skull[1]-6.],0.55,Hair,0.25);
+    f.line([skull[0]+1.,skull[1]-6.],[skull[0],skull[1]-3.],0.55,Hair,0.25);
+    f
+}
+
+fn creature_frame(kind:u32,dir:u32,pose:u32)->Frame {
+    if kind==0{return combat_frame(dir,pose);}
+    use Slot::*;
+    let mut f=Frame::sized(COMBAT_W,COMBAT_H);
+    let side=dir==1||dir==3;let back=dir==2;
+    let phase=pose as f32*std::f32::consts::TAU/8.;
+    let stride=if pose<8{phase.sin()}else{0.};
+    let lift=if (8..12).contains(&pose){(pose-8)as f32/3.}else if (12..15).contains(&pose){1.-(pose-12)as f32/2.}else{0.};
+    let slash=if (12..15).contains(&pose){(pose-12)as f32/2.}else if (15..18).contains(&pose){1.-(pose-15)as f32/2.}else{0.};
+    let fall=if pose>=20{(pose-20)as f32/3.}else{0.};let hurt=if pose==18{-5.}else if pose==19{-9.}else{0.};
+    let p=|x:f32,y:f32|{let x=48.+(x-48.)*if side{0.62}else{1.}+hurt*(1.-y/190.)+fall*(180.-y)*0.1;[if dir==3{96.-x}else{x},y+(180.-y)*fall*0.9+if pose<8{phase.cos()*1.5}else{0.}]};
+    if kind==1 {
+        // Bent legs, broad feet, layered leather tunic and a heavy hooked nose.
+        for (sign,v) in [(-1.,stride),(1.,-stride)] {
+            f.line(p(48.+sign*12.,119.),p(48.+sign*19.+v*4.,151.),6.,Skin,0.58);
+            f.line(p(48.+sign*19.+v*4.,151.),p(48.+sign*17.+v*7.,176.-v.max(0.)*5.),4.,Skin,0.81);
+            let foot=p(48.+sign*20.+v*7.,179.-v.max(0.)*5.);f.ellipse(foot[0],foot[1],10.,5.,Leather,0.58);
+        }
+        f.poly(&[p(27.,62.),p(67.,62.),p(72.,114.),p(65.,134.),p(51.,130.),p(39.,135.),p(25.,120.)],Cloth,0.59);
+        f.poly(&[p(30.,65.),p(44.,67.),p(47.,122.),p(30.,126.)],Leather,0.7);
+        f.line(p(48.,65.),p(55.,119.),1.5,Linen,0.47);
+        for y in (74..111).step_by(9){let q=p(50.,y as f32);f.rect(q[0],q[1],2.,2.,Metal,0.8);}
+        f.line(p(26.,114.),p(70.,115.),3.,Leather,0.3);let buckle=p(49.,113.);f.rect(buckle[0],buckle[1],7.,5.,Metal,0.75);
+        let hand=p(77.-slash*47.-lift*12.,106.-lift*65.+slash*14.);
+        let elbow=p(78.-lift*3.,80.-lift*20.);
+        f.line(p(66.,67.),elbow,6.,Skin,0.52);f.line(elbow,hand,4.8,Skin,0.79);
+        let tip=p(82.-slash*70.-lift*24.,63.-lift*59.+slash*85.);
+        f.line(hand,tip,3.,Metal,0.51);f.line([hand[0]-1.,hand[1]],tip,1.,Metal,0.95);
+        f.line([hand[0]-7.,hand[1]],[hand[0]+7.,hand[1]],1.5,Leather,0.74);
+        f.ellipse(hand[0],hand[1]+4.,4.8,6.,Skin,0.7);
+        let lh=p(21.+stride*3.,109.);f.line(p(28.,68.),p(18.,88.),6.,Skin,0.6);f.line(p(18.,88.),lh,4.5,Skin,0.84);f.ellipse(lh[0],lh[1],5.,7.,Skin,0.65);
+        for sign in [-1.,1.] {f.poly(&[p(48.+sign*11.,29.),p(48.+sign*33.,20.),p(48.+sign*25.,45.),p(48.+sign*12.,48.)],Skin,0.65);f.line(p(48.+sign*28.,25.),p(48.+sign*17.,40.),1.3,Cloth,0.7);}
+        let head=p(48.,42.);f.ellipse(head[0],head[1],if side{12.}else{18.},23.,Skin,0.77);
+        f.poly(&[p(31.,23.),p(36.,12.),p(44.,23.),p(50.,10.),p(57.,24.),p(65.,24.)],Hair,0.38);
+        if !back {
+            for sign in [-1.,1.]{let e=p(48.+sign*8.,36.);f.ellipse(e[0],e[1],4.,2.5,Hair,0.15);f.dot(e[0]as i32,e[1]as i32,Accent,0.95);f.line(p(48.+sign*4.,32.),p(48.+sign*12.,30.),2.,Skin,0.36);}
+            f.poly(&[p(46.,35.),p(40.,51.),p(49.,54.),p(53.,49.)],Skin,0.99);
+            f.line(p(37.,57.),p(59.,57.),2.,Hair,0.2);
+            for x in [39.,56.]{f.poly(&[p(x,60.),p(x+2.,51.),p(x+4.,60.)],Linen,0.96);}
+        }
+    } else {
+        // Torn spectral shroud, nested hood, reaching claw bones and wispy hem.
+        let drift=if pose<8{phase.sin()*2.}else{0.};
+        f.poly(&[p(32.,42.),p(23.,74.),p(29.,117.),p(15.+drift,166.),p(30.,155.),p(27.,181.),p(41.,170.),p(50.+drift,186.),p(58.,162.),p(72.,179.),p(68.,155.),p(81.,166.),p(66.,106.),p(70.,73.),p(64.,41.)],Cloth,0.52);
+        for (x,shade) in [(31.,0.72),(43.,0.84),(56.,0.63),(63.,0.76)] {f.poly(&[p(x,72.),p(x+4.,77.),p(x+7.+drift,162.),p(x-3.+drift,171.)],Cloth,shade);}
+        for sign in [-1.,1.] {
+            let hand=p(48.+sign*(34.-slash*19.),105.-lift*51.+slash*15.);
+            let elbow=p(48.+sign*28.,75.-lift*18.);
+            f.line(p(48.+sign*18.,66.),elbow,8.,Cloth,0.55);f.line(elbow,hand,5.,Cloth,0.8);
+            f.ellipse(hand[0],hand[1],4.,5.,Linen,0.86);
+            for finger in 0..4{let x=hand[0]+finger as f32*2.-3.;f.line([x,hand[1]],[x+sign*3.,hand[1]+9.+(finger%2)as f32*3.],0.8,Linen,0.96);}
+        }
+        let head=p(48.,37.);f.ellipse(head[0],head[1],20.,29.,Cloth,0.78);
+        if !back {f.ellipse(head[0],head[1]+3.,13.,20.,Hair,0.14);f.ellipse(head[0],head[1]+5.,9.,12.,Linen,0.51);
+            for sign in [-1.,1.]{let e=p(48.+sign*5.,38.);f.ellipse(e[0],e[1],2.,1.8,Accent,0.99);}
+            let mouth=p(48.,50.);f.ellipse(mouth[0],mouth[1],2.2,4.5,Hair,0.08);
+        }
+        // Sparse edges at the hem suggest dissolution without sorted alpha blending.
+        for y in 135..COMBAT_H {for x in 0..COMBAT_W {let i=(y*COMBAT_W+x)*4;if (x*17+y*23+pose as usize*3)%37<((y-135)/5){f.pixels[i..i+4].fill(0);}}}
+    }
+    f
+}
+
+/// Original skeleton animation plate, exposed for the local art study.
+pub fn combat_preview(dir:u32,pose:u32)->Vec<u8>{creature_preview(0,dir,pose)}
+pub fn creature_preview(kind:u32,dir:u32,pose:u32)->Vec<u8>{
+    let mut pixels=creature_frame(kind,dir%4,pose%COMBAT_FRAMES).pixels;
+    for p in pixels.chunks_mut(4) {
+        if p[3]==0 {continue;}
+        let shade=p[0] as f32/255.*0.98+0.12;
+        let mut pigment=match p[1]/24 {
+            2=>[0.045,0.038,0.030], 3=>[0.30,0.17,0.14],
+            5=>[0.30,0.18,0.095],6=>[0.53,0.57,0.58],
+            7=>[0.84,0.81,0.68],8=>[0.40,0.85,0.88],_=>[0.7,0.65,0.5]
+        };
+        if kind==1 {pigment=match p[1]/24 {1=>[0.30,0.44,0.16],3=>[0.30,0.16,0.19],8=>[0.9,0.64,0.17],_=>pigment};}
+        if kind==2 {pigment=match p[1]/24 {3=>[0.36,0.65,0.71],7=>[0.62,0.84,0.84],8=>[0.7,0.96,1.0],_=>pigment};}
+        for i in 0..3 {p[i]=(pigment[i]*shade*255.).min(255.) as u8;}
+    }
+    pixels
+}
+
 pub fn generate() -> Vec<u8> {
     // Only shade + material ID are needed; slot zero is transparent. RG8 halves
     // GPU memory versus RGBA while preserving every costume pixel exactly.
@@ -631,6 +817,20 @@ pub fn generate() -> Vec<u8> {
                 }
             }
         }
+    }
+    for kind in 0..3 {
+    for dir in 0..4 {
+        for pose in 0..COMBAT_FRAMES {
+            let f = creature_frame(kind, dir, pose);
+            for y in 0..COMBAT_H {
+                for x in 0..COMBAT_W {
+                    let dst = (((64+kind*COMBAT_FRAMES+pose) as usize*HEIGHT as usize + (dir/2) as usize*COMBAT_H+y)*WIDTH as usize+(dir%2) as usize*COMBAT_W+x)*2;
+                    let src=(y*COMBAT_W+x)*4;
+                    out[dst..dst+2].copy_from_slice(&f.pixels[src..src+2]);
+                }
+            }
+        }
+    }
     }
     out
 }
@@ -700,6 +900,60 @@ pub fn texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn all_foes_pack_distinct_frames_without_overwriting_each_other() {
+        let atlas=generate();
+        for kind in 0..3 {for dir in 0..4 {for pose in [0,2,11,14,18,23] {
+            let f=creature_frame(kind,dir,pose);let mut visible=0;
+            for y in 0..COMBAT_H {for x in 0..COMBAT_W {
+                let src=(y*COMBAT_W+x)*4;
+                let dst=(((64+kind*COMBAT_FRAMES+pose) as usize*HEIGHT as usize+(dir/2) as usize*COMBAT_H+y)*WIDTH as usize+(dir%2) as usize*COMBAT_W+x)*2;
+                assert_eq!(&atlas[dst..dst+2],&f.pixels[src..src+2]);
+                if f.pixels[src+3]>0{visible+=1;}
+            }}
+            assert!(visible>300);
+        }}}
+        assert_ne!(creature_frame(0,0,0).pixels,creature_frame(1,0,0).pixels);
+        assert_ne!(creature_frame(1,0,0).pixels,creature_frame(2,0,0).pixels);
+    }
+    #[test]
+    fn skeleton_animation_fits_atlas_and_matches_shader_packing() {
+        let atlas = generate();
+        assert_eq!(atlas.len(), WIDTH as usize * HEIGHT as usize * LAYERS as usize * 2);
+        for dir in 0..4u32 {
+            let mut distinct = std::collections::HashSet::new();
+            for pose in 0..COMBAT_FRAMES {
+                let frame = combat_frame(dir, pose);
+                assert_eq!(frame.pixels.len(), COMBAT_W * COMBAT_H * 4);
+                distinct.insert(frame.pixels.clone());
+                let packed = 65536u32 + dir*16 + (pose%4)*64 + (pose/4)*262144;
+                assert_eq!((packed as f32) as u32, packed);
+                assert_eq!((packed/64)%4 + ((packed/262144)%8)*4, pose);
+                let mut coverage = 0;
+                for y in 0..COMBAT_H {
+                    for x in 0..COMBAT_W {
+                        let src = (y*COMBAT_W+x)*4;
+                        let dst = (((64+pose as usize)*HEIGHT as usize + (dir as usize/2)*COMBAT_H+y)*WIDTH as usize+(dir as usize%2)*COMBAT_W+x)*2;
+                        assert_eq!(&atlas[dst..dst+2], &frame.pixels[src..src+2]);
+                        if frame.pixels[src+3]>0 {coverage+=1;}
+                    }
+                }
+                assert!(coverage>300, "empty skeleton {dir}/{pose}");
+            }
+            // Phase boundary frames intentionally share their end/start poses.
+            assert!(distinct.len() >= 14, "animation lost pose variation");
+            for (a,b) in [(0,2),(8,11),(12,14),(15,17),(18,19),(20,23)] {
+                assert_ne!(combat_frame(dir,a).pixels, combat_frame(dir,b).pixels);
+            }
+        }
+        let height = |pose| {
+            let p=combat_frame(0,pose).pixels;
+            let rows: Vec<_>=(0..COMBAT_H).filter(|&y| (0..COMBAT_W).any(|x| p[(y*COMBAT_W+x)*4+3]>0)).collect();
+            rows.last().unwrap()-rows[0]
+        };
+        assert!(height(23)<height(0)/3, "death should collapse to the ground");
+    }
+
     #[test]
     fn costumes_have_clear_edges_valid_slots_and_distinct_variants() {
         let mut unique = std::collections::HashSet::new();

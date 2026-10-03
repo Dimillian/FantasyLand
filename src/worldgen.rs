@@ -3,7 +3,7 @@
 //! GENERATOR_VERSION. Development updates may discard old saves; only the
 //! current generator is supported.
 use serde::{Deserialize, Serialize};
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 3;
 pub const RECIPE_REVISION: u32 = 1;
 pub mod mountains;
 

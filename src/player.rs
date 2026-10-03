@@ -5,6 +5,7 @@ use crate::{
 use glam::Vec3;
 
 pub struct Player {
+    pub character: crate::progression::Character,
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
@@ -22,8 +23,29 @@ pub struct Player {
 }
 
 impl Player {
+    #[cfg(test)]
+    pub(crate) fn combat_fixture(position: Vec3, yaw: f32) -> Self {
+        Self {
+            character: Default::default(),
+            position,
+            yaw,
+            pitch: 0.,
+            grounded: true,
+            stamina: 100.,
+            health: 100.,
+            mana: 100.,
+            walked: 0.,
+            speed: 0.,
+            velocity_y: 0.,
+            bob: 0.,
+            jump_was_down: false,
+            precise_x: position.x as f64,
+            precise_z: position.z as f64,
+        }
+    }
     pub fn new(world: &World, x: f32, z: f32) -> Self {
         Self {
+            character: Default::default(),
             position: Vec3::new(x, Self::floor(world, x, z), z),
             yaw: 0.0,
             pitch: -0.035,
@@ -48,6 +70,19 @@ impl Player {
         if dx.is_finite() && dy.is_finite() {
             self.yaw = (self.yaw + dx * 0.0022).rem_euclid(std::f32::consts::TAU);
             self.pitch = (self.pitch - dy * 0.0022).clamp(-1.42, 1.42);
+        }
+    }
+    pub(crate) fn block_combat_overlap(&mut self, before: Vec3, enemy: Vec3) {
+        let delta = glam::Vec2::new(self.position.x - enemy.x, self.position.z - enemy.z);
+        if delta.length() < 0.72 && (self.position.y - enemy.y).abs() < 1.65 {
+            self.walked = (self.walked
+                - glam::Vec2::new(self.position.x - before.x, self.position.z - before.z).length())
+            .max(0.);
+            self.position.x = before.x;
+            self.position.z = before.z;
+            self.precise_x = before.x as f64;
+            self.precise_z = before.z as f64;
+            self.speed = 0.;
         }
     }
     pub fn eye(&self) -> Vec3 {
@@ -115,7 +150,7 @@ impl Player {
         let moving = direction.length_squared() > 0.01;
         let sprinting = sprint && moving && self.stamina > 1.0;
         self.stamina =
-            (self.stamina + if sprinting { -11.0 * dt } else { 14.0 * dt }).clamp(0.0, 100.0);
+            (self.stamina + if sprinting { -11.0 * dt } else { self.character.derived().stamina_regen * dt }).clamp(0.0, self.character.derived().max_stamina);
         let sample = world.sample(self.position.x, self.position.z);
         let swimming = sample.water_height
             > geometry::walk_height(world, self.position.x, self.position.z) + 1.1;

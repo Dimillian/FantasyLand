@@ -113,6 +113,7 @@ pub struct World {
     pub doors: Rc<RefCell<std::collections::HashMap<u32, crate::settlement_mesh::Door>>>,
     hydrology: Rc<hydrology::Hydrology>,
     roads: Rc<roads::Network>,
+    pub hostile: Rc<crate::hostile::Catalog>,
     spawn_cache: RefCell<Option<([f32; 2], f32)>>,
 }
 
@@ -207,6 +208,7 @@ impl World {
             doors: Rc::new(RefCell::new(std::collections::HashMap::new())),
             hydrology: Rc::new(hydrology::Hydrology::new(seed)),
             roads: Rc::new(roads::Network::empty()),
+            hostile:Rc::new(Default::default()),
             spawn_cache: RefCell::new(None),
         };
         world.settlements = Rc::new(crate::settlements::Catalog::new(&world));
@@ -566,21 +568,21 @@ impl World {
         let min_j = (((z - radius) / LANDMARK_SPACING).floor() as i32 - 1).max(-LANDMARK_LIMIT);
         let max_j = (((z + radius) / LANDMARK_SPACING).ceil() as i32 + 1).min(LANDMARK_LIMIT);
         let mut result = Vec::new();
-        const KINDS: [&str; 6] = [
+        const KINDS: [&str; 11] = [
             "ruin",
             "standing_stones",
             "watchtower",
             "camp",
             "shrine",
-            "waystone",
+            "waystone", "enemy_camp", "crypt", "cemetery", "mini_dungeon", "haunted_grove",
         ];
-        const TITLES: [&str; 6] = [
+        const TITLES: [&str; 11] = [
             "Ruins",
             "Standing Stones",
             "Watch",
             "Camp",
             "Shrine",
-            "Waystone",
+            "Waystone", "Marauder Camp", "Crypt", "Cemetery", "Forsaken Keep", "Haunted Grove",
         ];
         const NAMES: [&str; 20] = [
             "The Forgotten",
@@ -655,6 +657,12 @@ impl World {
                     continue;
                 }
                 let k = ((id >> 8) as usize) % KINDS.len();
+                if crate::hostile::is_hostile(KINDS[k]) {
+                    if self.settlements.clears(px,pz,180.){continue;}
+                    let mut lo=h;let mut hi=h;let mut wet=false;
+                    for dx in [-14.,0.,14.]{for dz in [-20.,0.,14.]{let t=self.natural_sample(px+dx,pz+dz);lo=lo.min(t.height);hi=hi.max(t.height);wet|=t.water_height>t.height-0.2;}}
+                    if wet||hi-lo>3.0{continue;}
+                }
                 result.push(Landmark {
                     stable_id: crate::worldgen::LocationId::cell("cultural", i, j, 0),
                     id,

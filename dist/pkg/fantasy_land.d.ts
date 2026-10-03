@@ -12,9 +12,16 @@ export class Game {
      * remains nonblocking; the browser waits on RAF while the callback fires.
      */
     begin_gpu_drain(): void;
+    character_state(): any;
+    combat_events(): any;
+    combat_frame(): Float32Array;
+    combat_input(attack: boolean, block: boolean, paused: boolean): void;
+    corpse_loot(): any;
     static create(canvas: HTMLCanvasElement, seed: number): Promise<Game>;
     dialogue(topic: string): any;
+    encounter_locations(): any;
     end_dialogue(): void;
+    equip_item(id: string, on: boolean): boolean;
     face(yaw: number, pitch: number): void;
     features(cx: number, cz: number, span: number): any;
     gpu_drained(): boolean;
@@ -39,6 +46,7 @@ export class Game {
     restore_clock(clock: number): void;
     restore_snapshot(value: any): void;
     return_to_spawn(): void;
+    revive(): void;
     save_snapshot(): any;
     set_antialiasing(mode: number): void;
     set_async_streaming(enabled: boolean): void;
@@ -58,9 +66,15 @@ export class Game {
     settlement_destinations(): any;
     settlement_inspect(id: number): any;
     spawn(): Float32Array;
+    start_combat(): boolean;
+    start_combat_kind(kind: number): boolean;
     state(): any;
+    stop_combat(): void;
+    take_loot(corpse_id: string, item_id: string): boolean;
     teleport(x: number, z: number): void;
     tick(dt: number, forward: number, strafe: number, sprint: boolean, jump: boolean): void;
+    toggle_weapon(): void;
+    visit_encounter(x: number, z: number): boolean;
     /**
      * Art review visits actual procedural rooms in the current seeded world.
      */
@@ -103,9 +117,16 @@ export interface InitOutput {
     readonly game_accept_gi_result: (a: number, b: number, c: number, d: number) => number;
     readonly game_accept_stream_result: (a: number, b: number, c: number, d: number) => number;
     readonly game_begin_gpu_drain: (a: number) => void;
+    readonly game_character_state: (a: number) => any;
+    readonly game_combat_events: (a: number) => any;
+    readonly game_combat_frame: (a: number) => [number, number];
+    readonly game_combat_input: (a: number, b: number, c: number, d: number) => void;
+    readonly game_corpse_loot: (a: number) => any;
     readonly game_create: (a: any, b: number) => any;
     readonly game_dialogue: (a: number, b: number, c: number) => any;
+    readonly game_encounter_locations: (a: number) => any;
     readonly game_end_dialogue: (a: number) => void;
+    readonly game_equip_item: (a: number, b: number, c: number, d: number) => number;
     readonly game_face: (a: number, b: number, c: number) => void;
     readonly game_features: (a: number, b: number, c: number, d: number) => any;
     readonly game_gpu_drained: (a: number) => number;
@@ -126,6 +147,7 @@ export interface InitOutput {
     readonly game_restore_clock: (a: number, b: number) => void;
     readonly game_restore_snapshot: (a: number, b: any) => [number, number];
     readonly game_return_to_spawn: (a: number) => void;
+    readonly game_revive: (a: number) => void;
     readonly game_save_snapshot: (a: number) => any;
     readonly game_set_antialiasing: (a: number, b: number) => void;
     readonly game_set_async_streaming: (a: number, b: number) => void;
@@ -145,9 +167,15 @@ export interface InitOutput {
     readonly game_settlement_destinations: (a: number) => any;
     readonly game_settlement_inspect: (a: number, b: number) => any;
     readonly game_spawn: (a: number) => [number, number];
+    readonly game_start_combat: (a: number) => number;
+    readonly game_start_combat_kind: (a: number, b: number) => number;
     readonly game_state: (a: number) => any;
+    readonly game_stop_combat: (a: number) => void;
+    readonly game_take_loot: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly game_teleport: (a: number, b: number, c: number) => void;
     readonly game_tick: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly game_toggle_weapon: (a: number) => void;
+    readonly game_visit_encounter: (a: number, b: number, c: number) => number;
     readonly game_visit_interior: (a: number, b: number, c: number) => [number, number];
     readonly game_visit_settlement: (a: number, b: number) => void;
     readonly game_walking_journeys: (a: number) => any;
@@ -166,7 +194,7 @@ export interface InitOutput {
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined___js_sys_4b348edf86b64934___Function_fn_wasm_bindgen_38dda96d1ba90cd1___JsValue_____wasm_bindgen_38dda96d1ba90cd1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_38dda96d1ba90cd1___JsError___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__66: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_38dda96d1ba90cd1___convert__closures_____invoke___wasm_bindgen_38dda96d1ba90cd1___JsValue______true__80: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
